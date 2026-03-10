@@ -13,12 +13,13 @@ const __dirname = path.dirname(__filename);
 };
 
 // Use a persistent database file in the project root
-const dbPath = path.resolve(__dirname, 'crm.db');
+const dbPath = path.resolve(process.cwd(), 'crm.db');
 
 console.log(`[DB] Attempting to use database at: ${dbPath}`);
 
 let db: Database.Database;
 let isMemoryDb = false;
+let dbError: string | null = null;
 try {
   // Ensure the directory exists (though it should be the root)
   const dbDir = path.dirname(dbPath);
@@ -39,7 +40,8 @@ try {
     const stats = fs.statSync(dbPath);
     console.log(`[DB] Database file size: ${stats.size} bytes`);
   }
-} catch (err) {
+} catch (err: any) {
+  dbError = err.message;
   console.error('[DB] FAILED TO OPEN DATABASE FILE:', err);
   console.log('[DB] Falling back to in-memory database (DATA WILL BE LOST ON RESTART)');
   db = new Database(':memory:');
@@ -216,13 +218,14 @@ app.get('/api/health', (req, res) => {
     res.json({ 
       status: 'ok', 
       db: isMemoryDb ? 'memory' : 'file',
+      dbError: dbError,
       dbPath: dbPath,
       tables, 
       userCount: userCount?.count,
       leadCount: leadCount?.count 
     });
   } catch (err: any) {
-    res.status(500).json({ status: 'error', message: err.message });
+    res.status(500).json({ status: 'error', message: err.message, dbError: dbError });
   }
 });
 
@@ -322,16 +325,7 @@ const getUserContext = (req: express.Request) => {
   }
 };
 
-// API routes go here
-app.get('/api/health', (req, res) => {
-  try {
-    const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as any;
-    res.json({ status: 'ok', database: 'connected', users: userCount.count });
-  } catch (err: any) {
-    res.status(500).json({ status: 'error', database: 'error', message: err.message });
-  }
-});
-
+// Dashboard stats
 app.get('/api/dashboard', (req, res) => {
   try {
     const user = getUserContext(req);

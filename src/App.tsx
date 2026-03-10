@@ -68,6 +68,11 @@ function Sidebar() {
           <p className="text-[10px] text-rose-400 font-medium leading-tight">
             ⚠️ Database in Memory Mode. Data will be lost on restart!
           </p>
+          {dbStatus.dbError && (
+            <p className="text-[8px] text-rose-300 mt-1 font-mono break-all">
+              Error: {dbStatus.dbError}
+            </p>
+          )}
         </div>
       )}
       
