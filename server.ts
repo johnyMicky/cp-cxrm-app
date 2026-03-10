@@ -12,21 +12,38 @@ const __dirname = path.dirname(__filename);
   return this.toString();
 };
 
-// Use /tmp for sqlite if on Vercel or similar read-only environments
-const dbPath = process.env.VERCEL || process.env.NODE_ENV === 'production' 
-  ? path.join('/tmp', 'database.sqlite') 
-  : 'database.sqlite';
+// Use a persistent database file in the project root
+const dbPath = path.resolve(__dirname, 'crm.db');
 
-console.log(`Using database at: ${path.resolve(dbPath)}`);
+console.log(`[DB] Attempting to use database at: ${dbPath}`);
 
 let db: Database.Database;
+let isMemoryDb = false;
 try {
-  db = new Database(dbPath, { timeout: 7000 });
-  db.pragma('journal_mode = WAL'); // Better concurrency
+  // Ensure the directory exists (though it should be the root)
+  const dbDir = path.dirname(dbPath);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  db = new Database(dbPath, { timeout: 10000 });
+  
+  // CRITICAL: Disable WAL and use DELETE mode for maximum persistence in container environments
+  // This ensures all data is kept in a single .db file and not in -wal or -shm files.
+  db.pragma('journal_mode = DELETE'); 
+  db.pragma('synchronous = FULL');
+  
+  console.log(`[DB] Database opened successfully. Journal mode: ${db.pragma('journal_mode')}`);
+  
+  if (fs.existsSync(dbPath)) {
+    const stats = fs.statSync(dbPath);
+    console.log(`[DB] Database file size: ${stats.size} bytes`);
+  }
 } catch (err) {
-  console.error('FAILED TO OPEN DATABASE:', err);
-  // Fallback to in-memory if file fails, to at least let the app start
+  console.error('[DB] FAILED TO OPEN DATABASE FILE:', err);
+  console.log('[DB] Falling back to in-memory database (DATA WILL BE LOST ON RESTART)');
   db = new Database(':memory:');
+  isMemoryDb = true;
 }
 
 // Initialize database
@@ -96,35 +113,49 @@ try {
 // Seed data if empty
 try {
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
+  console.log(`Current user count: ${userCount.count}`);
   if (userCount.count === 0) {
+    console.log('Seeding initial users...');
     const insertUser = db.prepare('INSERT INTO users (name, email, password, role, avatar) VALUES (?, ?, ?, ?, ?)');
     insertUser.run('Admin User', 'admin@cpcrm.com', 'admin123', 'Administrator', 'https://i.pravatar.cc/150?u=admin');
     insertUser.run('Manager One', 'manager1@cpcrm.com', 'manager123', 'Manager', 'https://i.pravatar.cc/150?u=manager1');
     insertUser.run('Agent Alpha', 'agent.alpha@cpcrm.com', 'agent123', 'Agent', 'https://i.pravatar.cc/150?u=alpha');
     insertUser.run('Agent Beta', 'agent.beta@cpcrm.com', 'agent123', 'Agent', 'https://i.pravatar.cc/150?u=beta');
     insertUser.run('Agent Gamma', 'agent.gamma@cpcrm.com', 'agent123', 'Agent', 'https://i.pravatar.cc/150?u=gamma');
+    console.log('User seeding complete.');
+  }
 
-    const leadCount = db.prepare('SELECT COUNT(*) as count FROM leads').get() as { count: number };
-    if (leadCount.count === 0) {
-      console.log('Seeding leads...');
-      const insertLead = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
-      const statuses = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
-      const sources = ['Website', 'Referral', 'Cold Call', 'Social Media', 'Partner'];
-      const countries = ['USA', 'UK', 'Canada', 'Germany', 'France', 'Australia'];
+  const leadCount = db.prepare('SELECT COUNT(*) as count FROM leads').get() as { count: number };
+  console.log(`Current lead count: ${leadCount.count}`);
+  if (leadCount.count === 0) {
+    console.log('Seeding initial random leads...');
+    const insertLead = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    const statuses = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
+    const sources = ['Website', 'Referral', 'Cold Call', 'Social Media', 'Partner'];
+    const countries = ['USA', 'UK', 'Canada', 'Germany', 'France', 'Australia'];
 
-      for (let i = 1; i <= 50; i++) {
-        const status = statuses[Math.floor(Math.random() * statuses.length)];
-        const source = sources[Math.floor(Math.random() * sources.length)];
-        const country = countries[Math.floor(Math.random() * countries.length)];
-        const assignedTo = Math.random() > 0.3 ? Math.floor(Math.random() * 3) + 3 : null; 
-        insertLead.run(`Lead ${i}`, `+1555000${i.toString().padStart(4, '0')}`, `lead${i}@example.com`, country, source, status, assignedTo);
-      }
-      console.log('Seeding complete.');
+    for (let i = 1; i <= 50; i++) {
+      const status = statuses[Math.floor(Math.random() * statuses.length)];
+      const source = sources[Math.floor(Math.random() * sources.length)];
+      const country = countries[Math.floor(Math.random() * countries.length)];
+      const assignedTo = Math.random() > 0.3 ? Math.floor(Math.random() * 3) + 3 : null; 
+      insertLead.run(`Lead ${i}`, `+1555000${i.toString().padStart(4, '0')}`, `lead${i}@example.com`, country, source, status, assignedTo);
     }
+    console.log('Lead seeding complete.');
   }
 } catch (err) {
   console.error('Database seeding error:', err);
 }
+
+// Graceful shutdown
+const cleanup = () => {
+  console.log('Closing database connection...');
+  db.close();
+  process.exit(0);
+};
+
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);
 
 const app = express();
 const PORT = 3000;
@@ -184,7 +215,8 @@ app.get('/api/health', (req, res) => {
     const leadCount = db.prepare('SELECT COUNT(*) as count FROM leads').get() as any;
     res.json({ 
       status: 'ok', 
-      db: 'sqlite', 
+      db: isMemoryDb ? 'memory' : 'file',
+      dbPath: dbPath,
       tables, 
       userCount: userCount?.count,
       leadCount: leadCount?.count 

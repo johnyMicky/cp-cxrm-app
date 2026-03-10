@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -34,6 +35,15 @@ function Sidebar() {
   const userName = localStorage.getItem('userName') || 'Admin User';
   const userAvatar = localStorage.getItem('userAvatar') || 'https://i.pravatar.cc/150?u=admin';
 
+  const [dbStatus, setDbStatus] = useState<{ db: string; userCount: number; leadCount: number } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then(res => res.json())
+      .then(data => setDbStatus(data))
+      .catch(err => console.error('Health check failed:', err));
+  }, []);
+
   const handleLogout = () => {
     localStorage.removeItem('userId');
     localStorage.removeItem('userRole');
@@ -44,12 +54,22 @@ function Sidebar() {
 
   return (
     <div className="w-64 bg-[#0A0F1C] border-r border-white/5 flex flex-col h-screen">
-      <div className="p-6 flex items-center space-x-3">
-        <div className="w-8 h-8 rounded bg-blue-600 flex items-center justify-center">
-          <span className="text-white font-bold text-sm">CM</span>
+      <div className="p-6 flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <div className="w-8 h-8 rounded bg-blue-600 flex items-center justify-center">
+            <span className="text-white font-bold text-sm">CM</span>
+          </div>
+          <span className="text-white font-semibold text-xl tracking-tight">CamptainM-CRM</span>
         </div>
-        <span className="text-white font-semibold text-xl tracking-tight">CamptainM-CRM</span>
       </div>
+
+      {dbStatus?.db === 'memory' && (
+        <div className="mx-4 mb-4 p-2 bg-rose-500/10 border border-rose-500/20 rounded-lg">
+          <p className="text-[10px] text-rose-400 font-medium leading-tight">
+            ⚠️ Database in Memory Mode. Data will be lost on restart!
+          </p>
+        </div>
+      )}
       
       <nav className="flex-1 px-4 space-y-1 mt-4">
         {navItems.filter(item => item.roles.includes(currentUserRole)).map((item) => {
