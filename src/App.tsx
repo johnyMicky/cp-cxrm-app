@@ -35,7 +35,13 @@ function Sidebar() {
   const userName = localStorage.getItem('userName') || 'Admin User';
   const userAvatar = localStorage.getItem('userAvatar') || 'https://i.pravatar.cc/150?u=admin';
 
-  const [dbStatus, setDbStatus] = useState<{ db: string; userCount: number; leadCount: number; dbError?: string | null } | null>(null);
+  const [dbStatus, setDbStatus] = useState<{ 
+    db: string; 
+    userCount: number; 
+    leadCount: number; 
+    dbError?: string | null;
+    isServerless?: boolean;
+  } | null>(null);
 
   useEffect(() => {
     fetch('/api/health')
@@ -63,12 +69,20 @@ function Sidebar() {
         </div>
       </div>
 
-      {dbStatus?.db === 'memory' && (
-        <div className="mx-4 mb-4 p-2 bg-rose-500/10 border border-rose-500/20 rounded-lg">
-          <p className="text-[10px] text-rose-400 font-medium leading-tight">
-            ⚠️ Database in Memory Mode. Data will be lost on restart!
+      {(dbStatus?.db === 'memory' || dbStatus?.isServerless) && (
+        <div className={cn(
+          "mx-4 mb-4 p-2 rounded-lg border",
+          dbStatus?.db === 'memory' ? "bg-rose-500/10 border-rose-500/20" : "bg-amber-500/10 border-amber-500/20"
+        )}>
+          <p className={cn(
+            "text-[10px] font-medium leading-tight",
+            dbStatus?.db === 'memory' ? "text-rose-400" : "text-amber-400"
+          )}>
+            {dbStatus?.db === 'memory' 
+              ? "⚠️ Database in Memory Mode. Data will be lost!" 
+              : "ℹ️ Running on Vercel. Data is ephemeral (lost on restart)."}
           </p>
-          {dbStatus.dbError && (
+          {dbStatus?.dbError && (
             <p className="text-[8px] text-rose-300 mt-1 font-mono break-all">
               Error: {dbStatus.dbError}
             </p>

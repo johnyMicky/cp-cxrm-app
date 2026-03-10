@@ -13,8 +13,13 @@ const __dirname = path.dirname(__filename);
 };
 
 // Use a persistent database file in the project root
-const dbPath = path.resolve(process.cwd(), 'crm_v3.db');
+// On Vercel (serverless), we must use /tmp as the filesystem is read-only
+const isVercel = process.env.VERCEL === '1' || !!process.env.NOW_REGION;
+const dbPath = isVercel 
+  ? path.resolve('/tmp', 'crm_v3.db')
+  : path.resolve(process.cwd(), 'crm_v3.db');
 
+console.log(`[DB] Environment: ${isVercel ? 'Vercel/Serverless' : 'Standard/Container'}`);
 console.log(`[DB] Attempting to use database at: ${dbPath}`);
 console.log(`[DB] Current working directory: ${process.cwd()}`);
 console.log(`[DB] __dirname: ${__dirname}`);
@@ -221,6 +226,7 @@ app.get('/api/health', (req, res) => {
     res.json({ 
       status: 'ok', 
       db: isMemoryDb ? 'memory' : 'file',
+      isServerless: isVercel,
       dbError: dbError,
       dbPath: dbPath,
       tables, 
