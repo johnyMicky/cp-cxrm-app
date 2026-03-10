@@ -344,7 +344,7 @@ app.post('/api/users', (req, res) => {
     }
     const stmt = db.prepare('INSERT INTO users (name, email, password, role, avatar) VALUES (?, ?, ?, ?, ?)');
     const result = stmt.run(name, email, password, role, avatar || `https://i.pravatar.cc/150?u=${email}`);
-    res.json({ id: result.lastInsertRowid });
+    res.json({ id: result.lastInsertRowid.toString() });
   } catch (error: any) {
     console.error('POST /api/users error:', error);
     res.status(400).json({ error: error.message });
@@ -745,6 +745,16 @@ async function setupVite() {
 }
 
 setupVite();
+
+// Global error handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('Unhandled Error:', err);
+  res.status(500).json({ 
+    error: 'Internal server error', 
+    message: err.message,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+  });
+});
 
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, '0.0.0.0', () => {
