@@ -544,52 +544,54 @@ export default function Leads() {
               />
             </div>
 
-            <div className="space-y-1.5 relative">
-              <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Agent</label>
-              <button 
-                onClick={() => setActiveDropdown(activeDropdown === 'agent' ? null : 'agent')}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white flex items-center justify-between hover:bg-white/10 transition-colors"
-              >
-                <span className="truncate">
-                  {filters.agents.length === 0 ? 'All Agents' : `${filters.agents.length} Selected`}
-                </span>
-                <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'agent' ? 'rotate-180' : ''}`} />
-              </button>
+            {currentUser.role !== 'Agent' && (
+              <div className="space-y-1.5 relative">
+                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Agent</label>
+                <button 
+                  onClick={() => setActiveDropdown(activeDropdown === 'agent' ? null : 'agent')}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white flex items-center justify-between hover:bg-white/10 transition-colors"
+                >
+                  <span className="truncate">
+                    {filters.agents.length === 0 ? 'All Agents' : `${filters.agents.length} Selected`}
+                  </span>
+                  <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'agent' ? 'rotate-180' : ''}`} />
+                </button>
 
-              {activeDropdown === 'agent' && (
-                <div className="absolute left-0 top-full mt-2 w-full bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 max-h-80 overflow-y-auto custom-scrollbar">
-                  <div className="px-3 pb-2 mb-2 border-b border-white/5">
-                    <div className="relative">
-                      <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
-                      <input 
-                        type="text"
-                        placeholder="Search agents..."
-                        value={agentSearch}
-                        onChange={(e) => setAgentSearch(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-md pl-7 pr-2 py-1 text-[10px] text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-                        onClick={(e) => e.stopPropagation()}
-                      />
+                {activeDropdown === 'agent' && (
+                  <div className="absolute left-0 top-full mt-2 w-full bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 max-h-80 overflow-y-auto custom-scrollbar">
+                    <div className="px-3 pb-2 mb-2 border-b border-white/5">
+                      <div className="relative">
+                        <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
+                        <input 
+                          type="text"
+                          placeholder="Search agents..."
+                          value={agentSearch}
+                          onChange={(e) => setAgentSearch(e.target.value)}
+                          className="w-full bg-white/5 border border-white/10 rounded-md pl-7 pr-2 py-1 text-[10px] text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
                     </div>
-                  </div>
-                  <button 
-                    onClick={() => setFilters(prev => ({ ...prev, agents: [] }))}
-                    className="w-full text-left px-4 py-2 text-xs text-blue-400 font-medium hover:bg-white/5 transition-colors border-b border-white/5 mb-1"
-                  >
-                    Clear All
-                  </button>
-                  {agents.filter(a => a.name.toLowerCase().includes(agentSearch.toLowerCase())).map(agent => (
                     <button 
-                      key={agent.id}
-                      onClick={() => toggleAgentFilter(agent.id)}
-                      className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+                      onClick={() => setFilters(prev => ({ ...prev, agents: [] }))}
+                      className="w-full text-left px-4 py-2 text-xs text-blue-400 font-medium hover:bg-white/5 transition-colors border-b border-white/5 mb-1"
                     >
-                      <span>{agent.name}</span>
-                      {filters.agents.includes(agent.id) && <CheckSquare className="w-3 h-3 text-blue-500" />}
+                      Clear All
                     </button>
-                  ))}
-                </div>
-              )}
-            </div>
+                    {agents.filter(a => a.name.toLowerCase().includes(agentSearch.toLowerCase())).map(agent => (
+                      <button 
+                        key={agent.id}
+                        onClick={() => toggleAgentFilter(agent.id)}
+                        className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+                      >
+                        <span>{agent.name}</span>
+                        {filters.agents.includes(agent.id) && <CheckSquare className="w-3 h-3 text-blue-500" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Country</label>

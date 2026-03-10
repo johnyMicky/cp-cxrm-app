@@ -14,12 +14,14 @@ import {
   Timestamp,
   setDoc
 } from "firebase/firestore";
+import { format } from 'date-fns';
 import { db } from "../firebase";
 
 // Collections
 const LEADS_COL = "leads";
 const USERS_COL = "users";
 const ACTIVITY_COL = "activity";
+const NOTIFICATIONS_COL = "notifications";
 
 const sanitizeData = (data: any) => {
   const sanitized: any = {};
@@ -206,6 +208,21 @@ export const firestoreService = {
     await deleteDoc(doc(db, LEADS_COL, id));
   },
 
+  async setCallback(leadId: string, userId: string, callbackAt: Date) {
+    const docRef = doc(db, LEADS_COL, leadId);
+    await updateDoc(docRef, {
+      callbackAt: Timestamp.fromDate(callbackAt),
+      updatedAt: serverTimestamp()
+    });
+    
+    await this.logActivity({
+      lead_id: leadId,
+      user_id: userId,
+      action: "Callback Scheduled",
+      details: `Scheduled for ${format(callbackAt, 'MMM d, h:mm a')}`
+    });
+  },
+
   async addNote(leadId: string, userId: string, content: string) {
     await addDoc(collection(db, "notes"), {
       lead_id: leadId,
@@ -299,6 +316,35 @@ export const firestoreService = {
     // For now, let's just fetch all or filter if we have lead IDs
     const querySnapshot = await getDocs(q);
     return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  },
+
+  // Notifications
+  async getNotifications(userId: string) {
+    const q = query(
+      collection(db, NOTIFICATIONS_COL),
+      where("user_id", "==", userId)
+    );
+    const snap = await getDocs(q);
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter(n => !n.read)
+      .sort((a, b) => {
+        const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+        const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        return dateB.getTime() - dateA.getTime();
+      });
+  },
+
+  async createNotification(notification: any) {
+    await addDoc(collection(db, NOTIFICATIONS_COL), {
+      ...notification,
+      read: false,
+      createdAt: serverTimestamp()
+    });
+  },
+
+  async markNotificationRead(id: string) {
+    await updateDoc(doc(db, NOTIFICATIONS_COL, id), { read: true });
   },
 
   // Dashboard

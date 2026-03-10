@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2 } from 'lucide-react';
+import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2, Calendar } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { firestoreService } from '../services/firestoreService';
@@ -81,6 +81,14 @@ export default function LeadDetail() {
         user_id: currentUserId,
         action: 'Reassigned',
         details: `Assigned to ${assignedUser?.name || 'Unassigned'}`
+      });
+    }
+    if (lead.callbackAt !== editForm.callbackAt) {
+      await firestoreService.logActivity({
+        lead_id: id,
+        user_id: currentUserId,
+        action: 'Callback Updated',
+        details: `Callback scheduled for ${formatDateTime(editForm.callbackAt)}`
       });
     }
 
@@ -327,6 +335,25 @@ export default function LeadDetail() {
                         <span className="text-sm text-slate-400 italic">Unassigned</span>
                       );
                     })()}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <p className="text-xs text-slate-500 font-medium uppercase tracking-wider mb-2 flex items-center space-x-2">
+                  <Calendar className="w-3 h-3" />
+                  <span>Callback Schedule</span>
+                </p>
+                {isEditing ? (
+                  <input 
+                    type="datetime-local" 
+                    value={editForm.callbackAt ? format(editForm.callbackAt.toDate ? editForm.callbackAt.toDate() : new Date(editForm.callbackAt), "yyyy-MM-dd'T'HH:mm") : ''} 
+                    onChange={e => setEditForm({...editForm, callbackAt: e.target.value ? new Date(e.target.value) : null})}
+                    className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  />
+                ) : (
+                  <div className="bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white">
+                    {lead.callbackAt ? formatDateTime(lead.callbackAt) : <span className="text-slate-500 italic">No callback scheduled</span>}
                   </div>
                 )}
               </div>
