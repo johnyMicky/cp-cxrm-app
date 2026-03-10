@@ -480,13 +480,8 @@ async function setupVite() {
     const distPath = path.resolve(process.cwd(), 'dist');
     const indexPath = path.resolve(distPath, 'index.html');
     
-    console.log('Production mode detected');
-    console.log('CWD:', process.cwd());
-    console.log('Dist path:', distPath);
-    console.log('Index path:', indexPath);
-    console.log('Dist exists:', fs.existsSync(distPath));
-    console.log('Index exists:', fs.existsSync(indexPath));
-
+    // In production on Vercel, static files are served by Vercel's Edge Network.
+    // This code remains as a fallback for other production environments.
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
     }
@@ -499,7 +494,8 @@ async function setupVite() {
       if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
       } else {
-        res.status(404).send(`Not Found. Searched at: ${indexPath}`);
+        // If we're here, it means Vercel's rewrite didn't find the file either
+        res.status(404).send('Not Found');
       }
     });
   }
