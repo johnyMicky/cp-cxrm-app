@@ -114,17 +114,6 @@ export default function Login() {
             </p>
           </div>
         </div>
-
-        <div className="mt-8 grid grid-cols-2 gap-4">
-          <div className="bg-white/5 border border-white/5 rounded-xl p-3 text-center">
-            <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Admin Demo</p>
-            <p className="text-xs text-slate-300">admin@cpcrm.com / admin123</p>
-          </div>
-          <div className="bg-white/5 border border-white/5 rounded-xl p-3 text-center">
-            <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Agent Demo</p>
-            <p className="text-xs text-slate-300">agent.alpha@cpcrm.com / agent123</p>
-          </div>
-        </div>
       </div>
     </div>
   );

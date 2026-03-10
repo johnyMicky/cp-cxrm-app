@@ -206,6 +206,7 @@ function UserModal({ user, onClose, onSuccess }: { user: User | null, onClose: (
   const [formData, setFormData] = useState({
     name: user?.name || '',
     email: user?.email || '',
+    password: '', // New field
     role: user?.role || 'Agent',
     avatar: user?.avatar || ''
   });
@@ -221,10 +222,16 @@ function UserModal({ user, onClose, onSuccess }: { user: User | null, onClose: (
       const url = user ? `/api/users/${user.id}` : '/api/users';
       const method = user ? 'PUT' : 'POST';
       
+      // Only include password if it's a new user or if it's being changed
+      const payload = { ...formData };
+      if (user && !payload.password) {
+        delete (payload as any).password;
+      }
+      
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(payload)
       });
 
       if (res.ok) {
@@ -284,6 +291,20 @@ function UserModal({ user, onClose, onSuccess }: { user: User | null, onClose: (
               onChange={e => setFormData({...formData, email: e.target.value})}
               className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
               placeholder="jane@example.com"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+              {user ? 'Password (Leave blank to keep current)' : 'Password'}
+            </label>
+            <input 
+              type="password"
+              required={!user}
+              value={formData.password}
+              onChange={e => setFormData({...formData, password: e.target.value})}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+              placeholder="••••••••"
             />
           </div>
 

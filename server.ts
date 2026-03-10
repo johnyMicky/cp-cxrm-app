@@ -297,10 +297,13 @@ app.get('/api/users', (req, res) => {
 });
 
 app.post('/api/users', (req, res) => {
-  const { name, email, role, avatar } = req.body;
+  const { name, email, password, role, avatar } = req.body;
+  if (!password) {
+    return res.status(400).json({ error: 'Password is required' });
+  }
   try {
-    const stmt = db.prepare('INSERT INTO users (name, email, role, avatar) VALUES (?, ?, ?, ?)');
-    const result = stmt.run(name, email, role, avatar || `https://i.pravatar.cc/150?u=${email}`);
+    const stmt = db.prepare('INSERT INTO users (name, email, password, role, avatar) VALUES (?, ?, ?, ?, ?)');
+    const result = stmt.run(name, email, password, role, avatar || `https://i.pravatar.cc/150?u=${email}`);
     res.json({ id: result.lastInsertRowid });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
@@ -308,11 +311,16 @@ app.post('/api/users', (req, res) => {
 });
 
 app.put('/api/users/:id', (req, res) => {
-  const { name, email, role, avatar } = req.body;
+  const { name, email, password, role, avatar } = req.body;
   const { id } = req.params;
   try {
-    const stmt = db.prepare('UPDATE users SET name = ?, email = ?, role = ?, avatar = ? WHERE id = ?');
-    stmt.run(name, email, role, avatar, id);
+    if (password) {
+      const stmt = db.prepare('UPDATE users SET name = ?, email = ?, password = ?, role = ?, avatar = ? WHERE id = ?');
+      stmt.run(name, email, password, role, avatar, id);
+    } else {
+      const stmt = db.prepare('UPDATE users SET name = ?, email = ?, role = ?, avatar = ? WHERE id = ?');
+      stmt.run(name, email, role, avatar, id);
+    }
     res.json({ success: true });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
