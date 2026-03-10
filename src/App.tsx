@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -13,13 +13,15 @@ import Team from './pages/Team';
 import Lost from './pages/Lost';
 import ActivityPage from './pages/Activity';
 import Login from './pages/Login';
+import ChatPanel from './components/ChatPanel';
 import { firestoreService } from './services/firestoreService';
+import { chatService } from './services/chatService';
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
 }
 
-function Sidebar() {
+function Sidebar({ onOpenChat }: { onOpenChat: () => void }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -135,64 +137,74 @@ function Sidebar() {
           <span className="text-white font-semibold text-xl tracking-tight">CamptainM-CRM</span>
         </div>
         
-        <div className="relative">
+        <div className="flex items-center space-x-1">
           <button 
-            onClick={() => setShowNotifications(!showNotifications)}
-            className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors relative"
+            onClick={onOpenChat}
+            className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-blue-400 transition-colors relative"
+            title="Team Chat"
           >
-            <Bell className="w-5 h-5" />
-            {notifications.length > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-[#0A0F1C]">
-                {notifications.length}
-              </span>
-            )}
+            <MessageSquare className="w-5 h-5" />
           </button>
+          
+          <div className="relative">
+            <button 
+              onClick={() => setShowNotifications(!showNotifications)}
+              className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors relative"
+            >
+              <Bell className="w-5 h-5" />
+              {notifications.length > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-[#0A0F1C]">
+                  {notifications.length}
+                </span>
+              )}
+            </button>
 
-          {showNotifications && (
-            <div className="absolute left-0 mt-2 w-80 bg-[#0F172A] border border-white/10 rounded-xl shadow-2xl z-[100] overflow-hidden animate-in fade-in zoom-in duration-200">
-              <div className="p-4 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-white">Notifications</h3>
-                <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">{notifications.length} Unread</span>
-              </div>
-              <div className="max-h-96 overflow-y-auto custom-scrollbar">
-                {notifications.length > 0 ? (
-                  notifications.map((n) => (
-                    <div key={n.id} className="p-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors group">
-                      <div className="flex justify-between items-start mb-1">
-                        <h4 className="text-xs font-bold text-blue-400 uppercase tracking-wider">{n.title}</h4>
-                        <button 
-                          onClick={() => handleMarkRead(n.id)}
-                          className="text-[10px] text-slate-500 hover:text-white transition-colors"
-                        >
-                          Mark as read
-                        </button>
-                      </div>
-                      <p className="text-xs text-slate-300 leading-relaxed mb-2">{n.message}</p>
-                      <div className="flex items-center justify-between">
-                        {n.lead_id && (
-                          <Link 
-                            to={`/leads/${n.lead_id}`}
-                            onClick={() => setShowNotifications(false)}
-                            className="text-[10px] text-blue-500 hover:underline font-medium"
+            {showNotifications && (
+              <div className="absolute left-0 mt-2 w-80 bg-[#0F172A] border border-white/10 rounded-xl shadow-2xl z-[100] overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div className="p-4 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-white">Notifications</h3>
+                  <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">{notifications.length} Unread</span>
+                </div>
+                <div className="max-h-96 overflow-y-auto custom-scrollbar">
+                  {notifications.length > 0 ? (
+                    notifications.map((n) => (
+                      <div key={n.id} className="p-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors group">
+                        <div className="flex justify-between items-start mb-1">
+                          <h4 className="text-xs font-bold text-blue-400 uppercase tracking-wider">{n.title}</h4>
+                          <button 
+                            onClick={() => handleMarkRead(n.id)}
+                            className="text-[10px] text-slate-500 hover:text-white transition-colors"
                           >
-                            View Lead
-                          </Link>
-                        )}
-                        <span className="text-[10px] text-slate-500">
-                          {n.createdAt?.toDate ? format(n.createdAt.toDate(), 'h:mm a') : 'Just now'}
-                        </span>
+                            Mark as read
+                          </button>
+                        </div>
+                        <p className="text-xs text-slate-300 leading-relaxed mb-2">{n.message}</p>
+                        <div className="flex items-center justify-between">
+                          {n.lead_id && (
+                            <Link 
+                              to={`/leads/${n.lead_id}`}
+                              onClick={() => setShowNotifications(false)}
+                              className="text-[10px] text-blue-500 hover:underline font-medium"
+                            >
+                              View Lead
+                            </Link>
+                          )}
+                          <span className="text-[10px] text-slate-500">
+                            {n.createdAt?.toDate ? format(n.createdAt.toDate(), 'h:mm a') : 'Just now'}
+                          </span>
+                        </div>
                       </div>
+                    ))
+                  ) : (
+                    <div className="p-8 text-center">
+                      <Bell className="w-8 h-8 text-slate-700 mx-auto mb-3 opacity-20" />
+                      <p className="text-sm text-slate-500 italic">No new notifications</p>
                     </div>
-                  ))
-                ) : (
-                  <div className="p-8 text-center">
-                    <Bell className="w-8 h-8 text-slate-700 mx-auto mb-3 opacity-20" />
-                    <p className="text-sm text-slate-500 italic">No new notifications</p>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
@@ -259,6 +271,24 @@ function Sidebar() {
 
 export default function App() {
   const isAuthenticated = !!localStorage.getItem('userId');
+  const currentUserId = localStorage.getItem('userId');
+  const [isChatOpen, setIsChatOpen] = useState(false);
+
+  useEffect(() => {
+    if (isAuthenticated && currentUserId) {
+      chatService.setUserOnline(currentUserId, true);
+      
+      const handleBeforeUnload = () => {
+        chatService.setUserOnline(currentUserId, false);
+      };
+      
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        chatService.setUserOnline(currentUserId, false);
+      };
+    }
+  }, [isAuthenticated, currentUserId]);
 
   return (
     <Router>
@@ -269,7 +299,7 @@ export default function App() {
           element={
             isAuthenticated ? (
               <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30">
-                <Sidebar />
+                <Sidebar onOpenChat={() => setIsChatOpen(true)} />
                 <main className="flex-1 overflow-auto">
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
@@ -281,6 +311,7 @@ export default function App() {
                     <Route path="/activity" element={<ActivityPage />} />
                   </Routes>
                 </main>
+                <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
               </div>
             ) : (
               <Navigate to="/login" replace />

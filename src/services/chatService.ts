@@ -1,0 +1,152 @@
+import { 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  where, 
+  orderBy, 
+  serverTimestamp, 
+  arrayUnion, 
+  arrayRemove,
+  getDocs,
+  getDoc,
+  limit,
+  Timestamp
+} from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { db, storage } from "../firebase";
+
+const CHATS_COL = "chats";
+const MESSAGES_COL = "messages";
+const USERS_COL = "users";
+
+export const chatService = {
+  // User Status
+  async setUserOnline(userId: string, isOnline: boolean) {
+    try {
+      await updateDoc(doc(db, USERS_COL, userId), { isOnline });
+    } catch (err) {
+      console.error("Failed to set user status:", err);
+    }
+  },
+
+  // Chat Groups
+  async createChat(name: string, createdBy: string, members: string[]) {
+    return await addDoc(collection(db, CHATS_COL), {
+      name,
+      createdBy,
+      members: [...new Set([...members, createdBy])],
+      createdAt: serverTimestamp(),
+      typing: {}
+    });
+  },
+
+  async addMemberToChat(chatId: string, email: string) {
+    const usersSnap = await getDocs(query(collection(db, USERS_COL), where("email", "==", email)));
+    if (usersSnap.empty) throw new Error("User not found");
+    const userId = usersSnap.docs[0].id;
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      members: arrayUnion(userId)
+    });
+  },
+
+  getChats(userId: string, role: string, callback: (chats: any[]) => void) {
+    let q;
+    if (role === 'Administrator') {
+      q = query(collection(db, CHATS_COL), orderBy("createdAt", "desc"));
+    } else {
+      q = query(collection(db, CHATS_COL), where("members", "array-contains", userId), orderBy("createdAt", "desc"));
+    }
+
+    return onSnapshot(q, (snap) => {
+      const chats = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      callback(chats);
+    });
+  },
+
+  // Messages
+  async sendMessage(chatId: string, messageData: any) {
+    const msgRef = await addDoc(collection(db, CHATS_COL, chatId, MESSAGES_COL), {
+      ...messageData,
+      createdAt: serverTimestamp(),
+      seenBy: [messageData.senderId]
+    });
+
+    // Update chat document with last message info
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      lastMessage: messageData.text || `[${messageData.type}]`,
+      lastMessageAt: serverTimestamp(),
+      lastMessageSeenBy: [messageData.senderId]
+    });
+
+    return msgRef;
+  },
+
+  getMessages(chatId: string, callback: (messages: any[]) => void) {
+    const q = query(
+      collection(db, CHATS_COL, chatId, MESSAGES_COL), 
+      orderBy("createdAt", "asc")
+    );
+    return onSnapshot(q, (snap) => {
+      const messages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      callback(messages);
+    });
+  },
+
+  async markAsSeen(chatId: string, messageId: string, userId: string) {
+    await updateDoc(doc(db, CHATS_COL, chatId, MESSAGES_COL, messageId), {
+      seenBy: arrayUnion(userId)
+    });
+    // Also update chat-level seen status for the last message
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      lastMessageSeenBy: arrayUnion(userId)
+    });
+  },
+
+  // Files
+  async uploadFile(file: File) {
+    const storageRef = ref(storage, `chat_files/${Date.now()}_${file.name}`);
+    await uploadBytes(storageRef, file);
+    return await getDownloadURL(storageRef);
+  },
+
+  // Typing Indicator
+  async setTyping(chatId: string, userId: string, isTyping: boolean) {
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      [`typing.${userId}`]: isTyping
+    });
+  },
+
+  // Pinning
+  async pinMessage(chatId: string, messageId: string | null) {
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      pinnedMessageId: messageId
+    });
+  },
+
+  async getPinnedMessage(chatId: string, messageId: string) {
+    const docSnap = await getDoc(doc(db, CHATS_COL, chatId, MESSAGES_COL, messageId));
+    return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } : null;
+  },
+
+  // Search
+  async searchMessages(chatId: string, searchTerm: string) {
+    // Firestore doesn't support full-text search well. We'll fetch and filter client-side for simplicity
+    // or use a more complex query if needed. For now, client-side.
+    const q = query(collection(db, CHATS_COL, chatId, MESSAGES_COL), orderBy("createdAt", "desc"), limit(100));
+    const snap = await getDocs(q);
+    const messages = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    return messages.filter((m: any) => 
+      (m.text && m.text.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (m.senderName && m.senderName.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+  },
+
+  // Users
+  async getAllUsers() {
+    const snap = await getDocs(collection(db, USERS_COL));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  }
+};
