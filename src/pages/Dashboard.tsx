@@ -1,29 +1,35 @@
 import { useEffect, useState } from 'react';
 import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart as RePieChart, Pie } from 'recharts';
+import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [timeRange, setTimeRange] = useState<'1d' | '1w' | '1m' | 'all'>('all');
+  const [isLoading, setIsLoading] = useState(true);
+
+  const loadData = async () => {
+    setIsLoading(true);
+    try {
+      const user = {
+        id: localStorage.getItem('userId'),
+        role: localStorage.getItem('userRole')
+      };
+      const body = await firestoreService.getDashboardStats(user, timeRange);
+      setData(body);
+    } catch (err: any) {
+      console.error('Dashboard Load Error:', err);
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        const user = {
-          id: localStorage.getItem('userId'),
-          role: localStorage.getItem('userRole')
-        };
-        const body = await firestoreService.getDashboardStats(user);
-        setData(body);
-      } catch (err: any) {
-        console.error('Dashboard Load Error:', err);
-        setError(err.message);
-      }
-    };
-
     loadData();
-  }, []);
+  }, [timeRange]);
 
   if (error) {
     return (
@@ -50,14 +56,14 @@ export default function Dashboard() {
     );
   }
 
-  if (!data) return <div className="p-8 text-slate-400 animate-pulse">Loading dashboard...</div>;
+  if (!data || isLoading) return <div className="p-8 text-slate-400 animate-pulse">Loading dashboard...</div>;
 
   const stats = [
-    { name: 'Total Leads', value: data.total, icon: Users, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+    { name: 'Total Leads', value: data.total, change: data.totalChange, icon: Users, color: 'text-blue-500', bg: 'bg-blue-500/10' },
     { name: 'New Today', value: data.newToday, icon: UserPlus, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
-    { name: 'Active Leads', value: data.active, icon: Activity, color: 'text-amber-500', bg: 'bg-amber-500/10' },
-    { name: 'Converted', value: data.converted, icon: CheckCircle, color: 'text-cyan-500', bg: 'bg-cyan-500/10' },
-    { name: 'Lost', value: data.lost, icon: XCircle, color: 'text-rose-500', bg: 'bg-rose-500/10' },
+    { name: 'Active Leads', value: data.active, change: data.activeChange, icon: Activity, color: 'text-amber-500', bg: 'bg-amber-500/10' },
+    { name: 'Converted', value: data.converted, change: data.convertedChange, icon: CheckCircle, color: 'text-cyan-500', bg: 'bg-cyan-500/10' },
+    { name: 'Lost / No Pot.', value: data.lost, change: data.lostChange, icon: XCircle, color: 'text-rose-500', bg: 'bg-rose-500/10' },
     { name: 'Duplicates', value: data.duplicates, icon: ShieldAlert, color: 'text-amber-500', bg: 'bg-amber-500/10' },
   ];
 
@@ -65,15 +71,37 @@ export default function Dashboard() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-white tracking-tight">Dashboard Overview</h1>
           <p className="text-sm text-slate-400 mt-1">Real-time operational metrics and team performance.</p>
         </div>
-        <button className="shimmer-btn bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20">
-          <BarChart3 className="w-4 h-4" />
-          <span>Generate Report</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <div className="flex items-center bg-white/5 border border-white/10 rounded-lg p-1">
+            {[
+              { id: '1d', label: '1D' },
+              { id: '1w', label: '1W' },
+              { id: '1m', label: '1M' },
+              { id: 'all', label: 'All' },
+            ].map((range) => (
+              <button
+                key={range.id}
+                onClick={() => setTimeRange(range.id as any)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                  timeRange === range.id 
+                    ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' 
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                {range.label}
+              </button>
+            ))}
+          </div>
+          <button className="shimmer-btn bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20">
+            <BarChart3 className="w-4 h-4" />
+            <span>Generate Report</span>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -83,6 +111,14 @@ export default function Dashboard() {
               <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${stat.bg}`}>
                 <stat.icon className={`w-5 h-5 ${stat.color}`} />
               </div>
+              {stat.change !== undefined && timeRange !== 'all' && (
+                <div className="flex flex-col items-end">
+                  <div className={`flex items-center text-[10px] font-bold ${stat.change >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    {stat.change >= 0 ? '+' : ''}{stat.change}%
+                  </div>
+                  <span className="text-[8px] text-slate-500 uppercase font-medium">Growth</span>
+                </div>
+              )}
             </div>
             <div className="mt-4">
               <h3 className="text-3xl font-semibold text-white">{stat.value}</h3>
@@ -123,9 +159,15 @@ export default function Dashboard() {
           </div>
           <div className="grid grid-cols-2 gap-2 mt-4">
             {data.leadsByStatus.map((status: any, index: number) => (
-              <div key={status.status} className="flex items-center space-x-2">
-                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                <span className="text-xs text-slate-400">{status.status}: {status.count}</span>
+              <div key={status.status} className="flex items-center justify-between p-2 rounded-lg bg-white/[0.02] border border-white/5">
+                <div className="flex items-center space-x-2">
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
+                  <span className="text-[10px] text-slate-400 font-medium truncate max-w-[80px]">{status.status}</span>
+                </div>
+                <div className="flex flex-col items-end">
+                  <span className="text-xs font-bold text-white">{status.count}</span>
+                  <span className="text-[9px] text-slate-500">{Math.round((status.count / data.total) * 100) || 0}%</span>
+                </div>
               </div>
             ))}
           </div>
@@ -187,10 +229,44 @@ export default function Dashboard() {
                   </div>
                   <span className="text-sm font-medium text-slate-200">{source.source}</span>
                 </div>
-                <span className="text-sm font-semibold text-white">{source.count}</span>
+                <div className="flex flex-col items-end">
+                  <span className="text-sm font-semibold text-white">{source.count}</span>
+                  <span className="text-[10px] text-slate-500">{Math.round((source.count / data.total) * 100) || 0}%</span>
+                </div>
               </div>
             ))}
           </div>
+        </div>
+      </div>
+
+      <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
+        <h3 className="text-lg font-medium text-white mb-6 flex items-center space-x-2">
+          <Activity className="w-5 h-5 text-blue-500" />
+          <span>Recent CRM Activity</span>
+        </h3>
+        <div className="space-y-4">
+          {data.recentActivity?.map((activity: any) => (
+            <div key={activity.id} className="flex items-center justify-between p-3 rounded-lg bg-white/[0.01] border border-white/5 hover:bg-white/[0.03] transition-colors">
+              <div className="flex items-center space-x-4">
+                <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center">
+                  <Activity className="w-4 h-4 text-blue-400" />
+                </div>
+                <div>
+                  <p className="text-sm text-white">
+                    <span className="font-semibold text-blue-400">{activity.userName}</span>
+                    <span className="mx-1 text-slate-400">{activity.action}</span>
+                  </p>
+                  <p className="text-xs text-slate-500">{activity.details}</p>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-500 font-mono">
+                {activity.createdAt?.toDate ? format(activity.createdAt.toDate(), 'HH:mm') : 'Just now'}
+              </span>
+            </div>
+          ))}
+          {(!data.recentActivity || data.recentActivity.length === 0) && (
+            <p className="text-center py-8 text-slate-500 text-sm italic">No recent activity recorded.</p>
+          )}
         </div>
       </div>
     </div>

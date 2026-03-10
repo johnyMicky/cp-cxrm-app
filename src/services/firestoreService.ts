@@ -348,26 +348,81 @@ export const firestoreService = {
   },
 
   // Dashboard
-  async getDashboardStats(user: any) {
+  async getDashboardStats(user: any, timeRange: '1d' | '1w' | '1m' | 'all' = 'all') {
     const leadsSnap = await getDocs(collection(db, LEADS_COL));
     const leads = leadsSnap.docs.map(d => d.data());
     
     const isAgent = user.role === 'Agent';
     const filteredLeads = isAgent ? leads.filter(l => l.assigned_to === user.id) : leads;
 
+    const now = new Date();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    let startDate = new Date(0); // Default to all time
+    let prevStartDate = new Date(0);
+    let prevEndDate = new Date(0);
+
+    if (timeRange === '1d') {
+      startDate = new Date(today);
+      prevStartDate = new Date(today);
+      prevStartDate.setDate(prevStartDate.getDate() - 1);
+      prevEndDate = new Date(today);
+    } else if (timeRange === '1w') {
+      startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 7);
+      prevStartDate = new Date(startDate);
+      prevStartDate.setDate(prevStartDate.getDate() - 7);
+      prevEndDate = new Date(startDate);
+    } else if (timeRange === '1m') {
+      startDate = new Date(now);
+      startDate.setMonth(startDate.getMonth() - 1);
+      prevStartDate = new Date(startDate);
+      prevStartDate.setMonth(prevStartDate.getMonth() - 1);
+      prevEndDate = new Date(startDate);
+    }
+
+    const getLeadsInPeriod = (leadsList: any[], start: Date, end: Date = new Date()) => {
+      return leadsList.filter(l => {
+        const created = l.createdAt?.toDate ? l.createdAt.toDate() : new Date(l.createdAt || 0);
+        return created >= start && created < end;
+      });
+    };
+
+    const currentLeads = timeRange === 'all' ? filteredLeads : getLeadsInPeriod(filteredLeads, startDate);
+    const previousLeads = timeRange === 'all' ? [] : getLeadsInPeriod(filteredLeads, prevStartDate, prevEndDate);
+
+    const calculateStats = (leadsList: any[]) => {
+      return {
+        total: leadsList.length,
+        active: leadsList.filter(l => !['Deposit', 'Lost', 'No Potential'].includes(l.status)).length,
+        converted: leadsList.filter(l => l.status === 'Deposit').length,
+        lost: leadsList.filter(l => ['Lost', 'No Potential'].includes(l.status)).length,
+      };
+    };
+
+    const currentStats = calculateStats(currentLeads);
+    const previousStats = calculateStats(previousLeads);
+
+    const getChange = (current: number, previous: number) => {
+      if (previous === 0) return current > 0 ? 100 : 0;
+      return Math.round(((current - previous) / previous) * 100);
+    };
+
     const stats = {
-      total: filteredLeads.length,
+      total: currentStats.total,
+      totalChange: getChange(currentStats.total, previousStats.total),
       newToday: filteredLeads.filter(l => {
-        const created = l.createdAt?.toDate ? l.createdAt.toDate() : new Date(l.createdAt);
+        const created = l.createdAt?.toDate ? l.createdAt.toDate() : new Date(l.createdAt || 0);
         return created >= today;
       }).length,
-      active: filteredLeads.filter(l => !['Deposit', 'Lost'].includes(l.status)).length,
-      converted: filteredLeads.filter(l => l.status === 'Deposit').length,
-      lost: filteredLeads.filter(l => l.status === 'Lost').length,
-      duplicates: 0, // Simplified
+      active: currentStats.active,
+      activeChange: getChange(currentStats.active, previousStats.active),
+      converted: currentStats.converted,
+      convertedChange: getChange(currentStats.converted, previousStats.converted),
+      lost: currentStats.lost,
+      lostChange: getChange(currentStats.lost, previousStats.lost),
+      duplicates: 0, 
       leadsByStatus: [] as any[],
       usersByRole: [] as any[],
       topSources: [] as any[],
@@ -376,10 +431,12 @@ export const firestoreService = {
 
     // Group by status
     const statusMap: any = {};
-    filteredLeads.forEach(l => {
+    currentLeads.forEach(l => {
       statusMap[l.status] = (statusMap[l.status] || 0) + 1;
     });
-    stats.leadsByStatus = Object.entries(statusMap).map(([status, count]) => ({ status, count }));
+    stats.leadsByStatus = Object.entries(statusMap)
+      .map(([status, count]) => ({ status, count }))
+      .sort((a: any, b: any) => b.count - a.count);
 
     // Users by role
     const usersSnap = await getDocs(collection(db, USERS_COL));
@@ -388,11 +445,13 @@ export const firestoreService = {
     users.forEach((u: any) => {
       roleMap[u.role] = (roleMap[u.role] || 0) + 1;
     });
-    stats.usersByRole = Object.entries(roleMap).map(([role, count]) => ({ role, count }));
+    stats.usersByRole = Object.entries(roleMap)
+      .map(([role, count]) => ({ role, count }))
+      .sort((a: any, b: any) => b.count - a.count);
 
     // Top Sources
     const sourceMap: any = {};
-    filteredLeads.forEach(l => {
+    currentLeads.forEach(l => {
       if (l.source) {
         sourceMap[l.source] = (sourceMap[l.source] || 0) + 1;
       }
@@ -405,14 +464,30 @@ export const firestoreService = {
     // Workload (for agents)
     const agents = users.filter((u: any) => ['Agent', 'Team Leader'].includes(u.role));
     stats.workload = agents.map((agent: any) => {
-      const agentLeads = leads.filter(l => l.assigned_to === agent.id);
+      const agentLeads = currentLeads.filter(l => l.assigned_to === agent.id);
       return {
         name: agent.name,
         new_leads: agentLeads.filter(l => l.status === 'New').length,
-        in_progress: agentLeads.filter(l => !['New', 'Deposit', 'Lost'].includes(l.status)).length,
-        completed: agentLeads.filter(l => l.status === 'Deposit').length
+        in_progress: agentLeads.filter(l => !['New', 'Deposit', 'Lost', 'No Potential'].includes(l.status)).length,
+        completed: agentLeads.filter(l => l.status === 'Deposit').length,
+        total: agentLeads.length
       };
-    }).slice(0, 5);
+    })
+    .sort((a: any, b: any) => b.total - a.total)
+    .slice(0, 5);
+
+    // Recent Activity
+    const historySnap = await getDocs(query(collection(db, "history"), orderBy("createdAt", "desc"), limit(10)));
+    const recentActivity = historySnap.docs.map(d => {
+      const data = d.data();
+      const user = users.find((u: any) => u.id === data.user_id) as any;
+      return {
+        id: d.id,
+        ...data,
+        userName: user?.name || 'Unknown User'
+      };
+    });
+    (stats as any).recentActivity = recentActivity;
 
     return stats;
   }
