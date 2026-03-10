@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
+import { firestoreService } from '../services/firestoreService';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -15,25 +16,19 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
+      const data: any = await firestoreService.login(email, password);
 
-      const data = await res.json();
-
-      if (res.ok) {
+      if (data) {
         localStorage.setItem('userId', data.id.toString());
         localStorage.setItem('userRole', data.role);
         localStorage.setItem('userName', data.name);
         localStorage.setItem('userAvatar', data.avatar);
         window.location.href = '/';
       } else {
-        setError(data.error || 'Invalid credentials');
+        setError('Invalid credentials');
       }
-    } catch (err) {
-      setError('Failed to connect to server');
+    } catch (err: any) {
+      setError(err.message || 'Failed to connect to Firestore');
     } finally {
       setLoading(false);
     }

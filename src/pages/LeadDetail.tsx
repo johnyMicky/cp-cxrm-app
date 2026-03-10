@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
-import { apiFetch } from '../utils/api';
+import { firestoreService } from '../services/firestoreService';
 
 export default function LeadDetail() {
   const { id } = useParams();
@@ -14,23 +14,17 @@ export default function LeadDetail() {
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<any>({});
   
-  const currentUserId = localStorage.getItem('userId');
+  const currentUserId = localStorage.getItem('userId') || '1';
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
 
   useEffect(() => {
     const loadData = async () => {
+      if (!id) return;
       try {
-        const [leadRes, usersRes] = await Promise.all([
-          apiFetch(`/api/leads/${id}`),
-          apiFetch('/api/users')
+        const [leadData, usersData] = await Promise.all([
+          firestoreService.getLead(id),
+          firestoreService.getUsers()
         ]);
-
-        if (!leadRes.ok || !usersRes.ok) {
-          throw new Error('Failed to fetch lead data');
-        }
-
-        const leadData = await leadRes.json();
-        const usersData = await usersRes.json();
 
         setLead(leadData);
         setEditForm(leadData);
@@ -46,30 +40,40 @@ export default function LeadDetail() {
   if (!lead) return <div className="p-8 text-slate-400">Loading lead details...</div>;
 
   const handleSave = async () => {
-    await apiFetch(`/api/leads/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...editForm, user_id: currentUserId })
-    });
+    if (!id) return;
+    await firestoreService.updateLead(id, { ...editForm });
     
-    const res = await apiFetch(`/api/leads/${id}`);
-    const data = await res.json();
+    // Log reassignment or status change
+    if (lead.status !== editForm.status) {
+      await firestoreService.logActivity({
+        lead_id: id,
+        user_id: currentUserId,
+        action: 'Status Changed',
+        details: `Status changed from ${lead.status} to ${editForm.status}`
+      });
+    }
+    if (lead.assigned_to !== editForm.assigned_to) {
+      const assignedUser = editForm.assigned_to ? users.find(u => u.id === editForm.assigned_to) : { name: 'Unassigned' };
+      await firestoreService.logActivity({
+        lead_id: id,
+        user_id: currentUserId,
+        action: 'Reassigned',
+        details: `Assigned to ${assignedUser?.name || 'Unassigned'}`
+      });
+    }
+
+    const data = await firestoreService.getLead(id);
     setLead(data);
     setIsEditing(false);
   };
 
   const handleAddNote = async () => {
-    if (!noteContent.trim()) return;
+    if (!noteContent.trim() || !id) return;
     
-    await apiFetch(`/api/leads/${id}/notes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: noteContent, user_id: currentUserId })
-    });
+    await firestoreService.addNote(id, currentUserId, noteContent);
     
     setNoteContent('');
-    const res = await apiFetch(`/api/leads/${id}`);
-    const data = await res.json();
+    const data = await firestoreService.getLead(id);
     setLead(data);
   };
 
@@ -81,12 +85,9 @@ export default function LeadDetail() {
     
     if (!confirm('Are you sure you want to delete this lead? This action cannot be undone.')) return;
     
-    const res = await apiFetch(`/api/leads/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      navigate('/leads');
-    } else {
-      alert('Failed to delete lead');
-    }
+    if (!id) return;
+    await firestoreService.deleteLead(id);
+    navigate('/leads');
   };
 
   const getStatusColor = (status: string) => {

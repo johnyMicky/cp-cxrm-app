@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { X, Check, AlertCircle } from 'lucide-react';
+import { firestoreService } from '../services/firestoreService';
 
 interface User {
-  id: number;
+  id: string;
   name: string;
   role: string;
   avatar: string;
@@ -30,9 +31,8 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch('/api/users')
-      .then(res => res.json())
-      .then(data => setUsers(data.filter((u: User) => ['Agent', 'Team Leader', 'Manager'].includes(u.role))));
+    firestoreService.getUsers()
+      .then(data => setUsers(data.filter((u: any) => ['Agent', 'Team Leader', 'Manager'].includes(u.role)) as User[]));
   }, []);
 
   const validate = () => {
@@ -51,25 +51,24 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
 
     setIsSubmitting(true);
     try {
-      const response = await fetch('/api/leads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const currentUserId = localStorage.getItem('userId') || '1';
+      
+      if (initialData?.id) {
+        await firestoreService.updateLead(initialData.id, {
           ...formData,
-          assigned_to: formData.assigned_to ? parseInt(formData.assigned_to as string) : null,
-          user_id: 1 // Hardcoded admin user for now
-        })
-      });
-
-      if (response.ok) {
-        onSuccess();
-        onClose();
+          updatedBy: currentUserId
+        });
       } else {
-        const data = await response.json();
-        setErrors({ submit: data.error || 'Failed to create lead' });
+        await firestoreService.createLead({
+          ...formData,
+          createdBy: currentUserId
+        });
       }
+
+      onSuccess();
+      onClose();
     } catch (error) {
-      setErrors({ submit: 'Network error. Please try again.' });
+      setErrors({ submit: 'Failed to save lead. Please try again.' });
     } finally {
       setIsSubmitting(false);
     }

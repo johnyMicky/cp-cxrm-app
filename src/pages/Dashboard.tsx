@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart as RePieChart, Pie } from 'recharts';
-import { apiFetch } from '../utils/api';
+import { firestoreService } from '../services/firestoreService';
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null);
@@ -10,21 +10,11 @@ export default function Dashboard() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const res = await apiFetch('/api/dashboard?t=' + Date.now());
-        const contentType = res.headers.get('content-type');
-        
-        if (!contentType || !contentType.includes('application/json')) {
-          const text = await res.text();
-          console.error('Non-JSON response:', text);
-          throw new Error('Server returned non-JSON response (likely HTML). This usually means the API route was not found or the server is misconfigured.');
-        }
-
-        const body = await res.json();
-        
-        if (!res.ok) {
-          setData(body);
-          throw new Error(body.error || 'Server returned error ' + res.status);
-        }
+        const user = {
+          id: localStorage.getItem('userId'),
+          role: localStorage.getItem('userRole')
+        };
+        const body = await firestoreService.getDashboardStats(user);
         setData(body);
       } catch (err: any) {
         console.error('Dashboard Load Error:', err);

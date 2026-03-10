@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, Upload, Download, AlertCircle, CheckCircle2, FileText, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { apiFetch } from '../utils/api';
+import { firestoreService } from '../services/firestoreService';
 
 interface LeadImportProps {
   onClose: () => void;
@@ -131,18 +131,10 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
         uniqueLeads.push(lead);
       }
 
-      // Send to backend
-      const response = await apiFetch('/api/leads/bulk', {
-        method: 'POST',
-        body: JSON.stringify({
-          leads: uniqueLeads,
-          user_id: parseInt(localStorage.getItem('userId') || '1')
-        })
-      });
+      // Send to firestore
+      const currentUserId = localStorage.getItem('userId') || '1';
+      const result = await firestoreService.bulkCreateLeads(uniqueLeads, currentUserId);
 
-      if (!response.ok) throw new Error('Failed to import leads.');
-
-      const result = await response.json();
       setSummary({
         total: jsonData.length,
         valid: leadsToImport.length,

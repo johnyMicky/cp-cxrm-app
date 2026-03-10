@@ -4,7 +4,7 @@ import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Sq
 import { format } from 'date-fns';
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
-import { apiFetch } from '../utils/api';
+import { firestoreService } from '../services/firestoreService';
 
 const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
 
@@ -12,14 +12,14 @@ export default function Leads() {
   const [leads, setLeads] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
   const [search, setSearch] = useState('');
-  const [selectedLeads, setSelectedLeads] = useState<number[]>([]);
+  const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState({
     statuses: [] as string[],
     source: '',
-    agents: [] as number[],
+    agents: [] as string[],
     country: ''
   });
   const [activeDropdown, setActiveDropdown] = useState<'status' | 'agent' | 'bulkStatus' | 'bulkAssign' | null>(null);
@@ -27,21 +27,20 @@ export default function Leads() {
   const [agentSearch, setAgentSearch] = useState('');
   const [isReshuffleModalOpen, setIsReshuffleModalOpen] = useState(false);
   const [reshuffleStatuses, setReshuffleStatuses] = useState<string[]>([]);
-  const [reshuffleAgents, setReshuffleAgents] = useState<number[]>([]);
-  const [selectedBulkAgents, setSelectedBulkAgents] = useState<number[]>([]);
+  const [reshuffleAgents, setReshuffleAgents] = useState<string[]>([]);
+  const [selectedBulkAgents, setSelectedBulkAgents] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState<{ type: 'status' | 'assign' | 'reshuffle' | null, value: any }>({ type: null, value: null });
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('Lead created successfully');
   
   const currentUser = { 
-    id: parseInt(localStorage.getItem('userId') || '1'),
+    id: localStorage.getItem('userId') || '1',
     role: localStorage.getItem('userRole') || 'Administrator' 
   };
 
   const fetchLeads = async () => {
     try {
-      const res = await apiFetch('/api/leads');
-      const data = await res.json();
+      const data = await firestoreService.getLeads(currentUser.role === 'Agent' ? currentUser.id : undefined);
       setLeads(data);
     } catch (err) {
       console.error('Failed to fetch leads:', err);
@@ -50,8 +49,7 @@ export default function Leads() {
 
   const fetchAgents = async () => {
     try {
-      const res = await apiFetch('/api/users');
-      const data = await res.json();
+      const data = await firestoreService.getUsers();
       setAgents(data.filter((u: any) => ['Agent', 'Team Leader', 'Manager'].includes(u.role)));
     } catch (err) {
       console.error('Failed to fetch agents:', err);
@@ -131,15 +129,8 @@ export default function Leads() {
 
   const handleBulkStatusUpdate = async (status: string) => {
     try {
-      const res = await apiFetch('/api/leads/bulk-status', {
-        method: 'POST',
-        body: JSON.stringify({
-          lead_ids: selectedLeads,
-          status,
-          user_id: currentUser.id
-        })
-      });
-      if (res.ok) handleSuccess(`Updated status for ${selectedLeads.length} leads`);
+      await firestoreService.bulkUpdateLeadsStatus(selectedLeads, status, currentUser.id);
+      handleSuccess(`Updated status for ${selectedLeads.length} leads`);
     } catch (err) {
       console.error('Bulk status update failed:', err);
     }
@@ -148,19 +139,10 @@ export default function Leads() {
   const handleBulkAssign = async () => {
     if (selectedBulkAgents.length === 0) return;
     try {
-      const res = await apiFetch('/api/leads/distribute', {
-        method: 'POST',
-        body: JSON.stringify({
-          lead_ids: selectedLeads,
-          agent_ids: selectedBulkAgents,
-          user_id: currentUser.id
-        })
-      });
-      if (res.ok) {
-        handleSuccess(`Distributed ${selectedLeads.length} leads among ${selectedBulkAgents.length} agents`);
-        setSelectedBulkAgents([]);
-        setActiveDropdown(null);
-      }
+      await firestoreService.distributeLeads(selectedLeads, selectedBulkAgents, currentUser.id);
+      handleSuccess(`Distributed ${selectedLeads.length} leads among ${selectedBulkAgents.length} agents`);
+      setSelectedBulkAgents([]);
+      setActiveDropdown(null);
     } catch (err) {
       console.error('Bulk assign failed:', err);
     }
@@ -168,16 +150,12 @@ export default function Leads() {
 
   const handleReshuffle = async () => {
     try {
-      const res = await apiFetch('/api/leads/reshuffle', {
-        method: 'POST',
-        body: JSON.stringify({
-          agent_ids: reshuffleAgents.length > 0 ? reshuffleAgents : agents.map(a => a.id),
-          user_id: currentUser.id,
-          status_filter: reshuffleStatuses
-        })
-      });
-      const data = await res.json();
-      if (res.ok) handleSuccess(`Reshuffled ${data.reshuffledCount || 0} leads`);
+      const reshuffledCount = await firestoreService.reshuffleLeads(
+        reshuffleAgents.length > 0 ? reshuffleAgents : agents.map(a => a.id),
+        currentUser.id,
+        reshuffleStatuses
+      );
+      handleSuccess(`Reshuffled ${reshuffledCount || 0} leads`);
     } catch (err) {
       console.error('Reshuffle failed:', err);
     }

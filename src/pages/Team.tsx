@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Search, UserPlus, Mail, Shield, Trash2, Edit2, AlertCircle } from 'lucide-react';
 import { format } from 'date-fns';
-import { apiFetch } from '../utils/api';
+import { firestoreService } from '../services/firestoreService';
 
 interface User {
-  id: number;
+  id: string;
   name: string;
   email: string;
   role: string;
@@ -24,13 +24,8 @@ export default function Team() {
   const fetchUsers = async () => {
     setIsLoading(true);
     try {
-      const res = await apiFetch('/api/users');
-      const contentType = res.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        throw new Error('Server returned non-JSON response');
-      }
-      const data = await res.json();
-      setUsers(data);
+      const data = await firestoreService.getUsers();
+      setUsers(data as User[]);
     } catch (err) {
       console.error('Failed to fetch users:', err);
     } finally {
@@ -42,19 +37,14 @@ export default function Team() {
     fetchUsers();
   }, []);
 
-  const handleDeleteUser = async (id: number) => {
+  const handleDeleteUser = async (id: string) => {
     if (!confirm('Are you sure you want to delete this user?')) return;
     
     try {
-      const res = await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        fetchUsers();
-      } else {
-        const data = await res.json();
-        alert(data.error || 'Failed to delete user');
-      }
+      await firestoreService.deleteUser(id);
+      fetchUsers();
     } catch (err) {
-      alert('Network error');
+      alert('Failed to delete user');
     }
   };
 
@@ -220,33 +210,12 @@ function UserModal({ user, onClose, onSuccess }: { user: User | null, onClose: (
     setError(null);
 
     try {
-      const url = user ? `/api/users/${user.id}` : '/api/users';
-      const method = user ? 'PUT' : 'POST';
-      
-      // Only include password if it's a new user or if it's being changed
-      const payload = { ...formData };
-      if (user && !payload.password) {
-        delete (payload as any).password;
-      }
-      
-      const res = await apiFetch(url, {
-        method,
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        onSuccess();
+      if (user) {
+        await firestoreService.updateUser(user.id, formData);
       } else {
-        const contentType = res.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const data = await res.json();
-          setError(data.error || 'Something went wrong');
-        } else {
-          const text = await res.text();
-          console.error('Server error:', text);
-          setError(`Server error: ${res.status} ${res.statusText}`);
-        }
+        await firestoreService.createUser(formData);
       }
+      onSuccess();
     } catch (err: any) {
       console.error('Submit error:', err);
       setError(err.message || 'Network error');

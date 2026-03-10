@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Users, Filter, CheckSquare, Square, ArrowRightLeft, RefreshCw } from 'lucide-react';
-import { apiFetch } from '../utils/api';
+import { firestoreService } from '../services/firestoreService';
 
 export default function Dispatcher() {
   const [leads, setLeads] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
-  const [selectedLeads, setSelectedLeads] = useState<number[]>([]);
-  const [selectedAgents, setSelectedAgents] = useState<number[]>([]);
+  const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
+  const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
   const [isDistributing, setIsDistributing] = useState(false);
   
-  const currentUserId = localStorage.getItem('userId');
+  const currentUserId = localStorage.getItem('userId') || '1';
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
 
   useEffect(() => {
@@ -18,17 +18,10 @@ export default function Dispatcher() {
 
   const fetchData = async () => {
     try {
-      const [leadsRes, usersRes] = await Promise.all([
-        apiFetch('/api/leads'),
-        apiFetch('/api/users')
+      const [leadsData, usersData] = await Promise.all([
+        firestoreService.getLeads(),
+        firestoreService.getUsers()
       ]);
-
-      if (!leadsRes.ok || !usersRes.ok) {
-        throw new Error('Failed to fetch dispatcher data');
-      }
-
-      const leadsData = await leadsRes.json();
-      const usersData = await usersRes.json();
 
       setLeads(leadsData.filter((l: any) => l.status === 'New' || l.assigned_to === null));
       setUsers(usersData.filter((u: any) => ['Agent', 'Team Leader', 'Manager'].includes(u.role)));
@@ -37,7 +30,7 @@ export default function Dispatcher() {
     }
   };
 
-  const handleSelectLead = (id: number) => {
+  const handleSelectLead = (id: string) => {
     setSelectedLeads(prev => 
       prev.includes(id) ? prev.filter(l => l !== id) : [...prev, id]
     );
@@ -51,7 +44,7 @@ export default function Dispatcher() {
     }
   };
 
-  const handleSelectAgent = (id: number) => {
+  const handleSelectAgent = (id: string) => {
     setSelectedAgents(prev => 
       prev.includes(id) ? prev.filter(a => a !== id) : [...prev, id]
     );
@@ -61,20 +54,16 @@ export default function Dispatcher() {
     if (selectedLeads.length === 0 || selectedAgents.length === 0) return;
     
     setIsDistributing(true);
-    await apiFetch('/api/leads/distribute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        lead_ids: selectedLeads,
-        agent_ids: selectedAgents,
-        user_id: currentUserId
-      })
-    });
-    
-    setSelectedLeads([]);
-    setSelectedAgents([]);
-    fetchData();
-    setIsDistributing(false);
+    try {
+      await firestoreService.distributeLeads(selectedLeads, selectedAgents, currentUserId);
+      setSelectedLeads([]);
+      setSelectedAgents([]);
+      fetchData();
+    } catch (err) {
+      console.error('Distribute Error:', err);
+    } finally {
+      setIsDistributing(false);
+    }
   };
 
   if (currentUserRole !== 'Administrator' && currentUserRole !== 'Manager') {

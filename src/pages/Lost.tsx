@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { XCircle, ShieldAlert, Search, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { apiFetch } from '../utils/api';
+import { firestoreService } from '../services/firestoreService';
 
 export default function Lost() {
   const [leads, setLeads] = useState<any[]>([]);
@@ -12,17 +12,14 @@ export default function Lost() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [leadsRes, dashboardRes] = await Promise.all([
-          apiFetch('/api/leads'),
-          apiFetch('/api/dashboard')
+        const user = {
+          id: localStorage.getItem('userId'),
+          role: localStorage.getItem('userRole')
+        };
+        const [leadsData, dashboardData] = await Promise.all([
+          firestoreService.getLeads(),
+          firestoreService.getDashboardStats(user)
         ]);
-
-        if (!leadsRes.ok || !dashboardRes.ok) {
-          throw new Error('Failed to fetch data');
-        }
-
-        const leadsData = await leadsRes.json();
-        const dashboardData = await dashboardRes.json();
 
         setLeads(leadsData.filter((l: any) => l.status === 'Lost' || l.status === 'Underage' || l.status === 'No Experience'));
         setDuplicatesCount(dashboardData.duplicates || 0);

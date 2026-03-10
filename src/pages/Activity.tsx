@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Activity as ActivityIcon, Clock, User, MessageSquare, ArrowRight } from 'lucide-react';
 import { format } from 'date-fns';
 import { Link } from 'react-router-dom';
-import { apiFetch } from '../utils/api';
+import { firestoreService } from '../services/firestoreService';
 
 export default function Activity() {
   const [history, setHistory] = useState<any[]>([]);
@@ -11,12 +11,7 @@ export default function Activity() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const res = await apiFetch('/api/history');
-        const contentType = res.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-          throw new Error('Server returned non-JSON response');
-        }
-        const data = await res.json();
+        const data = await firestoreService.getHistory();
         setHistory(data);
         setLoading(false);
       } catch (err) {
