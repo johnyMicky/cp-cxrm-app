@@ -109,7 +109,7 @@ export default function Dashboard() {
             <span>Leads by Status</span>
           </h3>
           <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <RePieChart>
                 <Pie
                   data={data.leadsByStatus}
@@ -169,7 +169,7 @@ export default function Dashboard() {
         <div className="lg:col-span-2 bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
           <h3 className="text-lg font-medium text-white mb-6">Top Agent Workload</h3>
           <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <BarChart data={data.workload} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
                 <XAxis dataKey="name" stroke="#ffffff40" tick={{ fill: '#ffffff80', fontSize: 12 }} axisLine={false} tickLine={false} />
