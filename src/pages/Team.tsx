@@ -91,7 +91,7 @@ export default function Team() {
             setEditingUser(null);
             setIsModalOpen(true);
           }}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center justify-center space-x-2 shadow-lg shadow-blue-500/20"
+          className="shimmer-btn bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center justify-center space-x-2 shadow-lg shadow-blue-500/20"
         >
           <UserPlus className="w-4 h-4" />
           <span>Add Team Member</span>
@@ -319,7 +319,7 @@ function UserModal({ user, onClose, onSuccess }: { user: User | null, onClose: (
             <button 
               type="submit"
               disabled={isSubmitting}
-              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg text-sm font-medium transition-all shadow-lg shadow-blue-500/20"
+              className="shimmer-btn bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg text-sm font-medium transition-all shadow-lg shadow-blue-500/20"
             >
               {isSubmitting ? 'Saving...' : user ? 'Update User' : 'Create User'}
             </button>

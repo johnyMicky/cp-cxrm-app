@@ -73,19 +73,21 @@ export default function Leads() {
           {currentUser.role !== 'Agent' && (
             <button 
               onClick={() => setIsImportOpen(true)}
-              className="bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-white/10"
+              className="shimmer-btn bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-white/10"
             >
               <Upload className="w-4 h-4" />
               <span>Import Leads</span>
             </button>
           )}
-          <button 
-            onClick={() => setIsFormOpen(true)}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add Lead</span>
-          </button>
+          {currentUser.role !== 'Agent' && (
+            <button 
+              onClick={() => setIsFormOpen(true)}
+              className="shimmer-btn bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Lead</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -101,7 +103,7 @@ export default function Leads() {
               className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-4 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all"
             />
           </div>
-          <button className="flex items-center space-x-2 px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-medium text-slate-300 border border-white/10 transition-colors">
+          <button className="shimmer-btn flex items-center space-x-2 px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm font-medium text-slate-300 border border-white/10 transition-colors">
             <Filter className="w-4 h-4" />
             <span>Filters</span>
           </button>

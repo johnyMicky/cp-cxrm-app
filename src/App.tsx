@@ -44,7 +44,7 @@ function Sidebar() {
               key={item.name}
               to={item.path}
               className={cn(
-                "flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                "shimmer-item flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
                 isActive 
                   ? "bg-blue-600/10 text-blue-500" 
                   : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
@@ -61,7 +61,7 @@ function Sidebar() {
         <div className="mb-4 px-3">
           <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-2 block">Debug: Switch Role</label>
           <select 
-            className="w-full bg-white/5 border border-white/10 rounded-md text-xs text-slate-300 py-1.5 px-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="shimmer-btn w-full bg-white/5 border border-white/10 rounded-md text-xs text-slate-300 py-1.5 px-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
             onChange={(e) => {
               // This is a hack for the demo to allow switching roles
               window.localStorage.setItem('userRole', e.target.value);

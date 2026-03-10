@@ -4,3 +4,45 @@
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
+
+@layer components {
+  .shimmer-btn {
+    @apply relative overflow-hidden transition-all duration-300;
+  }
+
+  .shimmer-btn::after {
+    content: "";
+    @apply absolute top-0 -left-full w-full h-full;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.2),
+      transparent
+    );
+    transition: all 0.5s;
+  }
+
+  .shimmer-btn:hover::after {
+    @apply left-full;
+  }
+
+  .shimmer-item {
+    @apply relative overflow-hidden transition-all duration-300;
+  }
+
+  .shimmer-item::after {
+    content: "";
+    @apply absolute top-0 -left-full w-full h-full;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.1),
+      transparent
+    );
+    transition: all 0.6s;
+  }
+
+  .shimmer-item:hover::after {
+    @apply left-full;
+  }
+}

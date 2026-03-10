@@ -7,76 +7,89 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database('crm.db');
+const db = new Database(':memory:');
 
 // Initialize database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    role TEXT NOT NULL,
-    avatar TEXT
-  );
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      role TEXT NOT NULL,
+      avatar TEXT
+    );
 
-  CREATE TABLE IF NOT EXISTS leads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    phone TEXT,
-    email TEXT,
-    country TEXT,
-    source TEXT,
-    status TEXT NOT NULL,
-    assigned_to INTEGER,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (assigned_to) REFERENCES users(id)
-  );
+    CREATE TABLE IF NOT EXISTS leads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      phone TEXT,
+      email TEXT,
+      country TEXT,
+      source TEXT,
+      status TEXT NOT NULL,
+      assigned_to INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (assigned_to) REFERENCES users(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    lead_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (lead_id) REFERENCES leads(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
+    CREATE TABLE IF NOT EXISTS notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lead_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (lead_id) REFERENCES leads(id),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
 
-  CREATE TABLE IF NOT EXISTS history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    lead_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    action TEXT NOT NULL,
-    details TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (lead_id) REFERENCES leads(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-`);
+    CREATE TABLE IF NOT EXISTS history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lead_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (lead_id) REFERENCES leads(id),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+  `);
+} catch (err) {
+  console.error('Database initialization error:', err);
+}
 
 // Seed data if empty
-const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
-if (userCount.count === 0) {
-  const insertUser = db.prepare('INSERT INTO users (name, email, role, avatar) VALUES (?, ?, ?, ?)');
-  insertUser.run('Admin User', 'admin@cpcrm.com', 'admin', 'https://i.pravatar.cc/150?u=admin');
-  insertUser.run('Manager One', 'manager1@cpcrm.com', 'manager', 'https://i.pravatar.cc/150?u=manager1');
-  insertUser.run('Agent Alpha', 'agent.alpha@cpcrm.com', 'agent', 'https://i.pravatar.cc/150?u=alpha');
-  insertUser.run('Agent Beta', 'agent.beta@cpcrm.com', 'agent', 'https://i.pravatar.cc/150?u=beta');
-  insertUser.run('Agent Gamma', 'agent.gamma@cpcrm.com', 'agent', 'https://i.pravatar.cc/150?u=gamma');
+try {
+  const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
+  if (userCount.count === 0) {
+    const insertUser = db.prepare('INSERT INTO users (name, email, role, avatar) VALUES (?, ?, ?, ?)');
+    insertUser.run('Admin User', 'admin@cpcrm.com', 'Administrator', 'https://i.pravatar.cc/150?u=admin');
+    insertUser.run('Manager One', 'manager1@cpcrm.com', 'Manager', 'https://i.pravatar.cc/150?u=manager1');
+    insertUser.run('Agent Alpha', 'agent.alpha@cpcrm.com', 'Agent', 'https://i.pravatar.cc/150?u=alpha');
+    insertUser.run('Agent Beta', 'agent.beta@cpcrm.com', 'Agent', 'https://i.pravatar.cc/150?u=beta');
+    insertUser.run('Agent Gamma', 'agent.gamma@cpcrm.com', 'Agent', 'https://i.pravatar.cc/150?u=gamma');
 
-  const insertLead = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
-  const statuses = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
-  const sources = ['Website', 'Referral', 'Cold Call', 'Social Media', 'Partner'];
-  const countries = ['USA', 'UK', 'Canada', 'Germany', 'France', 'Australia'];
+    const leadCount = db.prepare('SELECT COUNT(*) as count FROM leads').get() as { count: number };
+    if (leadCount.count === 0) {
+      console.log('Seeding leads...');
+      const insertLead = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
+      const statuses = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
+      const sources = ['Website', 'Referral', 'Cold Call', 'Social Media', 'Partner'];
+      const countries = ['USA', 'UK', 'Canada', 'Germany', 'France', 'Australia'];
 
-  for (let i = 1; i <= 50; i++) {
-    const status = statuses[Math.floor(Math.random() * statuses.length)];
-    const source = sources[Math.floor(Math.random() * sources.length)];
-    const country = countries[Math.floor(Math.random() * countries.length)];
-    const assignedTo = Math.random() > 0.3 ? Math.floor(Math.random() * 3) + 3 : null; // Randomly assign to agents or leave unassigned
-    insertLead.run(`Lead ${i}`, `+1555000${i.toString().padStart(4, '0')}`, `lead${i}@example.com`, country, source, status, assignedTo);
+      for (let i = 1; i <= 50; i++) {
+        const status = statuses[Math.floor(Math.random() * statuses.length)];
+        const source = sources[Math.floor(Math.random() * sources.length)];
+        const country = countries[Math.floor(Math.random() * countries.length)];
+        const assignedTo = Math.random() > 0.3 ? Math.floor(Math.random() * 3) + 3 : null; 
+        insertLead.run(`Lead ${i}`, `+1555000${i.toString().padStart(4, '0')}`, `lead${i}@example.com`, country, source, status, assignedTo);
+      }
+      console.log('Seeding complete.');
+    }
   }
+} catch (err) {
+  console.error('Database seeding error:', err);
 }
 
 async function startServer() {
@@ -86,6 +99,16 @@ async function startServer() {
   app.use(express.json());
 
   // API Routes
+  app.get('/api/health', (req, res) => {
+    try {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+      const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as any;
+      res.json({ status: 'ok', db: db.name, tables, userCount: userCount?.count });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
   app.get('/api/users', (req, res) => {
     const users = db.prepare('SELECT * FROM users ORDER BY id DESC').all();
     res.json(users);
@@ -272,50 +295,61 @@ async function startServer() {
   });
 
   app.get('/api/dashboard', (req, res) => {
-    const totalLeads = db.prepare('SELECT COUNT(*) as count FROM leads').get() as any;
-    const newToday = db.prepare("SELECT COUNT(*) as count FROM leads WHERE date(created_at) = date('now')").get() as any;
-    const activeLeads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE status NOT IN ("Deposit", "Lost")').get() as any;
-    const convertedLeads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE status = "Deposit"').get() as any;
-    const lostLeads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE status = "Lost"').get() as any;
-    
-    const topSources = db.prepare('SELECT source, COUNT(*) as count FROM leads GROUP BY source ORDER BY count DESC LIMIT 5').all();
-    
-    const workload = db.prepare(`
-      SELECT users.id, users.name, users.avatar,
-             COUNT(leads.id) as total_assigned,
-             SUM(CASE WHEN leads.status = 'New' THEN 1 ELSE 0 END) as new_leads,
-             SUM(CASE WHEN leads.status IN ('VM', 'No answer', 'Callback') THEN 1 ELSE 0 END) as in_progress,
-             SUM(CASE WHEN leads.status IN ('Deposit', 'Lost') THEN 1 ELSE 0 END) as completed
-      FROM users
-      LEFT JOIN leads ON users.id = leads.assigned_to
-      WHERE users.role = 'agent'
-      GROUP BY users.id
-    `).all();
+    try {
+      const totalLeads = db.prepare('SELECT COUNT(*) as count FROM leads').get() as any;
+      const newToday = db.prepare("SELECT COUNT(*) as count FROM leads WHERE date(created_at) = date('now')").get() as any;
+      const activeLeads = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status NOT IN ('Deposit', 'Lost')").get() as any;
+      const convertedLeads = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'Deposit'").get() as any;
+      const lostLeads = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'Lost'").get() as any;
+      
+      const leadsByStatus = db.prepare('SELECT status, COUNT(*) as count FROM leads GROUP BY status').all();
+      const usersByRole = db.prepare('SELECT role, COUNT(*) as count FROM users GROUP BY role').all();
+      
+      const topSources = db.prepare('SELECT source, COUNT(*) as count FROM leads GROUP BY source ORDER BY count DESC LIMIT 5').all();
+      
+      // Simplified workload query
+      const workload = db.prepare(`
+        SELECT u.id, u.name, u.avatar,
+               COUNT(l.id) as total_assigned
+        FROM users u
+        LEFT JOIN leads l ON u.id = l.assigned_to
+        GROUP BY u.id
+        HAVING total_assigned > 0
+        LIMIT 10
+      `).all().map((row: any) => ({
+        ...row,
+        new_leads: 0,
+        in_progress: 0,
+        completed: 0
+      }));
 
-    res.json({
-      total: totalLeads.count,
-      newToday: newToday.count,
-      active: activeLeads.count,
-      converted: convertedLeads.count,
-      lost: lostLeads.count,
-      topSources,
-      workload
-    });
+      res.json({
+        total: totalLeads?.count ?? 0,
+        newToday: newToday?.count ?? 0,
+        active: activeLeads?.count ?? 0,
+        converted: convertedLeads?.count ?? 0,
+        lost: lostLeads?.count ?? 0,
+        leadsByStatus: leadsByStatus || [],
+        usersByRole: usersByRole || [],
+        topSources: topSources || [],
+        workload: workload || []
+      });
+    } catch (error: any) {
+      console.error('Dashboard API Error:', error);
+      res.status(500).json({ 
+        error: 'Database query failed', 
+        details: error.message,
+        stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined
+      });
+    }
   });
 
   // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist/index.html'));
-    });
-  }
+  const vite = await createViteServer({
+    server: { middlewareMode: true },
+    appType: 'spa',
+  });
+  app.use(vite.middlewares);
 
   app.post('/api/leads/bulk', (req, res) => {
     const { leads, user_id } = req.body;

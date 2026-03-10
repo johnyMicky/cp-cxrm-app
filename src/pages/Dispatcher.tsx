@@ -82,7 +82,7 @@ export default function Dispatcher() {
         </div>
         <button 
           onClick={fetchData}
-          className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-colors border border-white/10"
+          className="shimmer-btn p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-colors border border-white/10"
         >
           <RefreshCw className="w-5 h-5" />
         </button>
@@ -191,7 +191,7 @@ export default function Dispatcher() {
             <button 
               onClick={handleDistribute}
               disabled={selectedLeads.length === 0 || selectedAgents.length === 0 || isDistributing}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center space-x-2 shadow-lg shadow-blue-500/20"
+              className="shimmer-btn w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center space-x-2 shadow-lg shadow-blue-500/20"
             >
               <ArrowRightLeft className="w-4 h-4" />
               <span>
