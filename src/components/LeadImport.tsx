@@ -40,7 +40,7 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
     const ws = XLSX.utils.json_to_sheet(templateData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Leads Template');
-    XLSX.writeFile(wb, 'CP-CRM_Leads_Template.xlsx');
+    XLSX.writeFile(wb, 'CamptainM-CRM_Leads_Template.xlsx');
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {

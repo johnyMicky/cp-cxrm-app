@@ -57,10 +57,15 @@ export default function LeadDetail() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'New': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-      case 'Contacted': return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
-      case 'In Progress': return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
-      case 'Converted': return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
-      case 'Lost': return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
+      case 'VM':
+      case 'No answer':
+      case 'Callback': return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+      case 'Low Potential':
+      case 'Language Barrier':
+      case 'Wrong Person': return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+      case 'Deposit': return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+      case 'Underage':
+      case 'No Experience': return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
       default: return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
     }
   };
@@ -210,10 +215,15 @@ export default function LeadDetail() {
                     className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   >
                     <option value="New">New</option>
-                    <option value="Contacted">Contacted</option>
-                    <option value="In Progress">In Progress</option>
-                    <option value="Converted">Converted</option>
-                    <option value="Lost">Lost</option>
+                    <option value="VM">VM</option>
+                    <option value="No answer">No answer</option>
+                    <option value="Deposit">Deposit</option>
+                    <option value="Callback">Callback</option>
+                    <option value="Low Potential">Low Potential</option>
+                    <option value="Language Barrier">Language Barrier</option>
+                    <option value="Wrong Person">Wrong Person</option>
+                    <option value="Underage">Underage</option>
+                    <option value="No Experience">No Experience</option>
                   </select>
                 ) : (
                   <div className="bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white">

@@ -66,7 +66,7 @@ if (userCount.count === 0) {
   insertUser.run('Agent Gamma', 'agent.gamma@cpcrm.com', 'agent', 'https://i.pravatar.cc/150?u=gamma');
 
   const insertLead = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
-  const statuses = ['New', 'Contacted', 'In Progress', 'Converted', 'Lost'];
+  const statuses = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
   const sources = ['Website', 'Referral', 'Cold Call', 'Social Media', 'Partner'];
   const countries = ['USA', 'UK', 'Canada', 'Germany', 'France', 'Australia'];
 
@@ -234,9 +234,9 @@ async function startServer() {
 
   app.get('/api/dashboard', (req, res) => {
     const totalLeads = db.prepare('SELECT COUNT(*) as count FROM leads').get() as any;
-    const newToday = db.prepare('SELECT COUNT(*) as count FROM leads WHERE date(created_at) = date("now")').get() as any;
-    const activeLeads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE status NOT IN ("Converted", "Lost")').get() as any;
-    const convertedLeads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE status = "Converted"').get() as any;
+    const newToday = db.prepare("SELECT COUNT(*) as count FROM leads WHERE date(created_at) = date('now')").get() as any;
+    const activeLeads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE status NOT IN ("Deposit", "Lost")').get() as any;
+    const convertedLeads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE status = "Deposit"').get() as any;
     const lostLeads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE status = "Lost"').get() as any;
     
     const topSources = db.prepare('SELECT source, COUNT(*) as count FROM leads GROUP BY source ORDER BY count DESC LIMIT 5').all();
@@ -245,8 +245,8 @@ async function startServer() {
       SELECT users.id, users.name, users.avatar,
              COUNT(leads.id) as total_assigned,
              SUM(CASE WHEN leads.status = 'New' THEN 1 ELSE 0 END) as new_leads,
-             SUM(CASE WHEN leads.status IN ('Contacted', 'In Progress') THEN 1 ELSE 0 END) as in_progress,
-             SUM(CASE WHEN leads.status IN ('Converted', 'Lost') THEN 1 ELSE 0 END) as completed
+             SUM(CASE WHEN leads.status IN ('VM', 'No answer', 'Callback') THEN 1 ELSE 0 END) as in_progress,
+             SUM(CASE WHEN leads.status IN ('Deposit', 'Lost') THEN 1 ELSE 0 END) as completed
       FROM users
       LEFT JOIN leads ON users.id = leads.assigned_to
       WHERE users.role = 'agent'

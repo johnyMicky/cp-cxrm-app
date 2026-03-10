@@ -27,9 +27,9 @@ function Sidebar() {
     <div className="w-64 bg-[#0A0F1C] border-r border-white/5 flex flex-col h-screen">
       <div className="p-6 flex items-center space-x-3">
         <div className="w-8 h-8 rounded bg-blue-600 flex items-center justify-center">
-          <span className="text-white font-bold text-sm">CP</span>
+          <span className="text-white font-bold text-sm">CM</span>
         </div>
-        <span className="text-white font-semibold text-xl tracking-tight">CP-CRM</span>
+        <span className="text-white font-semibold text-xl tracking-tight">CamptainM-CRM</span>
       </div>
       
       <nav className="flex-1 px-4 space-y-1 mt-4">

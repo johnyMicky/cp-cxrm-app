@@ -169,10 +169,15 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
                 className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all appearance-none"
               >
                 <option value="New">New</option>
-                <option value="Contacted">Contacted</option>
-                <option value="In Progress">In Progress</option>
-                <option value="Converted">Converted</option>
-                <option value="Lost">Lost</option>
+                <option value="VM">VM</option>
+                <option value="No answer">No answer</option>
+                <option value="Deposit">Deposit</option>
+                <option value="Callback">Callback</option>
+                <option value="Low Potential">Low Potential</option>
+                <option value="Language Barrier">Language Barrier</option>
+                <option value="Wrong Person">Wrong Person</option>
+                <option value="Underage">Underage</option>
+                <option value="No Experience">No Experience</option>
               </select>
             </div>
 
