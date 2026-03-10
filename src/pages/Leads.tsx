@@ -15,10 +15,20 @@ export default function Leads() {
   
   const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' };
 
-  const fetchLeads = () => {
-    fetch('/api/leads')
-      .then(res => res.json())
-      .then(setLeads);
+  const fetchLeads = async () => {
+    try {
+      const res = await fetch('/api/leads');
+      const contentType = res.headers.get('content-type');
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response');
+      }
+
+      const data = await res.json();
+      setLeads(data);
+    } catch (err) {
+      console.error('Failed to fetch leads:', err);
+    }
   };
 
   useEffect(() => {

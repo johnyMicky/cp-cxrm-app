@@ -24,6 +24,10 @@ export default function Team() {
     setIsLoading(true);
     try {
       const res = await fetch('/api/users');
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response');
+      }
       const data = await res.json();
       setUsers(data);
     } catch (err) {

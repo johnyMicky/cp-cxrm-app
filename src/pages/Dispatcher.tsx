@@ -14,14 +14,25 @@ export default function Dispatcher() {
     fetchData();
   }, []);
 
-  const fetchData = () => {
-    fetch('/api/leads')
-      .then(res => res.json())
-      .then(data => setLeads(data.filter((l: any) => l.status === 'New' || l.assigned_to === null)));
-      
-    fetch('/api/users')
-      .then(res => res.json())
-      .then(data => setUsers(data.filter((u: any) => ['Agent', 'Team Leader', 'Manager'].includes(u.role))));
+  const fetchData = async () => {
+    try {
+      const [leadsRes, usersRes] = await Promise.all([
+        fetch('/api/leads'),
+        fetch('/api/users')
+      ]);
+
+      if (!leadsRes.ok || !usersRes.ok) {
+        throw new Error('Failed to fetch dispatcher data');
+      }
+
+      const leadsData = await leadsRes.json();
+      const usersData = await usersRes.json();
+
+      setLeads(leadsData.filter((l: any) => l.status === 'New' || l.assigned_to === null));
+      setUsers(usersData.filter((u: any) => ['Agent', 'Team Leader', 'Manager'].includes(u.role)));
+    } catch (err) {
+      console.error('Dispatcher Load Error:', err);
+    }
   };
 
   const handleSelectLead = (id: number) => {

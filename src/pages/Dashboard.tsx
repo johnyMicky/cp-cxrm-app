@@ -7,26 +7,31 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/dashboard?t=' + Date.now())
-      .then(async res => {
-        const text = await res.text();
-        let body;
-        try {
-          body = JSON.parse(text);
-        } catch (e) {
-          throw new Error('Invalid JSON response from server: ' + text.substring(0, 100));
+    const loadData = async () => {
+      try {
+        const res = await fetch('/api/dashboard?t=' + Date.now());
+        const contentType = res.headers.get('content-type');
+        
+        if (!contentType || !contentType.includes('application/json')) {
+          const text = await res.text();
+          console.error('Non-JSON response:', text);
+          throw new Error('Server returned non-JSON response (likely HTML). This usually means the API route was not found or the server is misconfigured.');
         }
+
+        const body = await res.json();
         
         if (!res.ok) {
-          setData(body); // Store error body to show details
+          setData(body);
           throw new Error(body.error || 'Server returned error ' + res.status);
         }
         setData(body);
-      })
-      .catch(err => {
-        console.error(err);
+      } catch (err: any) {
+        console.error('Dashboard Load Error:', err);
         setError(err.message);
-      });
+      }
+    };
+
+    loadData();
   }, []);
 
   if (error) {

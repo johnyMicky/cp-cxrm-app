@@ -9,14 +9,29 @@ export default function Lost() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([
-      fetch('/api/leads').then(res => res.json()),
-      fetch('/api/dashboard').then(res => res.json())
-    ]).then(([leadsData, dashboardData]) => {
-      setLeads(leadsData.filter((l: any) => l.status === 'Lost' || l.status === 'Underage' || l.status === 'No Experience'));
-      setDuplicatesCount(dashboardData.duplicates || 0);
-      setLoading(false);
-    });
+    const loadData = async () => {
+      try {
+        const [leadsRes, dashboardRes] = await Promise.all([
+          fetch('/api/leads'),
+          fetch('/api/dashboard')
+        ]);
+
+        if (!leadsRes.ok || !dashboardRes.ok) {
+          throw new Error('Failed to fetch data');
+        }
+
+        const leadsData = await leadsRes.json();
+        const dashboardData = await dashboardRes.json();
+
+        setLeads(leadsData.filter((l: any) => l.status === 'Lost' || l.status === 'Underage' || l.status === 'No Experience'));
+        setDuplicatesCount(dashboardData.duplicates || 0);
+        setLoading(false);
+      } catch (err) {
+        console.error('Lost Page Load Error:', err);
+      }
+    };
+
+    loadData();
   }, []);
 
   const filteredLeads = leads.filter(lead => 

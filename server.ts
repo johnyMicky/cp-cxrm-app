@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -98,7 +99,17 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Request logging
+  app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    next();
+  });
+
   // API Routes
+  app.get('/api/test', (req, res) => {
+    res.json({ message: 'API is working', timestamp: new Date().toISOString() });
+  });
+
   app.get('/api/health', (req, res) => {
     try {
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
@@ -474,11 +485,22 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
+    const distPath = path.join(__dirname, 'dist');
+    if (!fs.existsSync(distPath)) {
+      console.error(`CRITICAL ERROR: Static dist folder not found at ${distPath}`);
+    }
+    app.use(express.static(distPath));
+    
+    // Explicit API 404 handler for production
+    app.use('/api', (req, res) => {
+      res.status(404).json({ 
+        error: 'API route not found',
+        path: req.path,
+        method: req.method
+      });
+    });
+
     app.get('*', (req, res) => {
-      if (req.path.startsWith('/api/')) {
-        return res.status(404).json({ error: 'API route not found' });
-      }
       res.sendFile(path.join(__dirname, 'dist/index.html'));
     });
   }
@@ -486,6 +508,9 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  return app;
 }
 
-startServer();
+const appPromise = startServer();
+export default appPromise;

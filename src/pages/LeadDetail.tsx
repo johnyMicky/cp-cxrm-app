@@ -17,16 +17,29 @@ export default function LeadDetail() {
   const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' }; 
 
   useEffect(() => {
-    fetch(`/api/leads/${id}`)
-      .then(res => res.json())
-      .then(data => {
-        setLead(data);
-        setEditForm(data);
-      });
-      
-    fetch('/api/users')
-      .then(res => res.json())
-      .then(setUsers);
+    const loadData = async () => {
+      try {
+        const [leadRes, usersRes] = await Promise.all([
+          fetch(`/api/leads/${id}`),
+          fetch('/api/users')
+        ]);
+
+        if (!leadRes.ok || !usersRes.ok) {
+          throw new Error('Failed to fetch lead data');
+        }
+
+        const leadData = await leadRes.json();
+        const usersData = await usersRes.json();
+
+        setLead(leadData);
+        setEditForm(leadData);
+        setUsers(usersData);
+      } catch (err) {
+        console.error('Lead Detail Load Error:', err);
+      }
+    };
+
+    loadData();
   }, [id]);
 
   if (!lead) return <div className="p-8 text-slate-400">Loading lead details...</div>;

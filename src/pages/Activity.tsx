@@ -8,12 +8,22 @@ export default function Activity() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/history')
-      .then(res => res.json())
-      .then(data => {
+    const loadData = async () => {
+      try {
+        const res = await fetch('/api/history');
+        const contentType = res.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          throw new Error('Server returned non-JSON response');
+        }
+        const data = await res.json();
         setHistory(data);
         setLoading(false);
-      });
+      } catch (err) {
+        console.error('Activity Page Load Error:', err);
+      }
+    };
+
+    loadData();
   }, []);
 
   if (loading) return <div className="p-8 text-slate-400 animate-pulse">Loading activity log...</div>;
