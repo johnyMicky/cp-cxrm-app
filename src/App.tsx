@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -10,6 +10,7 @@ import Dispatcher from './pages/Dispatcher';
 import Team from './pages/Team';
 import Lost from './pages/Lost';
 import ActivityPage from './pages/Activity';
+import Login from './pages/Login';
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
@@ -17,6 +18,7 @@ export function cn(...inputs: (string | undefined | null | false)[]) {
 
 function Sidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
   
   const navItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
@@ -28,7 +30,17 @@ function Sidebar() {
     { name: 'Settings', path: '/settings', icon: Settings, roles: ['Administrator'] },
   ];
 
-  const currentUserRole = window.localStorage.getItem('userRole') || 'Administrator';
+  const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
+  const userName = localStorage.getItem('userName') || 'Admin User';
+  const userAvatar = localStorage.getItem('userAvatar') || 'https://i.pravatar.cc/150?u=admin';
+
+  const handleLogout = () => {
+    localStorage.removeItem('userId');
+    localStorage.removeItem('userRole');
+    localStorage.removeItem('userName');
+    localStorage.removeItem('userAvatar');
+    window.location.href = '/login';
+  };
 
   return (
     <div className="w-64 bg-[#0A0F1C] border-r border-white/5 flex flex-col h-screen">
@@ -61,30 +73,16 @@ function Sidebar() {
       </nav>
       
       <div className="p-4 border-t border-white/5">
-        <div className="mb-4 px-3">
-          <label className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-2 block">Debug: Switch Role</label>
-          <select 
-            className="shimmer-btn w-full bg-white/5 border border-white/10 rounded-md text-xs text-slate-300 py-1.5 px-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            onChange={(e) => {
-              // This is a hack for the demo to allow switching roles
-              window.localStorage.setItem('userRole', e.target.value);
-              window.location.reload();
-            }}
-            value={window.localStorage.getItem('userRole') || 'Administrator'}
-          >
-            <option value="Administrator">Administrator</option>
-            <option value="Manager">Manager</option>
-            <option value="Team Leader">Team Leader</option>
-            <option value="Agent">Agent</option>
-          </select>
-        </div>
         <div className="flex items-center space-x-3 px-3 py-2">
-          <img src="https://i.pravatar.cc/150?u=admin" alt="Admin" className="w-8 h-8 rounded-full" />
+          <img src={userAvatar} alt={userName} className="w-8 h-8 rounded-full" />
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-white truncate">Admin User</p>
-            <p className="text-xs text-slate-400 truncate">{window.localStorage.getItem('userRole') || 'Administrator'}</p>
+            <p className="text-sm font-medium text-white truncate">{userName}</p>
+            <p className="text-xs text-slate-400 truncate">{currentUserRole}</p>
           </div>
-          <button className="text-slate-400 hover:text-white">
+          <button 
+            onClick={handleLogout}
+            className="text-slate-400 hover:text-white transition-colors"
+          >
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -94,22 +92,36 @@ function Sidebar() {
 }
 
 export default function App() {
+  const isAuthenticated = !!localStorage.getItem('userId');
+
   return (
     <Router>
-      <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30">
-        <Sidebar />
-        <main className="flex-1 overflow-auto">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/leads" element={<Leads />} />
-            <Route path="/leads/:id" element={<LeadDetail />} />
-            <Route path="/team" element={<Team />} />
-            <Route path="/dispatcher" element={<Dispatcher />} />
-            <Route path="/lost" element={<Lost />} />
-            <Route path="/activity" element={<ActivityPage />} />
-          </Routes>
-        </main>
-      </div>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/*"
+          element={
+            isAuthenticated ? (
+              <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30">
+                <Sidebar />
+                <main className="flex-1 overflow-auto">
+                  <Routes>
+                    <Route path="/" element={<Dashboard />} />
+                    <Route path="/leads" element={<Leads />} />
+                    <Route path="/leads/:id" element={<LeadDetail />} />
+                    <Route path="/team" element={<Team />} />
+                    <Route path="/dispatcher" element={<Dispatcher />} />
+                    <Route path="/lost" element={<Lost />} />
+                    <Route path="/activity" element={<ActivityPage />} />
+                  </Routes>
+                </main>
+              </div>
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+      </Routes>
     </Router>
   );
 }

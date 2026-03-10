@@ -16,6 +16,7 @@ try {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
       role TEXT NOT NULL,
       avatar TEXT
     );
@@ -63,12 +64,12 @@ try {
 try {
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
   if (userCount.count === 0) {
-    const insertUser = db.prepare('INSERT INTO users (name, email, role, avatar) VALUES (?, ?, ?, ?)');
-    insertUser.run('Admin User', 'admin@cpcrm.com', 'Administrator', 'https://i.pravatar.cc/150?u=admin');
-    insertUser.run('Manager One', 'manager1@cpcrm.com', 'Manager', 'https://i.pravatar.cc/150?u=manager1');
-    insertUser.run('Agent Alpha', 'agent.alpha@cpcrm.com', 'Agent', 'https://i.pravatar.cc/150?u=alpha');
-    insertUser.run('Agent Beta', 'agent.beta@cpcrm.com', 'Agent', 'https://i.pravatar.cc/150?u=beta');
-    insertUser.run('Agent Gamma', 'agent.gamma@cpcrm.com', 'Agent', 'https://i.pravatar.cc/150?u=gamma');
+    const insertUser = db.prepare('INSERT INTO users (name, email, password, role, avatar) VALUES (?, ?, ?, ?, ?)');
+    insertUser.run('Admin User', 'admin@cpcrm.com', 'admin123', 'Administrator', 'https://i.pravatar.cc/150?u=admin');
+    insertUser.run('Manager One', 'manager1@cpcrm.com', 'manager123', 'Manager', 'https://i.pravatar.cc/150?u=manager1');
+    insertUser.run('Agent Alpha', 'agent.alpha@cpcrm.com', 'agent123', 'Agent', 'https://i.pravatar.cc/150?u=alpha');
+    insertUser.run('Agent Beta', 'agent.beta@cpcrm.com', 'agent123', 'Agent', 'https://i.pravatar.cc/150?u=beta');
+    insertUser.run('Agent Gamma', 'agent.gamma@cpcrm.com', 'agent123', 'Agent', 'https://i.pravatar.cc/150?u=gamma');
 
     const leadCount = db.prepare('SELECT COUNT(*) as count FROM leads').get() as { count: number };
     if (leadCount.count === 0) {
@@ -101,6 +102,41 @@ app.use(express.json());
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
   next();
+});
+
+// Auth endpoints
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE email = ? AND password = ?').get(email, password) as any;
+    if (user) {
+      const { password: _, ...userWithoutPassword } = user;
+      res.json(userWithoutPassword);
+    } else {
+      res.status(401).json({ error: 'Invalid email or password' });
+    }
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/me', (req, res) => {
+  const userId = req.headers['x-user-id'];
+  if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as any;
+    if (user) {
+      const { password: _, ...userWithoutPassword } = user;
+      res.json(userWithoutPassword);
+    } else {
+      res.status(404).json({ error: 'User not found' });
+    }
+  } catch (err) {
+    console.error('Me error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // API Routes

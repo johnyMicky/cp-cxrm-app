@@ -4,6 +4,7 @@ import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Sq
 import { format } from 'date-fns';
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
+import { apiFetch } from '../utils/api';
 
 const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
 
@@ -31,13 +32,13 @@ export default function Leads() {
   const [toastMessage, setToastMessage] = useState('Lead created successfully');
   
   const currentUser = { 
-    id: 1, // Hardcoded for now
-    role: window.localStorage.getItem('userRole') || 'Administrator' 
+    id: parseInt(localStorage.getItem('userId') || '1'),
+    role: localStorage.getItem('userRole') || 'Administrator' 
   };
 
   const fetchLeads = async () => {
     try {
-      const res = await fetch('/api/leads');
+      const res = await apiFetch('/api/leads');
       const data = await res.json();
       setLeads(data);
     } catch (err) {
@@ -47,7 +48,7 @@ export default function Leads() {
 
   const fetchAgents = async () => {
     try {
-      const res = await fetch('/api/users');
+      const res = await apiFetch('/api/users');
       const data = await res.json();
       setAgents(data.filter((u: any) => ['Agent', 'Team Leader', 'Manager'].includes(u.role)));
     } catch (err) {
@@ -119,9 +120,8 @@ export default function Leads() {
 
   const handleBulkStatusUpdate = async (status: string) => {
     try {
-      const res = await fetch('/api/leads/bulk-status', {
+      const res = await apiFetch('/api/leads/bulk-status', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           lead_ids: selectedLeads,
           status,
@@ -137,9 +137,8 @@ export default function Leads() {
   const handleBulkAssign = async (agentId: number | 'round-robin') => {
     try {
       if (agentId === 'round-robin') {
-        const res = await fetch('/api/leads/distribute', {
+        const res = await apiFetch('/api/leads/distribute', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             lead_ids: selectedLeads,
             agent_ids: agents.map(a => a.id),
@@ -148,9 +147,8 @@ export default function Leads() {
         });
         if (res.ok) handleSuccess(`Distributed ${selectedLeads.length} leads among ${agents.length} agents`);
       } else {
-        const res = await fetch('/api/leads/assign', {
+        const res = await apiFetch('/api/leads/assign', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             lead_ids: selectedLeads,
             assigned_to: agentId,
@@ -166,9 +164,8 @@ export default function Leads() {
 
   const handleReshuffle = async () => {
     try {
-      const res = await fetch('/api/leads/reshuffle', {
+      const res = await apiFetch('/api/leads/reshuffle', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agent_ids: agents.map(a => a.id),
           user_id: currentUser.id,
