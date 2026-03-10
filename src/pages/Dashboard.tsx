@@ -27,6 +27,60 @@ export default function Dashboard() {
     }
   };
 
+  const handleGenerateReport = async () => {
+    try {
+      const user = {
+        id: localStorage.getItem('userId'),
+        role: localStorage.getItem('userRole')
+      };
+      // Fetch leads to export
+      const leads = await firestoreService.getLeads(user.role === 'Agent' ? user.id : undefined);
+      
+      // Filter by timeRange (same logic as in dashboard)
+      const now = new Date();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      let startDate = new Date(0);
+      if (timeRange === '1d') startDate = today;
+      else if (timeRange === '1w') { startDate = new Date(now); startDate.setDate(startDate.getDate() - 7); }
+      else if (timeRange === '1m') { startDate = new Date(now); startDate.setMonth(startDate.getMonth() - 1); }
+
+      const filteredLeads = (leads as any[]).filter((l: any) => {
+        const created = l.createdAt?.toDate ? l.createdAt.toDate() : new Date(l.createdAt || 0);
+        return created >= startDate;
+      });
+
+      // Convert to CSV
+      const headers = ['First Name', 'Last Name', 'Phone', 'Email', 'Source', 'Status', 'Created At'];
+      const csvRows = [
+        headers.join(','),
+        ...filteredLeads.map((l: any) => [
+          `"${l.first_name || ''}"`,
+          `"${l.last_name || ''}"`,
+          `"${l.phone || ''}"`,
+          `"${l.email || ''}"`,
+          `"${l.source || ''}"`,
+          `"${l.status || ''}"`,
+          `"${l.createdAt?.toDate ? format(l.createdAt.toDate(), 'yyyy-MM-dd HH:mm') : ''}"`
+        ].join(','))
+      ];
+      
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `CRM_Report_${timeRange}_${format(new Date(), 'yyyyMMdd')}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error('Report Generation Error:', err);
+      alert('Failed to generate report');
+    }
+  };
+
   useEffect(() => {
     loadData();
   }, [timeRange]);
@@ -97,7 +151,10 @@ export default function Dashboard() {
               </button>
             ))}
           </div>
-          <button className="shimmer-btn bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20">
+          <button 
+            onClick={handleGenerateReport}
+            className="shimmer-btn bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20"
+          >
             <BarChart3 className="w-4 h-4" />
             <span>Generate Report</span>
           </button>
