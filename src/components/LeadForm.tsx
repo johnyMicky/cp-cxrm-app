@@ -148,17 +148,13 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
 
             <div className="space-y-2">
               <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Source</label>
-              <select 
+              <input 
+                type="text"
                 value={formData.source}
                 onChange={e => setFormData({...formData, source: e.target.value})}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all appearance-none"
-              >
-                <option value="Website">Website</option>
-                <option value="Referral">Referral</option>
-                <option value="Cold Call">Cold Call</option>
-                <option value="Social Media">Social Media</option>
-                <option value="Partner">Partner</option>
-              </select>
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                placeholder="e.g. Website, Facebook, etc."
+              />
             </div>
 
             <div className="space-y-2">

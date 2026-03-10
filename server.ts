@@ -125,6 +125,75 @@ app.get('/api/health', (req, res) => {
   }
 });
 
+app.post('/api/leads/bulk-status', (req, res) => {
+  const { lead_ids, status, user_id } = req.body;
+  
+  if (!lead_ids || !Array.isArray(lead_ids) || !status) {
+    return res.status(400).json({ error: 'Missing lead IDs or status' });
+  }
+
+  const stmt = db.prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+  const historyStmt = db.prepare('INSERT INTO history (lead_id, user_id, action, details) VALUES (?, ?, ?, ?)');
+  
+  const transaction = db.transaction((ids) => {
+    for (const id of ids) {
+      const oldLead = db.prepare('SELECT status FROM leads WHERE id = ?').get(id) as any;
+      if (oldLead && oldLead.status !== status) {
+        stmt.run(status, id);
+        historyStmt.run(id, user_id || 1, 'Status Changed', `Bulk status update to ${status}`);
+      }
+    }
+  });
+  
+  transaction(lead_ids);
+  res.json({ success: true });
+});
+
+app.post('/api/leads/reshuffle', (req, res) => {
+  const { agent_ids, user_id, status_filter } = req.body;
+  
+  if (!agent_ids || !Array.isArray(agent_ids) || agent_ids.length === 0) {
+    return res.status(400).json({ error: 'Missing agents for reshuffling' });
+  }
+
+  try {
+    let query = 'SELECT id FROM leads WHERE assigned_to IS NOT NULL';
+    const params: any[] = [];
+    
+    if (status_filter && Array.isArray(status_filter) && status_filter.length > 0) {
+      query += ` AND status IN (${status_filter.map(() => '?').join(',')})`;
+      params.push(...status_filter);
+    }
+
+    const leadsToReshuffle = db.prepare(query).all(...params) as any[];
+    
+    if (leadsToReshuffle.length === 0) {
+      return res.json({ success: true, message: 'No leads found to reshuffle' });
+    }
+
+    const stmt = db.prepare('UPDATE leads SET assigned_to = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    const historyStmt = db.prepare('INSERT INTO history (lead_id, user_id, action, details) VALUES (?, ?, ?, ?)');
+    
+    const transaction = db.transaction((leads, agents) => {
+      let agentIndex = 0;
+      for (const lead of leads) {
+        const agentId = agents[agentIndex];
+        const agent = db.prepare('SELECT name FROM users WHERE id = ?').get(agentId) as any;
+        
+        stmt.run(agentId, lead.id);
+        historyStmt.run(lead.id, user_id || 1, 'Reshuffled', `Lead reshuffled to ${agent.name}`);
+        
+        agentIndex = (agentIndex + 1) % agents.length;
+      }
+    });
+    
+    transaction(leadsToReshuffle, agent_ids);
+    res.json({ success: true, reshuffledCount: leadsToReshuffle.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/dashboard', (req, res) => {
   try {
     const totalLeads = db.prepare('SELECT COUNT(*) as count FROM leads').get() as any;
