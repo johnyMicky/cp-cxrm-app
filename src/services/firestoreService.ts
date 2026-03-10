@@ -106,16 +106,29 @@ export const firestoreService = {
     const docSnap = await getDoc(docRef);
     if (!docSnap.exists()) throw new Error("Lead not found");
     
-    const notesQ = query(collection(db, "notes"), where("lead_id", "==", id), orderBy("createdAt", "desc"));
-    const historyQ = query(collection(db, "history"), where("lead_id", "==", id), orderBy("createdAt", "desc"));
+    // Fetch without orderBy to avoid index requirements, sort in memory
+    const notesQ = query(collection(db, "notes"), where("lead_id", "==", id));
+    const historyQ = query(collection(db, "history"), where("lead_id", "==", id));
     
     const [notesSnap, historySnap] = await Promise.all([getDocs(notesQ), getDocs(historyQ)]);
+    
+    const notes = notesSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a: any, b: any) => {
+      const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+      const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+      return dateB.getTime() - dateA.getTime();
+    });
+
+    const history = historySnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a: any, b: any) => {
+      const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+      const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+      return dateB.getTime() - dateA.getTime();
+    });
     
     return { 
       id: docSnap.id, 
       ...docSnap.data(),
-      notes: notesSnap.docs.map(d => ({ id: d.id, ...d.data() })),
-      history: historySnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      notes,
+      history
     };
   },
 

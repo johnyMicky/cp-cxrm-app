@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X } from 'lucide-react';
+import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send } from 'lucide-react';
 import { format } from 'date-fns';
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
@@ -34,11 +34,40 @@ export default function Leads() {
   const [toastMessage, setToastMessage] = useState('Lead created successfully');
   
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [quickNoteId, setQuickNoteId] = useState<string | null>(null);
+  const [quickNoteText, setQuickNoteText] = useState('');
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleQuickNote = async (leadId: string) => {
+    if (!quickNoteText.trim()) return;
+    try {
+      await firestoreService.addNote(leadId, currentUser.id, quickNoteText);
+      setQuickNoteId(null);
+      setQuickNoteText('');
+      handleSuccess('Note added successfully');
+    } catch (err) {
+      console.error('Failed to add quick note:', err);
+    }
+  };
+
+  const handleStatusChange = async (leadId: string, newStatus: string) => {
+    try {
+      await firestoreService.updateLead(leadId, { status: newStatus });
+      await firestoreService.logActivity({
+        lead_id: leadId,
+        user_id: currentUser.id,
+        action: 'Status Changed',
+        details: `Status changed to ${newStatus} from list`
+      });
+      handleSuccess('Status updated successfully');
+    } catch (err) {
+      console.error('Failed to update status:', err);
+    }
   };
 
   const currentUser = { 
@@ -606,7 +635,6 @@ export default function Leads() {
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Lead</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Source</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Assigned To</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Phone</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Actions</th>
               </tr>
@@ -638,46 +666,80 @@ export default function Leads() {
                     </div>
                   </td>
                   <td className="px-6 py-4">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${getStatusColor(lead.status)}`}>
-                      {lead.status}
-                    </span>
+                    <select 
+                      value={lead.status}
+                      onChange={(e) => handleStatusChange(lead.id, e.target.value)}
+                      className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border bg-transparent focus:outline-none cursor-pointer transition-colors ${
+                        lead.status === 'Deposit' ? 'text-emerald-400 border-emerald-500/20' :
+                        ['Lost', 'Underage', 'No Experience'].includes(lead.status) ? 'text-rose-400 border-rose-500/20' :
+                        'text-blue-400 border-blue-500/20'
+                      }`}
+                    >
+                      {STATUSES.map(s => (
+                        <option key={s} value={s} className="bg-[#0A0F1C] text-slate-300">{s}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="px-6 py-4">
                     <span className="text-sm text-slate-300">{lead.source}</span>
                   </td>
                   <td className="px-6 py-4">
-                    {lead.assigned_to ? (
-                      (() => {
-                        const agent = agents.find(a => a.id === lead.assigned_to);
-                        return agent ? (
-                          <div className="flex items-center space-x-2">
-                            <img src={agent.avatar} alt="" className="w-6 h-6 rounded-full" />
-                            <span className="text-sm text-slate-300">{agent.name}</span>
-                          </div>
+                    <div className="flex flex-col space-y-2">
+                      <div className="flex items-center space-x-2">
+                        {lead.phone ? (
+                          <button 
+                            onClick={() => handleCopy(lead.phone, lead.id)}
+                            className="group/copy relative flex items-center space-x-2 text-sm text-slate-300 hover:text-blue-400 transition-colors"
+                          >
+                            <span>{lead.phone}</span>
+                            {copiedId === lead.id ? (
+                              <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded animate-in fade-in zoom-in duration-200">Copied!</span>
+                            ) : (
+                              <Tag className="w-3 h-3 opacity-0 group-hover/copy:opacity-100 transition-opacity" />
+                            )}
+                          </button>
                         ) : (
-                          <span className="text-sm text-slate-500 italic">Unknown Agent</span>
-                        );
-                      })()
-                    ) : (
-                      <span className="text-sm text-slate-500 italic">Unassigned</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4">
-                    {lead.phone ? (
-                      <button 
-                        onClick={() => handleCopy(lead.phone, lead.id)}
-                        className="group/copy relative flex items-center space-x-2 text-sm text-slate-300 hover:text-blue-400 transition-colors"
-                      >
-                        <span>{lead.phone}</span>
-                        {copiedId === lead.id ? (
-                          <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded animate-in fade-in zoom-in duration-200">Copied!</span>
-                        ) : (
-                          <Tag className="w-3 h-3 opacity-0 group-hover/copy:opacity-100 transition-opacity" />
+                          <span className="text-sm text-slate-500 italic">No Phone</span>
                         )}
-                      </button>
-                    ) : (
-                      <span className="text-sm text-slate-500 italic">No Phone</span>
-                    )}
+                        
+                        <button 
+                          onClick={() => {
+                            setQuickNoteId(quickNoteId === lead.id ? null : lead.id);
+                            setQuickNoteText('');
+                          }}
+                          className={`p-1 rounded hover:bg-white/5 transition-colors ${quickNoteId === lead.id ? 'text-blue-400' : 'text-slate-500'}`}
+                          title="Quick Note"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {quickNoteId === lead.id && (
+                        <div className="flex items-center space-x-2 animate-in slide-in-from-top-1 duration-200">
+                          <input 
+                            type="text"
+                            autoFocus
+                            value={quickNoteText}
+                            onChange={(e) => setQuickNoteText(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleQuickNote(lead.id)}
+                            placeholder="Type note..."
+                            className="bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50 w-32"
+                          />
+                          <button 
+                            onClick={() => handleQuickNote(lead.id)}
+                            className="p-1 text-emerald-500 hover:text-emerald-400 transition-colors"
+                          >
+                            <Send className="w-3 h-3" />
+                          </button>
+                          <button 
+                            onClick={() => setQuickNoteId(null)}
+                            className="p-1 text-slate-500 hover:text-slate-400 transition-colors"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </td>
                   <td className="px-6 py-4 text-right">
                     <Link 
