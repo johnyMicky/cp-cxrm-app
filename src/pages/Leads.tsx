@@ -1,22 +1,39 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, Plus, MoreHorizontal, ArrowRight } from 'lucide-react';
+import { Search, Filter, Plus, MoreHorizontal, ArrowRight, CheckCircle2, Upload } from 'lucide-react';
 import { format } from 'date-fns';
+import LeadForm from '../components/LeadForm';
+import LeadImport from '../components/LeadImport';
 
 export default function Leads() {
   const [leads, setLeads] = useState<any[]>([]);
   const [search, setSearch] = useState('');
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('Lead created successfully');
 
-  useEffect(() => {
+  const fetchLeads = () => {
     fetch('/api/leads')
       .then(res => res.json())
       .then(setLeads);
+  };
+
+  useEffect(() => {
+    fetchLeads();
   }, []);
+
+  const handleSuccess = (message?: string) => {
+    fetchLeads();
+    if (message) setToastMessage(message);
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 3000);
+  };
 
   const filteredLeads = leads.filter(lead => 
     lead.name.toLowerCase().includes(search.toLowerCase()) ||
-    lead.email.toLowerCase().includes(search.toLowerCase()) ||
-    lead.country.toLowerCase().includes(search.toLowerCase())
+    (lead.email && lead.email.toLowerCase().includes(search.toLowerCase())) ||
+    (lead.country && lead.country.toLowerCase().includes(search.toLowerCase()))
   );
 
   const getStatusColor = (status: string) => {
@@ -31,16 +48,36 @@ export default function Leads() {
   };
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-6">
+    <div className="p-8 max-w-7xl mx-auto space-y-6 relative">
+      {/* Success Toast */}
+      {showToast && (
+        <div className="fixed bottom-8 right-8 z-[100] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300">
+          <CheckCircle2 className="w-5 h-5" />
+          <span className="font-medium">{toastMessage}</span>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-white tracking-tight">Lead Management</h1>
           <p className="text-sm text-slate-400 mt-1">View, filter, and manage all incoming leads.</p>
         </div>
-        <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20">
-          <Plus className="w-4 h-4" />
-          <span>Add Lead</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <button 
+            onClick={() => setIsImportOpen(true)}
+            className="bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-white/10"
+          >
+            <Upload className="w-4 h-4" />
+            <span>Import Leads</span>
+          </button>
+          <button 
+            onClick={() => setIsFormOpen(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Lead</span>
+          </button>
+        </div>
       </div>
 
       <div className="flex items-center justify-between bg-[#0A0F1C] p-4 rounded-xl border border-white/5 shadow-sm">
@@ -85,7 +122,7 @@ export default function Leads() {
                       </div>
                       <div>
                         <div className="text-sm font-medium text-white">{lead.name}</div>
-                        <div className="text-xs text-slate-500">{lead.email} • {lead.country}</div>
+                        <div className="text-xs text-slate-500">{lead.email || 'No Email'} • {lead.country || 'No Country'}</div>
                       </div>
                     </div>
                   </td>
@@ -129,6 +166,20 @@ export default function Leads() {
           )}
         </div>
       </div>
+
+      {isFormOpen && (
+        <LeadForm 
+          onClose={() => setIsFormOpen(false)} 
+          onSuccess={() => handleSuccess('Lead created successfully')}
+        />
+      )}
+
+      {isImportOpen && (
+        <LeadImport 
+          onClose={() => setIsImportOpen(false)} 
+          onSuccess={() => handleSuccess('Leads imported successfully')}
+        />
+      )}
     </div>
   );
 }
