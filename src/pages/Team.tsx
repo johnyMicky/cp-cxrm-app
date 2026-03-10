@@ -231,18 +231,25 @@ function UserModal({ user, onClose, onSuccess }: { user: User | null, onClose: (
       
       const res = await apiFetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
       if (res.ok) {
         onSuccess();
       } else {
-        const data = await res.json();
-        setError(data.error || 'Something went wrong');
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          setError(data.error || 'Something went wrong');
+        } else {
+          const text = await res.text();
+          console.error('Server error:', text);
+          setError(`Server error: ${res.status} ${res.statusText}`);
+        }
       }
-    } catch (err) {
-      setError('Network error');
+    } catch (err: any) {
+      console.error('Submit error:', err);
+      setError(err.message || 'Network error');
     } finally {
       setIsSubmitting(false);
     }

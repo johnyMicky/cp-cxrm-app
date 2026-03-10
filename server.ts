@@ -20,7 +20,20 @@ try {
       role TEXT NOT NULL,
       avatar TEXT
     );
+  `);
 
+  // Migration: Add password column if it doesn't exist (for existing databases)
+  try {
+    const columns = db.prepare("PRAGMA table_info(users)").all() as any[];
+    if (!columns.find(c => c.name === 'password')) {
+      db.exec("ALTER TABLE users ADD COLUMN password TEXT DEFAULT 'admin123'");
+      console.log('Added password column to users table');
+    }
+  } catch (err) {
+    console.error('Migration error:', err);
+  }
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS leads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -319,20 +332,21 @@ app.get('/api/users', (req, res) => {
 });
 
 app.post('/api/users', (req, res) => {
-  const userContext = getUserContext(req);
-  if (!userContext || userContext.role !== 'Administrator') {
-    return res.status(403).json({ error: 'Access denied' });
-  }
-
-  const { name, email, password, role, avatar } = req.body;
-  if (!password) {
-    return res.status(400).json({ error: 'Password is required' });
-  }
   try {
+    const userContext = getUserContext(req);
+    if (!userContext || userContext.role !== 'Administrator') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const { name, email, password, role, avatar } = req.body;
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
     const stmt = db.prepare('INSERT INTO users (name, email, password, role, avatar) VALUES (?, ?, ?, ?, ?)');
     const result = stmt.run(name, email, password, role, avatar || `https://i.pravatar.cc/150?u=${email}`);
     res.json({ id: result.lastInsertRowid });
   } catch (error: any) {
+    console.error('POST /api/users error:', error);
     res.status(400).json({ error: error.message });
   }
 });
