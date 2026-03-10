@@ -12,6 +12,8 @@ export default function Leads() {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('Lead created successfully');
+  
+  const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' };
 
   const fetchLeads = () => {
     fetch('/api/leads')
@@ -68,13 +70,15 @@ export default function Leads() {
           <p className="text-sm text-slate-400 mt-1">View, filter, and manage all incoming leads.</p>
         </div>
         <div className="flex items-center space-x-3">
-          <button 
-            onClick={() => setIsImportOpen(true)}
-            className="bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-white/10"
-          >
-            <Upload className="w-4 h-4" />
-            <span>Import Leads</span>
-          </button>
+          {currentUser.role !== 'Agent' && (
+            <button 
+              onClick={() => setIsImportOpen(true)}
+              className="bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-white/10"
+            >
+              <Upload className="w-4 h-4" />
+              <span>Import Leads</span>
+            </button>
+          )}
           <button 
             onClick={() => setIsFormOpen(true)}
             className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20"

@@ -376,6 +376,20 @@ async function startServer() {
     res.json(results);
   });
 
+  app.delete('/api/leads/:id', (req, res) => {
+    const { id } = req.params;
+    try {
+      // Delete notes and history first due to foreign keys if needed, 
+      // but better-sqlite3 usually handles this if configured or we can do it manually
+      db.prepare('DELETE FROM notes WHERE lead_id = ?').run(id);
+      db.prepare('DELETE FROM history WHERE lead_id = ?').run(id);
+      db.prepare('DELETE FROM leads WHERE id = ?').run(id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });

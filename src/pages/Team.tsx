@@ -17,6 +17,8 @@ export default function Team() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
+  
+  const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' };
 
   const fetchUsers = async () => {
     setIsLoading(true);
@@ -67,6 +69,15 @@ export default function Team() {
       default: return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
     }
   };
+
+  if (currentUser.role !== 'Administrator') {
+    return (
+      <div className="p-8 text-center">
+        <h1 className="text-xl text-white">Access Denied</h1>
+        <p className="text-slate-400">Only Administrators can manage the team.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6">

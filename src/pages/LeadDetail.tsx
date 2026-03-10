@@ -1,15 +1,20 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check } from 'lucide-react';
+import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
 
 export default function LeadDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [lead, setLead] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [noteContent, setNoteContent] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<any>({});
+  
+  // Mock current user role - in a real app this would come from auth context
+  const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' }; 
 
   useEffect(() => {
     fetch(`/api/leads/${id}`)
@@ -52,6 +57,22 @@ export default function LeadDetail() {
     const res = await fetch(`/api/leads/${id}`);
     const data = await res.json();
     setLead(data);
+  };
+
+  const handleDelete = async () => {
+    if (currentUser.role === 'Manager') {
+      alert('Managers are not allowed to delete leads.');
+      return;
+    }
+    
+    if (!confirm('Are you sure you want to delete this lead? This action cannot be undone.')) return;
+    
+    const res = await fetch(`/api/leads/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      navigate('/leads');
+    } else {
+      alert('Failed to delete lead');
+    }
   };
 
   const getStatusColor = (status: string) => {
@@ -105,13 +126,24 @@ export default function LeadDetail() {
             </button>
           </div>
         ) : (
-          <button 
-            onClick={() => setIsEditing(true)}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20"
-          >
-            <Edit3 className="w-4 h-4" />
-            <span>Edit Details</span>
-          </button>
+          <div className="flex items-center space-x-3">
+            {currentUser.role !== 'Manager' && (
+              <button 
+                onClick={handleDelete}
+                className="p-2 rounded-lg hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 transition-colors border border-white/5"
+                title="Delete Lead"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            )}
+            <button 
+              onClick={() => setIsEditing(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20"
+            >
+              <Edit3 className="w-4 h-4" />
+              <span>Edit Details</span>
+            </button>
+          </div>
         )}
       </div>
 

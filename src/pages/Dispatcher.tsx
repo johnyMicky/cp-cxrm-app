@@ -7,6 +7,8 @@ export default function Dispatcher() {
   const [selectedLeads, setSelectedLeads] = useState<number[]>([]);
   const [selectedAgents, setSelectedAgents] = useState<number[]>([]);
   const [isDistributing, setIsDistributing] = useState(false);
+  
+  const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' };
 
   useEffect(() => {
     fetchData();
@@ -61,6 +63,15 @@ export default function Dispatcher() {
     fetchData();
     setIsDistributing(false);
   };
+
+  if (currentUser.role !== 'Administrator' && currentUser.role !== 'Manager') {
+    return (
+      <div className="p-8 text-center">
+        <h1 className="text-xl text-white">Access Denied</h1>
+        <p className="text-slate-400">You do not have permission to access the Dispatcher.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6 h-full flex flex-col">
