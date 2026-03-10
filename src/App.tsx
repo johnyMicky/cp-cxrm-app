@@ -35,7 +35,7 @@ function Sidebar() {
   const userName = localStorage.getItem('userName') || 'Admin User';
   const userAvatar = localStorage.getItem('userAvatar') || 'https://i.pravatar.cc/150?u=admin';
 
-  const [dbStatus, setDbStatus] = useState<{ db: string; userCount: number; leadCount: number } | null>(null);
+  const [dbStatus, setDbStatus] = useState<{ db: string; userCount: number; leadCount: number; dbError?: string | null } | null>(null);
 
   useEffect(() => {
     fetch('/api/health')

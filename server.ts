@@ -13,9 +13,11 @@ const __dirname = path.dirname(__filename);
 };
 
 // Use a persistent database file in the project root
-const dbPath = path.resolve(process.cwd(), 'crm.db');
+const dbPath = path.resolve(process.cwd(), 'crm_v3.db');
 
 console.log(`[DB] Attempting to use database at: ${dbPath}`);
+console.log(`[DB] Current working directory: ${process.cwd()}`);
+console.log(`[DB] __dirname: ${__dirname}`);
 
 let db: Database.Database;
 let isMemoryDb = false;
@@ -27,6 +29,7 @@ try {
     fs.mkdirSync(dbDir, { recursive: true });
   }
 
+  // Try to open the database file
   db = new Database(dbPath, { timeout: 10000 });
   
   // CRITICAL: Disable WAL and use DELETE mode for maximum persistence in container environments
