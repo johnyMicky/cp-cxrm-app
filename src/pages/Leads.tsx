@@ -33,6 +33,14 @@ export default function Leads() {
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('Lead created successfully');
   
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
   const currentUser = { 
     id: localStorage.getItem('userId') || '1',
     role: localStorage.getItem('userRole') || 'Administrator' 
@@ -599,7 +607,7 @@ export default function Leads() {
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Source</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Assigned To</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Created</th>
+                <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Phone</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Actions</th>
               </tr>
             </thead>
@@ -654,8 +662,22 @@ export default function Leads() {
                       <span className="text-sm text-slate-500 italic">Unassigned</span>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-sm text-slate-400">
-                    {formatDate(lead.createdAt)}
+                  <td className="px-6 py-4">
+                    {lead.phone ? (
+                      <button 
+                        onClick={() => handleCopy(lead.phone, lead.id)}
+                        className="group/copy relative flex items-center space-x-2 text-sm text-slate-300 hover:text-blue-400 transition-colors"
+                      >
+                        <span>{lead.phone}</span>
+                        {copiedId === lead.id ? (
+                          <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded animate-in fade-in zoom-in duration-200">Copied!</span>
+                        ) : (
+                          <Tag className="w-3 h-3 opacity-0 group-hover/copy:opacity-100 transition-opacity" />
+                        )}
+                      </button>
+                    ) : (
+                      <span className="text-sm text-slate-500 italic">No Phone</span>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-right">
                     <Link 
