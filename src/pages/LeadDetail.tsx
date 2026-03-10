@@ -241,7 +241,7 @@ export default function LeadDetail() {
                     className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   >
                     <option value="">Unassigned</option>
-                    {users.filter(u => u.role === 'agent').map(user => (
+                    {users.filter(u => ['Agent', 'Team Leader', 'Manager'].includes(u.role)).map(user => (
                       <option key={user.id} value={user.id}>{user.name}</option>
                     ))}
                   </select>

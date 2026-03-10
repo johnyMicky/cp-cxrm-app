@@ -19,7 +19,7 @@ export default function Dispatcher() {
       
     fetch('/api/users')
       .then(res => res.json())
-      .then(data => setUsers(data.filter((u: any) => u.role === 'agent')));
+      .then(data => setUsers(data.filter((u: any) => ['Agent', 'Team Leader', 'Manager'].includes(u.role))));
   };
 
   const handleSelectLead = (id: number) => {

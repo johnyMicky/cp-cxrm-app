@@ -87,8 +87,47 @@ async function startServer() {
 
   // API Routes
   app.get('/api/users', (req, res) => {
-    const users = db.prepare('SELECT * FROM users').all();
+    const users = db.prepare('SELECT * FROM users ORDER BY id DESC').all();
     res.json(users);
+  });
+
+  app.post('/api/users', (req, res) => {
+    const { name, email, role, avatar } = req.body;
+    try {
+      const stmt = db.prepare('INSERT INTO users (name, email, role, avatar) VALUES (?, ?, ?, ?)');
+      const result = stmt.run(name, email, role, avatar || `https://i.pravatar.cc/150?u=${email}`);
+      res.json({ id: result.lastInsertRowid });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.put('/api/users/:id', (req, res) => {
+    const { name, email, role, avatar } = req.body;
+    const { id } = req.params;
+    try {
+      const stmt = db.prepare('UPDATE users SET name = ?, email = ?, role = ?, avatar = ? WHERE id = ?');
+      stmt.run(name, email, role, avatar, id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.delete('/api/users/:id', (req, res) => {
+    const { id } = req.params;
+    try {
+      // Check if user has assigned leads
+      const leads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE assigned_to = ?').get(id) as any;
+      if (leads.count > 0) {
+        return res.status(400).json({ error: 'Cannot delete user with assigned leads. Reassign leads first.' });
+      }
+      const stmt = db.prepare('DELETE FROM users WHERE id = ?');
+      stmt.run(id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
   });
 
   app.get('/api/leads', (req, res) => {

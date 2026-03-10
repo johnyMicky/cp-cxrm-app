@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import Leads from './pages/Leads';
 import LeadDetail from './pages/LeadDetail';
 import Dispatcher from './pages/Dispatcher';
+import Team from './pages/Team';
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
@@ -18,6 +19,7 @@ function Sidebar() {
   const navItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard },
     { name: 'Leads', path: '/leads', icon: Users },
+    { name: 'Team', path: '/team', icon: UserCog },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox },
     { name: 'Activity', path: '/activity', icon: Activity },
     { name: 'Settings', path: '/settings', icon: Settings },
@@ -79,6 +81,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/leads" element={<Leads />} />
             <Route path="/leads/:id" element={<LeadDetail />} />
+            <Route path="/team" element={<Team />} />
             <Route path="/dispatcher" element={<Dispatcher />} />
           </Routes>
         </main>

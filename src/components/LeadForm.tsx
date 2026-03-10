@@ -32,7 +32,7 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
   useEffect(() => {
     fetch('/api/users')
       .then(res => res.json())
-      .then(data => setUsers(data.filter((u: User) => u.role === 'agent')));
+      .then(data => setUsers(data.filter((u: User) => ['Agent', 'Team Leader', 'Manager'].includes(u.role))));
   }, []);
 
   const validate = () => {
