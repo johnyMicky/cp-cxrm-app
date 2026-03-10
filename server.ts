@@ -376,19 +376,22 @@ async function startServer() {
     }
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist/index.html'));
-    });
-  }
+  // API Routes continued
+
+  app.get('/api/history', (req, res) => {
+    try {
+      const history = db.prepare(`
+        SELECT history.*, users.name as user_name, users.avatar as user_avatar
+        FROM history
+        JOIN users ON history.user_id = users.id
+        ORDER BY history.created_at DESC
+        LIMIT 100
+      `).all();
+      res.json(history);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
   app.post('/api/leads/bulk', (req, res) => {
     const { leads, user_id } = req.body;
@@ -462,6 +465,23 @@ async function startServer() {
       res.status(400).json({ error: error.message });
     }
   });
+
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(path.join(__dirname, 'dist')));
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'API route not found' });
+      }
+      res.sendFile(path.join(__dirname, 'dist/index.html'));
+    });
+  }
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
