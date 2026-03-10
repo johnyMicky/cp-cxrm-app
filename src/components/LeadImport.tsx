@@ -22,6 +22,7 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const downloadTemplate = () => {
@@ -133,7 +134,10 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
 
       // Send to firestore
       const currentUserId = localStorage.getItem('userId') || '1';
-      const result = await firestoreService.bulkCreateLeads(uniqueLeads, currentUserId);
+      setProgress({ current: 0, total: uniqueLeads.length });
+      const result = await firestoreService.bulkCreateLeads(uniqueLeads, currentUserId, (current, total) => {
+        setProgress({ current, total });
+      });
 
       setSummary({
         total: jsonData.length,
@@ -299,10 +303,17 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
                 className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg text-sm font-medium transition-all shadow-lg shadow-blue-500/20"
               >
                 {isProcessing ? (
-                  <>
+                  <div className="flex items-center space-x-3">
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Processing...</span>
-                  </>
+                    <div className="flex flex-col items-start leading-tight">
+                      <span className="text-sm">Processing...</span>
+                      {progress.total > 0 && (
+                        <span className="text-[10px] text-blue-200">
+                          {progress.current} / {progress.total} ({Math.round((progress.current / progress.total) * 100)}%)
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 ) : (
                   <>
                     <CheckCircle2 className="w-4 h-4" />

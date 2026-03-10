@@ -105,37 +105,51 @@ export const firestoreService = {
     return { id: docRef.id };
   },
 
-  async bulkCreateLeads(leads: any[], userId: string) {
+  async bulkCreateLeads(leads: any[], userId: string, onProgress?: (current: number, total: number) => void) {
     let imported = 0;
     let duplicates = 0;
     let errors = 0;
 
-    for (const lead of leads) {
-      try {
-        // Check for duplicate by phone or email
-        let q;
-        if (lead.phone) {
-          q = query(collection(db, LEADS_COL), where("phone", "==", lead.phone));
-        } else if (lead.email) {
-          q = query(collection(db, LEADS_COL), where("email", "==", lead.email));
-        }
-
-        if (q) {
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            duplicates++;
-            continue;
+    const total = leads.length;
+    const chunkSize = 20;
+    for (let i = 0; i < leads.length; i += chunkSize) {
+      const chunk = leads.slice(i, i + chunkSize);
+      
+      const results = await Promise.all(chunk.map(async (lead) => {
+        try {
+          let q;
+          if (lead.phone && lead.phone.trim()) {
+            q = query(collection(db, LEADS_COL), where("phone", "==", lead.phone));
+          } else if (lead.email && lead.email.trim()) {
+            q = query(collection(db, LEADS_COL), where("email", "==", lead.email));
           }
-        }
 
-        await this.createLead({
-          ...lead,
-          createdBy: userId
-        });
-        imported++;
-      } catch (err) {
-        console.error('Bulk import error for lead:', lead, err);
-        errors++;
+          if (q) {
+            const snap = await getDocs(q);
+            if (!snap.empty) {
+              return { type: 'duplicate' };
+            }
+          }
+
+          await this.createLead({
+            ...lead,
+            createdBy: userId
+          });
+          return { type: 'success' };
+        } catch (err) {
+          console.error('Bulk import error for lead:', lead, err);
+          return { type: 'error' };
+        }
+      }));
+
+      results.forEach(res => {
+        if (res.type === 'success') imported++;
+        else if (res.type === 'duplicate') duplicates++;
+        else errors++;
+      });
+
+      if (onProgress) {
+        onProgress(Math.min(i + chunkSize, total), total);
       }
     }
 
