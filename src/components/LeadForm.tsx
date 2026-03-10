@@ -169,6 +169,7 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
                 <option value="Deposit">Deposit</option>
                 <option value="Callback">Callback</option>
                 <option value="Low Potential">Low Potential</option>
+                <option value="No Potential">No Potential</option>
                 <option value="Language Barrier">Language Barrier</option>
                 <option value="Wrong Person">Wrong Person</option>
                 <option value="Underage">Underage</option>

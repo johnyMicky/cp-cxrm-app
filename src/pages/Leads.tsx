@@ -6,7 +6,24 @@ import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
 import { firestoreService } from '../services/firestoreService';
 
-const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
+const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'No Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
+
+const getStatusStyles = (status: string) => {
+  switch (status) {
+    case 'Deposit': return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
+    case 'VM': return 'text-rose-400 border-rose-500/20 bg-rose-500/5';
+    case 'Callback': return 'text-amber-400 border-amber-500/20 bg-amber-500/5';
+    case 'New': return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
+    case 'No answer': return 'text-slate-400 border-slate-500/20 bg-slate-500/5';
+    case 'Low Potential': return 'text-orange-400 border-orange-500/20 bg-orange-500/5';
+    case 'No Potential': return 'text-zinc-500 border-zinc-500/20 bg-zinc-500/5';
+    case 'Language Barrier': return 'text-purple-400 border-purple-500/20 bg-purple-500/5';
+    case 'Wrong Person': return 'text-pink-400 border-pink-500/20 bg-pink-500/5';
+    case 'Underage': return 'text-red-400 border-red-500/20 bg-red-500/5';
+    case 'No Experience': return 'text-red-500 border-red-600/20 bg-red-600/5';
+    default: return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
+  }
+};
 
 export default function Leads() {
   const [leads, setLeads] = useState<any[]>([]);
@@ -699,11 +716,7 @@ export default function Leads() {
                     <select 
                       value={lead.status}
                       onChange={(e) => handleStatusChange(lead.id, e.target.value)}
-                      className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border bg-transparent focus:outline-none cursor-pointer transition-colors ${
-                        lead.status === 'Deposit' ? 'text-emerald-400 border-emerald-500/20' :
-                        ['Lost', 'Underage', 'No Experience'].includes(lead.status) ? 'text-rose-400 border-rose-500/20' :
-                        'text-blue-400 border-blue-500/20'
-                      }`}
+                      className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border bg-transparent focus:outline-none cursor-pointer transition-colors ${getStatusStyles(lead.status)}`}
                     >
                       {STATUSES.map(s => (
                         <option key={s} value={s} className="bg-[#0A0F1C] text-slate-300">{s}</option>

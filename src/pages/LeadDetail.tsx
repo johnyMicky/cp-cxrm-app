@@ -5,6 +5,25 @@ import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { firestoreService } from '../services/firestoreService';
 
+const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'No Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
+
+const getStatusStyles = (status: string) => {
+  switch (status) {
+    case 'Deposit': return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
+    case 'VM': return 'text-rose-400 border-rose-500/20 bg-rose-500/5';
+    case 'Callback': return 'text-amber-400 border-amber-500/20 bg-amber-500/5';
+    case 'New': return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
+    case 'No answer': return 'text-slate-400 border-slate-500/20 bg-slate-500/5';
+    case 'Low Potential': return 'text-orange-400 border-orange-500/20 bg-orange-500/5';
+    case 'No Potential': return 'text-zinc-500 border-zinc-500/20 bg-zinc-500/5';
+    case 'Language Barrier': return 'text-purple-400 border-purple-500/20 bg-purple-500/5';
+    case 'Wrong Person': return 'text-pink-400 border-pink-500/20 bg-pink-500/5';
+    case 'Underage': return 'text-red-400 border-red-500/20 bg-red-500/5';
+    case 'No Experience': return 'text-red-500 border-red-600/20 bg-red-600/5';
+    default: return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
+  }
+};
+
 export default function LeadDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -313,21 +332,14 @@ export default function LeadDetail() {
                   <select 
                     value={editForm.status} 
                     onChange={e => setEditForm({...editForm, status: e.target.value})}
-                    className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    className={`w-full bg-transparent border border-white/10 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${getStatusStyles(editForm.status)}`}
                   >
-                    <option value="New">New</option>
-                    <option value="VM">VM</option>
-                    <option value="No answer">No answer</option>
-                    <option value="Deposit">Deposit</option>
-                    <option value="Callback">Callback</option>
-                    <option value="Low Potential">Low Potential</option>
-                    <option value="Language Barrier">Language Barrier</option>
-                    <option value="Wrong Person">Wrong Person</option>
-                    <option value="Underage">Underage</option>
-                    <option value="No Experience">No Experience</option>
+                    {STATUSES.map(s => (
+                      <option key={s} value={s} className="bg-[#0A0F1C] text-slate-300">{s}</option>
+                    ))}
                   </select>
                 ) : (
-                  <div className="bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white">
+                  <div className={`inline-flex items-center px-4 py-2.5 rounded-lg border text-sm font-bold uppercase tracking-wider ${getStatusStyles(lead.status)}`}>
                     {lead.status}
                   </div>
                 )}
