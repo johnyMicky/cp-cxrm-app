@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -8,6 +8,8 @@ import Leads from './pages/Leads';
 import LeadDetail from './pages/LeadDetail';
 import Dispatcher from './pages/Dispatcher';
 import Team from './pages/Team';
+import Lost from './pages/Lost';
+import ActivityPage from './pages/Activity';
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
@@ -19,6 +21,7 @@ function Sidebar() {
   const navItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
+    { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator'] },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
     { name: 'Activity', path: '/activity', icon: Activity, roles: ['Administrator', 'Manager'] },
@@ -102,6 +105,8 @@ export default function App() {
             <Route path="/leads/:id" element={<LeadDetail />} />
             <Route path="/team" element={<Team />} />
             <Route path="/dispatcher" element={<Dispatcher />} />
+            <Route path="/lost" element={<Lost />} />
+            <Route path="/activity" element={<ActivityPage />} />
           </Routes>
         </main>
       </div>

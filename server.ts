@@ -103,7 +103,14 @@ async function startServer() {
     try {
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
       const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as any;
-      res.json({ status: 'ok', db: db.name, tables, userCount: userCount?.count });
+      const leadCount = db.prepare('SELECT COUNT(*) as count FROM leads').get() as any;
+      res.json({ 
+        status: 'ok', 
+        db: db.name, 
+        tables, 
+        userCount: userCount?.count,
+        leadCount: leadCount?.count 
+      });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
@@ -196,19 +203,31 @@ async function startServer() {
 
   app.post('/api/leads', (req, res) => {
     const { name, phone, email, country, source, status, assigned_to, user_id, notes } = req.body;
-    const stmt = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
-    const result = stmt.run(name, phone, email, country, source, status, assigned_to);
-    const leadId = result.lastInsertRowid;
-    
-    const historyStmt = db.prepare('INSERT INTO history (lead_id, user_id, action, details) VALUES (?, ?, ?, ?)');
-    historyStmt.run(leadId, user_id, 'Created', 'Lead created');
+    try {
+      // Duplicate check
+      if (phone) {
+        const existing = db.prepare('SELECT id FROM leads WHERE phone = ?').get(phone) as any;
+        if (existing) {
+          return res.status(400).json({ error: 'A lead with this phone number already exists.' });
+        }
+      }
 
-    if (notes && notes.trim()) {
-      const noteStmt = db.prepare('INSERT INTO notes (lead_id, user_id, content) VALUES (?, ?, ?)');
-      noteStmt.run(leadId, user_id, notes);
+      const stmt = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
+      const result = stmt.run(name, phone || null, email || null, country || null, source || 'Website', status || 'New', assigned_to || null);
+      const leadId = result.lastInsertRowid;
+      
+      const historyStmt = db.prepare('INSERT INTO history (lead_id, user_id, action, details) VALUES (?, ?, ?, ?)');
+      historyStmt.run(leadId, user_id || 1, 'Created', 'Lead created');
+
+      if (notes && notes.trim()) {
+        const noteStmt = db.prepare('INSERT INTO notes (lead_id, user_id, content) VALUES (?, ?, ?)');
+        noteStmt.run(leadId, user_id || 1, notes);
+      }
+      
+      res.json({ id: leadId });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
     }
-    
-    res.json({ id: leadId });
   });
 
   app.put('/api/leads/:id', (req, res) => {
@@ -307,6 +326,18 @@ async function startServer() {
       
       const topSources = db.prepare('SELECT source, COUNT(*) as count FROM leads GROUP BY source ORDER BY count DESC LIMIT 5').all();
       
+      const duplicatesCount = db.prepare(`
+        SELECT COUNT(*) as count 
+        FROM leads 
+        WHERE phone IN (
+          SELECT phone 
+          FROM leads 
+          WHERE phone IS NOT NULL AND phone != ''
+          GROUP BY phone 
+          HAVING COUNT(*) > 1
+        )
+      `).get() as any;
+      
       // Simplified workload query
       const workload = db.prepare(`
         SELECT u.id, u.name, u.avatar,
@@ -332,7 +363,8 @@ async function startServer() {
         leadsByStatus: leadsByStatus || [],
         usersByRole: usersByRole || [],
         topSources: topSources || [],
-        workload: workload || []
+        workload: workload || [],
+        duplicates: duplicatesCount?.count ?? 0
       });
     } catch (error: any) {
       console.error('Dashboard API Error:', error);
@@ -345,11 +377,18 @@ async function startServer() {
   });
 
   // Vite middleware for development
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'spa',
-  });
-  app.use(vite.middlewares);
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static(path.join(__dirname, 'dist')));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(__dirname, 'dist/index.html'));
+    });
+  }
 
   app.post('/api/leads/bulk', (req, res) => {
     const { leads, user_id } = req.body;

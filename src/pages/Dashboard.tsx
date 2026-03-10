@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck } from 'lucide-react';
+import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart as RePieChart, Pie } from 'recharts';
 
 export default function Dashboard() {
@@ -62,6 +62,7 @@ export default function Dashboard() {
     { name: 'Active Leads', value: data.active, icon: Activity, color: 'text-amber-500', bg: 'bg-amber-500/10' },
     { name: 'Converted', value: data.converted, icon: CheckCircle, color: 'text-cyan-500', bg: 'bg-cyan-500/10' },
     { name: 'Lost', value: data.lost, icon: XCircle, color: 'text-rose-500', bg: 'bg-rose-500/10' },
+    { name: 'Duplicates', value: data.duplicates, icon: ShieldAlert, color: 'text-amber-500', bg: 'bg-amber-500/10' },
   ];
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e'];
@@ -79,7 +80,7 @@ export default function Dashboard() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {stats.map((stat) => (
           <div key={stat.name} className="bg-[#0A0F1C] border border-white/5 rounded-xl p-5 shadow-sm">
             <div className="flex items-center justify-between">
