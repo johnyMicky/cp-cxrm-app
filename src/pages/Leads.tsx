@@ -22,11 +22,13 @@ export default function Leads() {
     agents: [] as number[],
     country: ''
   });
-  const [activeDropdown, setActiveDropdown] = useState<'status' | 'agent' | null>(null);
+  const [activeDropdown, setActiveDropdown] = useState<'status' | 'agent' | 'bulkStatus' | 'bulkAssign' | null>(null);
   const [statusSearch, setStatusSearch] = useState('');
   const [agentSearch, setAgentSearch] = useState('');
   const [isReshuffleModalOpen, setIsReshuffleModalOpen] = useState(false);
   const [reshuffleStatuses, setReshuffleStatuses] = useState<string[]>([]);
+  const [reshuffleAgents, setReshuffleAgents] = useState<number[]>([]);
+  const [selectedBulkAgents, setSelectedBulkAgents] = useState<number[]>([]);
   const [bulkAction, setBulkAction] = useState<{ type: 'status' | 'assign' | 'reshuffle' | null, value: any }>({ type: null, value: null });
   const [showToast, setShowToast] = useState(false);
   const [toastMessage, setToastMessage] = useState('Lead created successfully');
@@ -59,6 +61,14 @@ export default function Leads() {
   useEffect(() => {
     fetchLeads();
     fetchAgents();
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (!(e.target as Element).closest('.relative')) {
+        setActiveDropdown(null);
+      }
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
   const handleSuccess = (message?: string) => {
@@ -66,6 +76,7 @@ export default function Leads() {
     setSelectedLeads([]);
     setBulkAction({ type: null, value: null });
     setIsReshuffleModalOpen(false);
+    setActiveDropdown(null);
     if (message) setToastMessage(message);
     setShowToast(true);
     setTimeout(() => setShowToast(false), 3000);
@@ -134,28 +145,21 @@ export default function Leads() {
     }
   };
 
-  const handleBulkAssign = async (agentId: number | 'round-robin') => {
+  const handleBulkAssign = async () => {
+    if (selectedBulkAgents.length === 0) return;
     try {
-      if (agentId === 'round-robin') {
-        const res = await apiFetch('/api/leads/distribute', {
-          method: 'POST',
-          body: JSON.stringify({
-            lead_ids: selectedLeads,
-            agent_ids: agents.map(a => a.id),
-            user_id: currentUser.id
-          })
-        });
-        if (res.ok) handleSuccess(`Distributed ${selectedLeads.length} leads among ${agents.length} agents`);
-      } else {
-        const res = await apiFetch('/api/leads/assign', {
-          method: 'POST',
-          body: JSON.stringify({
-            lead_ids: selectedLeads,
-            assigned_to: agentId,
-            user_id: currentUser.id
-          })
-        });
-        if (res.ok) handleSuccess(`Assigned ${selectedLeads.length} leads to agent`);
+      const res = await apiFetch('/api/leads/distribute', {
+        method: 'POST',
+        body: JSON.stringify({
+          lead_ids: selectedLeads,
+          agent_ids: selectedBulkAgents,
+          user_id: currentUser.id
+        })
+      });
+      if (res.ok) {
+        handleSuccess(`Distributed ${selectedLeads.length} leads among ${selectedBulkAgents.length} agents`);
+        setSelectedBulkAgents([]);
+        setActiveDropdown(null);
       }
     } catch (err) {
       console.error('Bulk assign failed:', err);
@@ -167,7 +171,7 @@ export default function Leads() {
       const res = await apiFetch('/api/leads/reshuffle', {
         method: 'POST',
         body: JSON.stringify({
-          agent_ids: agents.map(a => a.id),
+          agent_ids: reshuffleAgents.length > 0 ? reshuffleAgents : agents.map(a => a.id),
           user_id: currentUser.id,
           status_filter: reshuffleStatuses
         })
@@ -262,53 +266,90 @@ export default function Leads() {
               <span className="text-sm font-medium text-blue-400">{selectedLeads.length} selected</span>
               <div className="h-4 w-px bg-white/10 mx-2" />
               
-              <div className="relative group">
-                <button className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-medium text-slate-300 border border-white/10 transition-colors">
+              <div className="relative">
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveDropdown(activeDropdown === 'bulkStatus' ? null : 'bulkStatus');
+                  }}
+                  className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${activeDropdown === 'bulkStatus' ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'}`}
+                >
                   <Tag className="w-3.5 h-3.5" />
                   <span>Status</span>
-                  <ChevronDown className="w-3 h-3" />
+                  <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'bulkStatus' ? 'rotate-180' : ''}`} />
                 </button>
-                <div className="absolute right-0 top-full mt-2 w-48 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 hidden group-hover:block">
-                  {STATUSES.map(status => (
-                    <button 
-                      key={status}
-                      onClick={() => handleBulkStatusUpdate(status)}
-                      className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
-                    >
-                      {status}
-                    </button>
-                  ))}
-                </div>
+                {activeDropdown === 'bulkStatus' && (
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 animate-in fade-in zoom-in duration-150">
+                    {STATUSES.map(status => (
+                      <button 
+                        key={status}
+                        onClick={() => handleBulkStatusUpdate(status)}
+                        className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
+                      >
+                        {status}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              <div className="relative group">
-                <button className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-medium text-slate-300 border border-white/10 transition-colors">
+              <div className="relative">
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveDropdown(activeDropdown === 'bulkAssign' ? null : 'bulkAssign');
+                  }}
+                  className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${activeDropdown === 'bulkAssign' ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'}`}
+                >
                   <UserPlus className="w-3.5 h-3.5" />
                   <span>Assign</span>
-                  <ChevronDown className="w-3 h-3" />
+                  <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'bulkAssign' ? 'rotate-180' : ''}`} />
                 </button>
-                <div className="absolute right-0 top-full mt-2 w-48 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 hidden group-hover:block">
-                  <button 
-                    onClick={() => handleBulkAssign('round-robin')}
-                    className="w-full text-left px-4 py-2 text-xs text-blue-400 font-medium hover:bg-white/5 transition-colors border-b border-white/5 mb-1"
-                  >
-                    Round Robin (All Agents)
-                  </button>
-                  {agents.map(agent => (
-                    <button 
-                      key={agent.id}
-                      onClick={() => handleBulkAssign(agent.id)}
-                      className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
-                    >
-                      {agent.name}
-                    </button>
-                  ))}
-                </div>
+                {activeDropdown === 'bulkAssign' && (
+                  <div className="absolute right-0 top-full mt-2 w-64 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 animate-in fade-in zoom-in duration-150" onClick={(e) => e.stopPropagation()}>
+                    <div className="px-4 py-2 border-b border-white/5 flex items-center justify-between">
+                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Select Agents</span>
+                      <button 
+                        onClick={() => setSelectedBulkAgents(selectedBulkAgents.length === agents.length ? [] : agents.map(a => a.id))}
+                        className="text-[10px] text-blue-400 hover:text-blue-300"
+                      >
+                        {selectedBulkAgents.length === agents.length ? 'Deselect All' : 'Select All'}
+                      </button>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto custom-scrollbar py-1">
+                      {agents.map(agent => (
+                        <button 
+                          key={agent.id}
+                          onClick={() => setSelectedBulkAgents(prev => 
+                            prev.includes(agent.id) ? prev.filter(id => id !== agent.id) : [...prev, agent.id]
+                          )}
+                          className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+                        >
+                          <div className="flex items-center space-x-2">
+                            <img src={agent.avatar} alt="" className="w-5 h-5 rounded-full" />
+                            <span>{agent.name}</span>
+                          </div>
+                          {selectedBulkAgents.includes(agent.id) && <CheckSquare className="w-3 h-3 text-blue-500" />}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="p-2 border-t border-white/5">
+                      <button 
+                        onClick={handleBulkAssign}
+                        disabled={selectedBulkAgents.length === 0}
+                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2 rounded-lg text-xs font-medium transition-colors"
+                      >
+                        Assign to {selectedBulkAgents.length} Agents
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <button 
                 onClick={() => {
                   setReshuffleStatuses(filters.statuses);
+                  setReshuffleAgents(agents.map(a => a.id));
                   setIsReshuffleModalOpen(true);
                 }}
                 className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-xs font-medium text-amber-400 border border-amber-500/20 transition-colors"
@@ -357,9 +398,43 @@ export default function Leads() {
                     ))}
                   </div>
                 </div>
+
+                <div className="space-y-3">
+                  <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Select Agents to Receive Leads</label>
+                  <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto custom-scrollbar p-1">
+                    {agents.map(agent => (
+                      <button
+                        key={agent.id}
+                        onClick={() => setReshuffleAgents(prev => 
+                          prev.includes(agent.id) ? prev.filter(id => id !== agent.id) : [...prev, agent.id]
+                        )}
+                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all ${
+                          reshuffleAgents.includes(agent.id)
+                            ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-2">
+                          <img src={agent.avatar} alt="" className="w-4 h-4 rounded-full" />
+                          <span className="truncate">{agent.name}</span>
+                        </div>
+                        {reshuffleAgents.includes(agent.id) && <CheckSquare className="w-3 h-3" />}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex justify-end">
+                    <button 
+                      onClick={() => setReshuffleAgents(reshuffleAgents.length === agents.length ? [] : agents.map(a => a.id))}
+                      className="text-[10px] text-blue-400 hover:text-blue-300"
+                    >
+                      {reshuffleAgents.length === agents.length ? 'Deselect All' : 'Select All'}
+                    </button>
+                  </div>
+                </div>
+
                 <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl">
                   <p className="text-xs text-amber-400 leading-relaxed">
-                    <strong>Warning:</strong> This will redistribute all leads with the selected statuses among all active agents. This action cannot be undone.
+                    <strong>Warning:</strong> This will redistribute leads with the selected statuses among the selected agents. This action cannot be undone.
                   </p>
                 </div>
               </div>
@@ -372,7 +447,7 @@ export default function Leads() {
                 </button>
                 <button 
                   onClick={handleReshuffle}
-                  disabled={reshuffleStatuses.length === 0}
+                  disabled={reshuffleStatuses.length === 0 || reshuffleAgents.length === 0}
                   className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 shadow-lg shadow-amber-500/20"
                 >
                   <RefreshCw className="w-4 h-4" />
