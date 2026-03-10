@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, Upload, Download, AlertCircle, CheckCircle2, FileText, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { apiFetch } from '../utils/api';
 
 interface LeadImportProps {
   onClose: () => void;
@@ -111,6 +112,7 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
         country: row['Country'],
         source: row['Source'],
         status: row['Status'],
+        assigned_to: row['Assigned To'],
         notes: row['Notes']
       })).filter(lead => lead.name); // Ensure name exists
 
@@ -130,12 +132,11 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
       }
 
       // Send to backend
-      const response = await fetch('/api/leads/bulk', {
+      const response = await apiFetch('/api/leads/bulk', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           leads: uniqueLeads,
-          user_id: 1 // Default admin for now
+          user_id: parseInt(localStorage.getItem('userId') || '1')
         })
       });
 

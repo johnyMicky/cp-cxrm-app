@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database(':memory:');
+const db = new Database('database.sqlite');
 
 // Initialize database
 try {
@@ -631,6 +631,7 @@ app.post('/api/leads/bulk', (req, res) => {
   const insertStmt = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
   const historyStmt = db.prepare('INSERT INTO history (lead_id, user_id, action, details) VALUES (?, ?, ?, ?)');
   const noteStmt = db.prepare('INSERT INTO notes (lead_id, user_id, content) VALUES (?, ?, ?)');
+  const findUserStmt = db.prepare('SELECT id FROM users WHERE name = ? COLLATE NOCASE');
 
   const transaction = db.transaction((leadsList) => {
     for (const lead of leadsList) {
@@ -643,6 +644,12 @@ app.post('/api/leads/bulk', (req, res) => {
           }
         }
 
+        let assignedToId = lead.assigned_to;
+        if (typeof assignedToId === 'string' && assignedToId.trim()) {
+          const user = findUserStmt.get(assignedToId.trim());
+          assignedToId = user ? (user as any).id : null;
+        }
+
         const result = insertStmt.run(
           lead.name, 
           lead.phone || null, 
@@ -650,7 +657,7 @@ app.post('/api/leads/bulk', (req, res) => {
           lead.country || null, 
           lead.source || 'Website', 
           lead.status || 'New', 
-          lead.assigned_to || null
+          assignedToId || null
         );
         
         const leadId = result.lastInsertRowid;
