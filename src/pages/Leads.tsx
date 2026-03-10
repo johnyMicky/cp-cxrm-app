@@ -37,6 +37,9 @@ export default function Leads() {
   const [quickNoteId, setQuickNoteId] = useState<string | null>(null);
   const [quickNoteText, setQuickNoteText] = useState('');
 
+  const [callbackModal, setCallbackModal] = useState<{ leadId: string, status: string } | null>(null);
+  const [callbackDate, setCallbackDate] = useState('');
+
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -56,6 +59,10 @@ export default function Leads() {
   };
 
   const handleStatusChange = async (leadId: string, newStatus: string) => {
+    if (newStatus === 'Callback') {
+      setCallbackModal({ leadId, status: newStatus });
+      return;
+    }
     try {
       await firestoreService.updateLead(leadId, { status: newStatus });
       await firestoreService.logActivity({
@@ -67,6 +74,27 @@ export default function Leads() {
       handleSuccess('Status updated successfully');
     } catch (err) {
       console.error('Failed to update status:', err);
+    }
+  };
+
+  const handleCallbackSubmit = async () => {
+    if (!callbackModal || !callbackDate) return;
+    try {
+      await firestoreService.updateLead(callbackModal.leadId, { 
+        status: callbackModal.status,
+        callbackAt: new Date(callbackDate)
+      });
+      await firestoreService.logActivity({
+        lead_id: callbackModal.leadId,
+        user_id: currentUser.id,
+        action: 'Status Changed & Callback Scheduled',
+        details: `Status changed to Callback and scheduled for ${format(new Date(callbackDate), 'MMM d, h:mm a')}`
+      });
+      setCallbackModal(null);
+      setCallbackDate('');
+      handleSuccess('Callback scheduled successfully');
+    } catch (err) {
+      console.error('Failed to schedule callback:', err);
     }
   };
 
@@ -775,6 +803,43 @@ export default function Leads() {
           onClose={() => setIsImportOpen(false)} 
           onSuccess={() => handleSuccess('Leads imported successfully')}
         />
+      )}
+
+      {callbackModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-6 border-b border-white/5 bg-white/[0.02]">
+              <h2 className="text-lg font-semibold text-white tracking-tight flex items-center space-x-2">
+                <RefreshCw className="w-5 h-5 text-amber-400" />
+                <span>Schedule Callback</span>
+              </h2>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-slate-400">Please select a date and time for the callback.</p>
+              <input 
+                type="datetime-local" 
+                value={callbackDate}
+                onChange={(e) => setCallbackDate(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              />
+              <div className="flex items-center space-x-3 pt-2">
+                <button 
+                  onClick={() => setCallbackModal(null)}
+                  className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-colors border border-white/10"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleCallbackSubmit}
+                  disabled={!callbackDate}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-blue-500/20"
+                >
+                  Schedule
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

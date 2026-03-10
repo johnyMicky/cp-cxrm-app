@@ -13,6 +13,8 @@ export default function LeadDetail() {
   const [noteContent, setNoteContent] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<any>({});
+  const [isSchedulingCallback, setIsSchedulingCallback] = useState(false);
+  const [callbackDate, setCallbackDate] = useState('');
   
   const currentUserId = localStorage.getItem('userId') || '1';
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
@@ -95,6 +97,28 @@ export default function LeadDetail() {
     const data = await firestoreService.getLead(id);
     setLead(data);
     setIsEditing(false);
+  };
+
+  const handleQuickCallback = async () => {
+    if (!id || !callbackDate) return;
+    try {
+      await firestoreService.updateLead(id, { 
+        callbackAt: new Date(callbackDate)
+      });
+      await firestoreService.logActivity({
+        lead_id: id,
+        user_id: currentUserId,
+        action: 'Callback Scheduled',
+        details: `Scheduled for ${format(new Date(callbackDate), 'MMM d, h:mm a')}`
+      });
+      const data = await firestoreService.getLead(id);
+      setLead(data);
+      setEditForm(data);
+      setIsSchedulingCallback(false);
+      setCallbackDate('');
+    } catch (err) {
+      console.error('Failed to schedule callback:', err);
+    }
   };
 
   const handleAddNote = async () => {
@@ -352,8 +376,21 @@ export default function LeadDetail() {
                     className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   />
                 ) : (
-                  <div className="bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white">
-                    {lead.callbackAt ? formatDateTime(lead.callbackAt) : <span className="text-slate-500 italic">No callback scheduled</span>}
+                  <div className="group relative">
+                    <div className="bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white flex items-center justify-between">
+                      <span>
+                        {lead.callbackAt ? formatDateTime(lead.callbackAt) : <span className="text-slate-500 italic">No callback scheduled</span>}
+                      </span>
+                      <button 
+                        onClick={() => {
+                          setCallbackDate(lead.callbackAt ? format(lead.callbackAt.toDate ? lead.callbackAt.toDate() : new Date(lead.callbackAt), "yyyy-MM-dd'T'HH:mm") : '');
+                          setIsSchedulingCallback(true);
+                        }}
+                        className="text-blue-500 hover:text-blue-400 text-xs font-medium opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        {lead.callbackAt ? 'Change' : 'Set Date'}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -437,6 +474,43 @@ export default function LeadDetail() {
           </div>
         </div>
       </div>
+
+      {isSchedulingCallback && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-6 border-b border-white/5 bg-white/[0.02]">
+              <h2 className="text-lg font-semibold text-white tracking-tight flex items-center space-x-2">
+                <Calendar className="w-5 h-5 text-blue-500" />
+                <span>Schedule Callback</span>
+              </h2>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-slate-400">Please select a date and time for the callback.</p>
+              <input 
+                type="datetime-local" 
+                value={callbackDate}
+                onChange={(e) => setCallbackDate(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              />
+              <div className="flex items-center space-x-3 pt-2">
+                <button 
+                  onClick={() => setIsSchedulingCallback(false)}
+                  className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-colors border border-white/10"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleQuickCallback}
+                  disabled={!callbackDate}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-blue-500/20"
+                >
+                  Schedule
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
