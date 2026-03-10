@@ -37,6 +37,28 @@ export default function LeadDetail() {
     loadData();
   }, [id]);
 
+  const formatDate = (date: any) => {
+    if (!date) return 'N/A';
+    try {
+      const d = date.toDate ? date.toDate() : new Date(date);
+      if (isNaN(d.getTime())) return 'Invalid Date';
+      return format(d, 'MMM d, yyyy');
+    } catch (e) {
+      return 'Invalid Date';
+    }
+  };
+
+  const formatDateTime = (date: any) => {
+    if (!date) return 'N/A';
+    try {
+      const d = date.toDate ? date.toDate() : new Date(date);
+      if (isNaN(d.getTime())) return 'Invalid Date';
+      return format(d, 'MMM d, h:mm a');
+    } catch (e) {
+      return 'Invalid Date';
+    }
+  };
+
   if (!lead) return <div className="p-8 text-slate-400">Loading lead details...</div>;
 
   const handleSave = async () => {
@@ -120,7 +142,7 @@ export default function LeadDetail() {
                 {lead.status}
               </span>
             </h1>
-            <p className="text-sm text-slate-400 mt-1">Created on {format(new Date(lead.created_at), 'MMM d, yyyy')}</p>
+            <p className="text-sm text-slate-400 mt-1">Created on {formatDate(lead.createdAt)}</p>
           </div>
         </div>
         
@@ -284,7 +306,7 @@ export default function LeadDetail() {
                 {isEditing ? (
                   <select 
                     value={editForm.assigned_to || ''} 
-                    onChange={e => setEditForm({...editForm, assigned_to: e.target.value ? parseInt(e.target.value) : null})}
+                    onChange={e => setEditForm({...editForm, assigned_to: e.target.value || null})}
                     className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   >
                     <option value="">Unassigned</option>
@@ -294,14 +316,17 @@ export default function LeadDetail() {
                   </select>
                 ) : (
                   <div className="flex items-center space-x-3 bg-white/5 border border-white/10 rounded-lg px-4 py-2.5">
-                    {lead.assigned_to_name ? (
-                      <>
-                        <img src={lead.assigned_to_avatar} alt="" className="w-6 h-6 rounded-full" />
-                        <span className="text-sm text-white font-medium">{lead.assigned_to_name}</span>
-                      </>
-                    ) : (
-                      <span className="text-sm text-slate-400 italic">Unassigned</span>
-                    )}
+                    {(() => {
+                      const agent = users.find(u => u.id === lead.assigned_to);
+                      return agent ? (
+                        <>
+                          <img src={agent.avatar} alt="" className="w-6 h-6 rounded-full" />
+                          <span className="text-sm text-white font-medium">{agent.name}</span>
+                        </>
+                      ) : (
+                        <span className="text-sm text-slate-400 italic">Unassigned</span>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -335,18 +360,21 @@ export default function LeadDetail() {
             </div>
             
             <div className="space-y-4">
-              {lead.notes.length > 0 ? lead.notes.map((note: any) => (
-                <div key={note.id} className="bg-white/[0.02] border border-white/5 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center space-x-2">
-                      <img src={note.user_avatar} alt="" className="w-5 h-5 rounded-full" />
-                      <span className="text-sm font-medium text-slate-300">{note.user_name}</span>
+              {lead.notes.length > 0 ? lead.notes.map((note: any) => {
+                const noteUser = users.find(u => u.id === note.user_id);
+                return (
+                  <div key={note.id} className="bg-white/[0.02] border border-white/5 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center space-x-2">
+                        <img src={noteUser?.avatar || 'https://i.pravatar.cc/150?u=unknown'} alt="" className="w-5 h-5 rounded-full" />
+                        <span className="text-sm font-medium text-slate-300">{noteUser?.name || 'Unknown User'}</span>
+                      </div>
+                      <span className="text-xs text-slate-500">{formatDateTime(note.createdAt)}</span>
                     </div>
-                    <span className="text-xs text-slate-500">{format(new Date(note.created_at), 'MMM d, h:mm a')}</span>
+                    <p className="text-sm text-slate-400 leading-relaxed whitespace-pre-wrap">{note.content}</p>
                   </div>
-                  <p className="text-sm text-slate-400 leading-relaxed whitespace-pre-wrap">{note.content}</p>
-                </div>
-              )) : (
+                );
+              }) : (
                 <p className="text-sm text-slate-500 text-center py-4 italic">No notes added yet.</p>
               )}
             </div>
@@ -359,22 +387,25 @@ export default function LeadDetail() {
             </h3>
             
             <div className="relative border-l border-white/10 ml-3 space-y-6 pb-4">
-              {lead.history.map((item: any, i: number) => (
-                <div key={item.id} className="relative pl-6">
-                  <div className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-blue-500 border-2 border-[#0A0F1C]" />
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-200">
-                        {item.action} <span className="text-slate-500 font-normal">by {item.user_name}</span>
-                      </p>
-                      <p className="text-sm text-slate-400 mt-1">{item.details}</p>
+              {lead.history.map((item: any, i: number) => {
+                const historyUser = users.find(u => u.id === item.user_id);
+                return (
+                  <div key={item.id} className="relative pl-6">
+                    <div className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-blue-500 border-2 border-[#0A0F1C]" />
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-slate-200">
+                          {item.action} <span className="text-slate-500 font-normal">by {historyUser?.name || 'Unknown User'}</span>
+                        </p>
+                        <p className="text-sm text-slate-400 mt-1">{item.details}</p>
+                      </div>
+                      <span className="text-xs text-slate-500 whitespace-nowrap ml-4">
+                        {formatDateTime(item.createdAt)}
+                      </span>
                     </div>
-                    <span className="text-xs text-slate-500 whitespace-nowrap ml-4">
-                      {format(new Date(item.created_at), 'MMM d, h:mm a')}
-                    </span>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

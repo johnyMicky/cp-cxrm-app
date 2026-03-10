@@ -103,7 +103,7 @@ export default function Leads() {
     }
   };
 
-  const handleSelectLead = (id: number) => {
+  const handleSelectLead = (id: string) => {
     setSelectedLeads(prev => 
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
@@ -118,7 +118,7 @@ export default function Leads() {
     }));
   };
 
-  const toggleAgentFilter = (agentId: number) => {
+  const toggleAgentFilter = (agentId: string) => {
     setFilters(prev => ({
       ...prev,
       agents: prev.agents.includes(agentId)
@@ -174,6 +174,17 @@ export default function Leads() {
       case 'Underage':
       case 'No Experience': return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
       default: return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+    }
+  };
+
+  const formatDate = (date: any) => {
+    if (!date) return 'N/A';
+    try {
+      const d = date.toDate ? date.toDate() : new Date(date);
+      if (isNaN(d.getTime())) return 'Invalid Date';
+      return format(d, 'MMM d, yyyy');
+    } catch (e) {
+      return 'Invalid Date';
     }
   };
 
@@ -627,17 +638,24 @@ export default function Leads() {
                     <span className="text-sm text-slate-300">{lead.source}</span>
                   </td>
                   <td className="px-6 py-4">
-                    {lead.assigned_to_name ? (
-                      <div className="flex items-center space-x-2">
-                        <img src={lead.assigned_to_avatar} alt="" className="w-6 h-6 rounded-full" />
-                        <span className="text-sm text-slate-300">{lead.assigned_to_name}</span>
-                      </div>
+                    {lead.assigned_to ? (
+                      (() => {
+                        const agent = agents.find(a => a.id === lead.assigned_to);
+                        return agent ? (
+                          <div className="flex items-center space-x-2">
+                            <img src={agent.avatar} alt="" className="w-6 h-6 rounded-full" />
+                            <span className="text-sm text-slate-300">{agent.name}</span>
+                          </div>
+                        ) : (
+                          <span className="text-sm text-slate-500 italic">Unknown Agent</span>
+                        );
+                      })()
                     ) : (
                       <span className="text-sm text-slate-500 italic">Unassigned</span>
                     )}
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-400">
-                    {format(new Date(lead.created_at), 'MMM d, yyyy')}
+                    {formatDate(lead.createdAt)}
                   </td>
                   <td className="px-6 py-4 text-right">
                     <Link 

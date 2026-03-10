@@ -6,13 +6,18 @@ import { firestoreService } from '../services/firestoreService';
 
 export default function Activity() {
   const [history, setHistory] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const loadData = async () => {
       try {
-        const data = await firestoreService.getHistory();
-        setHistory(data);
+        const [historyData, usersData] = await Promise.all([
+          firestoreService.getHistory(),
+          firestoreService.getUsers()
+        ]);
+        setHistory(historyData);
+        setUsers(usersData);
         setLoading(false);
       } catch (err) {
         console.error('Activity Page Load Error:', err);
@@ -21,6 +26,17 @@ export default function Activity() {
 
     loadData();
   }, []);
+
+  const formatDateTime = (date: any) => {
+    if (!date) return 'N/A';
+    try {
+      const d = date.toDate ? date.toDate() : new Date(date);
+      if (isNaN(d.getTime())) return 'Invalid Date';
+      return format(d, 'MMM d, h:mm a');
+    } catch (e) {
+      return 'Invalid Date';
+    }
+  };
 
   if (loading) return <div className="p-8 text-slate-400 animate-pulse">Loading activity log...</div>;
 
@@ -40,42 +56,45 @@ export default function Activity() {
         </div>
 
         <div className="divide-y divide-white/5">
-          {history.map((item) => (
-            <div key={item.id} className="p-6 hover:bg-white/[0.02] transition-colors group">
-              <div className="flex items-start justify-between">
-                <div className="flex items-start space-x-4">
-                  <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center mt-1">
-                    <Clock className="w-5 h-5 text-blue-500" />
-                  </div>
-                  <div>
-                    <div className="flex items-center space-x-2">
-                      <span className="text-sm font-semibold text-white">{item.user_name}</span>
-                      <span className="text-xs text-slate-500 uppercase tracking-wider font-bold">{item.action}</span>
+          {history.map((item) => {
+            const user = users.find(u => u.id === item.user_id);
+            return (
+              <div key={item.id} className="p-6 hover:bg-white/[0.02] transition-colors group">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-start space-x-4">
+                    <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center mt-1">
+                      <Clock className="w-5 h-5 text-blue-500" />
                     </div>
-                    <p className="text-sm text-slate-300 mt-1">{item.details}</p>
-                    <div className="flex items-center space-x-4 mt-3">
-                      <div className="flex items-center space-x-1.5 text-xs text-slate-500">
-                        <Clock className="w-3.5 h-3.5" />
-                        <span>{format(new Date(item.created_at), 'MMM d, h:mm a')}</span>
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-sm font-semibold text-white">{user?.name || 'Unknown User'}</span>
+                        <span className="text-xs text-slate-500 uppercase tracking-wider font-bold">{item.action}</span>
                       </div>
-                      <div className="flex items-center space-x-1.5 text-xs text-slate-500">
-                        <User className="w-3.5 h-3.5" />
-                        <Link to={`/leads/${item.lead_id}`} className="hover:text-blue-400 transition-colors">
-                          Lead #{item.lead_id}
-                        </Link>
+                      <p className="text-sm text-slate-300 mt-1">{item.details}</p>
+                      <div className="flex items-center space-x-4 mt-3">
+                        <div className="flex items-center space-x-1.5 text-xs text-slate-500">
+                          <Clock className="w-3.5 h-3.5" />
+                          <span>{formatDateTime(item.createdAt)}</span>
+                        </div>
+                        <div className="flex items-center space-x-1.5 text-xs text-slate-500">
+                          <User className="w-3.5 h-3.5" />
+                          <Link to={`/leads/${item.lead_id}`} className="hover:text-blue-400 transition-colors">
+                            Lead #{item.lead_id}
+                          </Link>
+                        </div>
                       </div>
                     </div>
                   </div>
+                  <Link 
+                    to={`/leads/${item.lead_id}`}
+                    className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-500 hover:text-white transition-colors"
+                  >
+                    <ArrowRight className="w-4 h-4" />
+                  </Link>
                 </div>
-                <Link 
-                  to={`/leads/${item.lead_id}`}
-                  className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-500 hover:text-white transition-colors"
-                >
-                  <ArrowRight className="w-4 h-4" />
-                </Link>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {history.length === 0 && (
             <div className="p-12 text-center text-slate-500">
               No activity recorded yet.

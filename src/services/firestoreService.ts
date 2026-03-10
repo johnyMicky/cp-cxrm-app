@@ -307,6 +307,30 @@ export const firestoreService = {
     });
     stats.usersByRole = Object.entries(roleMap).map(([role, count]) => ({ role, count }));
 
+    // Top Sources
+    const sourceMap: any = {};
+    filteredLeads.forEach(l => {
+      if (l.source) {
+        sourceMap[l.source] = (sourceMap[l.source] || 0) + 1;
+      }
+    });
+    stats.topSources = Object.entries(sourceMap)
+      .map(([source, count]) => ({ source, count }))
+      .sort((a: any, b: any) => b.count - a.count)
+      .slice(0, 5);
+
+    // Workload (for agents)
+    const agents = users.filter((u: any) => ['Agent', 'Team Leader'].includes(u.role));
+    stats.workload = agents.map((agent: any) => {
+      const agentLeads = leads.filter(l => l.assigned_to === agent.id);
+      return {
+        name: agent.name,
+        new_leads: agentLeads.filter(l => l.status === 'New').length,
+        in_progress: agentLeads.filter(l => !['New', 'Deposit', 'Lost'].includes(l.status)).length,
+        completed: agentLeads.filter(l => l.status === 'Deposit').length
+      };
+    }).slice(0, 5);
+
     return stats;
   }
 };
