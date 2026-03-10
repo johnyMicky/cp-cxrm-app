@@ -69,12 +69,36 @@ export const firestoreService = {
 
   // Leads
   async getLeads(agentId?: string) {
-    let q = query(collection(db, LEADS_COL), orderBy("createdAt", "desc"));
-    if (agentId) {
-      q = query(collection(db, LEADS_COL), where("assigned_to", "==", agentId), orderBy("createdAt", "desc"));
+    try {
+      // Fetch all leads and sort/filter in memory to avoid index requirements
+      const q = query(collection(db, LEADS_COL), orderBy("createdAt", "desc"));
+      const querySnapshot = await getDocs(q);
+      const allLeads = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      if (agentId) {
+        return allLeads.filter((lead: any) => String(lead.assigned_to) === String(agentId));
+      }
+      
+      return allLeads;
+    } catch (err) {
+      console.error('Error fetching leads:', err);
+      // Fallback: try without orderBy if it fails
+      const q = query(collection(db, LEADS_COL));
+      const querySnapshot = await getDocs(q);
+      const allLeads = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      let filtered = allLeads;
+      if (agentId) {
+        filtered = allLeads.filter((lead: any) => String(lead.assigned_to) === String(agentId));
+      }
+      
+      // Sort manually
+      return filtered.sort((a: any, b: any) => {
+        const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+        const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        return dateB.getTime() - dateA.getTime();
+      });
     }
-    const querySnapshot = await getDocs(q);
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   },
 
   async getLead(id: string) {
