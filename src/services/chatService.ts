@@ -148,5 +148,42 @@ export const chatService = {
   async getAllUsers() {
     const snap = await getDocs(collection(db, USERS_COL));
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+
+  async findUserByEmail(email: string) {
+    const q = query(collection(db, USERS_COL), where("email", "==", email.toLowerCase()));
+    const snap = await getDocs(q);
+    if (snap.empty) return null;
+    return { id: snap.docs[0].id, ...snap.docs[0].data() };
+  },
+
+  async getOrCreateDirectChat(userId1: string, userId2: string, user2Name: string) {
+    // Check if a direct chat already exists
+    const q = query(
+      collection(db, CHATS_COL), 
+      where("members", "array-contains", userId1),
+      where("isDirect", "==", true)
+    );
+    const snap = await getDocs(q);
+    const existingChat = snap.docs.find(d => {
+      const data = d.data();
+      return data.members.includes(userId2) && data.members.length === 2;
+    });
+
+    if (existingChat) {
+      return { id: existingChat.id, ...existingChat.data() };
+    }
+
+    // Create new direct chat
+    const docRef = await addDoc(collection(db, CHATS_COL), {
+      name: user2Name, // For direct chats, we can use the other person's name as the chat name
+      members: [userId1, userId2],
+      isDirect: true,
+      createdAt: serverTimestamp(),
+      typing: {}
+    });
+
+    const newDoc = await getDoc(docRef);
+    return { id: newDoc.id, ...newDoc.data() };
   }
 };

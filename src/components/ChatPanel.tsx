@@ -51,6 +51,8 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [isCreatingLead, setIsCreatingLead] = useState<any>(null);
+  const [foundUser, setFoundUser] = useState<any>(null);
+  const [isSearchingUser, setIsSearchingUser] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -161,13 +163,49 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewMessage(e.target.value);
-    if (!isTyping) {
+    if (!isTyping && selectedChat) {
       setIsTyping(true);
       chatService.setTyping(selectedChat.id, currentUserId, true);
       setTimeout(() => {
         setIsTyping(false);
         chatService.setTyping(selectedChat.id, currentUserId, false);
       }, 3000);
+    }
+  };
+
+  const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const term = e.target.value;
+    setSearchTerm(term);
+    
+    // If it looks like an email, try to find the user
+    if (term.includes('@') && term.includes('.')) {
+      setIsSearchingUser(true);
+      try {
+        const user = await chatService.findUserByEmail(term);
+        if (user && user.id !== currentUserId) {
+          setFoundUser(user);
+        } else {
+          setFoundUser(null);
+        }
+      } catch (err) {
+        console.error("User search failed:", err);
+      } finally {
+        setIsSearchingUser(false);
+      }
+    } else {
+      setFoundUser(null);
+    }
+  };
+
+  const handleStartDirectChat = async (user: any) => {
+    try {
+      const chat = await chatService.getOrCreateDirectChat(currentUserId, user.id, user.name || user.email);
+      setSelectedChat(chat);
+      setSearchTerm('');
+      setFoundUser(null);
+    } catch (err) {
+      console.error("Failed to start direct chat:", err);
+      alert("Failed to start chat");
     }
   };
 
@@ -279,12 +317,42 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                     <input 
                       type="text" 
-                      placeholder="Search chats..."
+                      placeholder="Search chats or email..."
                       value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
+                      onChange={handleSearchChange}
                       className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     />
                   </div>
+                  
+                  {/* Found User Section */}
+                  {foundUser && (
+                    <div className="p-3 bg-blue-600/10 border border-blue-500/20 rounded-xl animate-in fade-in slide-in-from-top-2 duration-200">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3 min-w-0">
+                          <div className="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold">
+                            {foundUser.name?.charAt(0).toUpperCase() || foundUser.email.charAt(0).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-white truncate">{foundUser.name || 'User'}</p>
+                            <p className="text-[10px] text-slate-400 truncate">{foundUser.email}</p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => handleStartDirectChat(foundUser)}
+                          className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all shadow-lg shadow-blue-500/20"
+                          title="Send Message"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {isSearchingUser && (
+                    <div className="flex items-center justify-center py-2">
+                      <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  )}
                   {(currentUserRole === 'Administrator' || currentUserRole === 'Manager') && (
                     <button 
                       onClick={() => setIsCreatingGroup(true)}
