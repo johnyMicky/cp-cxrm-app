@@ -477,7 +477,16 @@ async function setupVite() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(__dirname, 'dist');
+    const distPath = path.resolve(process.cwd(), 'dist');
+    const indexPath = path.resolve(distPath, 'index.html');
+    
+    console.log('Production mode detected');
+    console.log('CWD:', process.cwd());
+    console.log('Dist path:', distPath);
+    console.log('Index path:', indexPath);
+    console.log('Dist exists:', fs.existsSync(distPath));
+    console.log('Index exists:', fs.existsSync(indexPath));
+
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
     }
@@ -487,11 +496,10 @@ async function setupVite() {
     });
 
     app.get('*', (req, res) => {
-      const indexPath = path.join(__dirname, 'dist/index.html');
       if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
       } else {
-        res.status(404).send('Not Found');
+        res.status(404).send(`Not Found. Searched at: ${indexPath}`);
       }
     });
   }
