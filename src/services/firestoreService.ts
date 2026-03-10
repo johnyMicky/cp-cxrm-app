@@ -21,6 +21,16 @@ const LEADS_COL = "leads";
 const USERS_COL = "users";
 const ACTIVITY_COL = "activity";
 
+const sanitizeData = (data: any) => {
+  const sanitized: any = {};
+  Object.keys(data).forEach(key => {
+    if (data[key] !== undefined) {
+      sanitized[key] = data[key];
+    }
+  });
+  return sanitized;
+};
+
 export const firestoreService = {
   // Auth / Users
   async login(email: string, password: string) {
@@ -39,16 +49,18 @@ export const firestoreService = {
   },
 
   async createUser(userData: any) {
+    const sanitized = sanitizeData(userData);
     const docRef = await addDoc(collection(db, USERS_COL), {
-      ...userData,
+      ...sanitized,
       createdAt: serverTimestamp()
     });
-    return { id: docRef.id, ...userData };
+    return { id: docRef.id, ...sanitized };
   },
 
   async updateUser(id: string, userData: any) {
+    const sanitized = sanitizeData(userData);
     const docRef = doc(db, USERS_COL, id);
-    await updateDoc(docRef, userData);
+    await updateDoc(docRef, sanitized);
   },
 
   async deleteUser(id: string) {
@@ -70,10 +82,6 @@ export const firestoreService = {
     const docSnap = await getDoc(docRef);
     if (!docSnap.exists()) throw new Error("Lead not found");
     
-    // Get notes and history for this lead
-    // In a real app, these might be subcollections or separate collections
-    // For simplicity, let's assume they are stored in the lead doc or we fetch them separately
-    // The user request didn't specify subcollections, so let's assume we fetch them from their own collections
     const notesQ = query(collection(db, "notes"), where("lead_id", "==", id), orderBy("createdAt", "desc"));
     const historyQ = query(collection(db, "history"), where("lead_id", "==", id), orderBy("createdAt", "desc"));
     
@@ -88,8 +96,9 @@ export const firestoreService = {
   },
 
   async createLead(leadData: any) {
+    const sanitized = sanitizeData(leadData);
     const docRef = await addDoc(collection(db, LEADS_COL), {
-      ...leadData,
+      ...sanitized,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
@@ -134,9 +143,10 @@ export const firestoreService = {
   },
 
   async updateLead(id: string, leadData: any) {
+    const sanitized = sanitizeData(leadData);
     const docRef = doc(db, LEADS_COL, id);
     await updateDoc(docRef, {
-      ...leadData,
+      ...sanitized,
       updatedAt: serverTimestamp()
     });
   },
@@ -195,7 +205,6 @@ export const firestoreService = {
   },
 
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
-    // This is more complex in Firestore. For now, let's fetch leads and update them.
     let q = query(collection(db, LEADS_COL), where("assigned_to", "!=", null));
     if (statusFilter.length > 0) {
       q = query(collection(db, LEADS_COL), where("status", "in", statusFilter));
@@ -226,8 +235,9 @@ export const firestoreService = {
 
   // Activity / History
   async logActivity(activityData: any) {
+    const sanitized = sanitizeData(activityData);
     await addDoc(collection(db, "history"), {
-      ...activityData,
+      ...sanitized,
       createdAt: serverTimestamp()
     });
   },

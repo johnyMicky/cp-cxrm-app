@@ -106,14 +106,14 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
 
       // Map data to lead objects
       const leadsToImport = jsonData.map(row => ({
-        name: row['Full Name'],
-        email: row['Email'],
-        phone: row['Phone Number'],
-        country: row['Country'],
-        source: row['Source'],
-        status: row['Status'],
-        assigned_to: row['Assigned To'],
-        notes: row['Notes']
+        name: row['Full Name'] || '',
+        email: row['Email'] || '',
+        phone: row['Phone Number'] || '',
+        country: row['Country'] || '',
+        source: row['Source'] || 'Import',
+        status: row['Status'] || 'New',
+        assigned_to: row['Assigned To'] || '',
+        notes: row['Notes'] || ''
       })).filter(lead => lead.name); // Ensure name exists
 
       // Check for internal duplicates in the file
