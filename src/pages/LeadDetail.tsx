@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
+import { apiFetch } from '../utils/api';
 
 export default function LeadDetail() {
   const { id } = useParams();
@@ -13,15 +14,15 @@ export default function LeadDetail() {
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<any>({});
   
-  // Mock current user role - in a real app this would come from auth context
-  const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' }; 
+  const currentUserId = localStorage.getItem('userId');
+  const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
 
   useEffect(() => {
     const loadData = async () => {
       try {
         const [leadRes, usersRes] = await Promise.all([
-          fetch(`/api/leads/${id}`),
-          fetch('/api/users')
+          apiFetch(`/api/leads/${id}`),
+          apiFetch('/api/users')
         ]);
 
         if (!leadRes.ok || !usersRes.ok) {
@@ -45,13 +46,13 @@ export default function LeadDetail() {
   if (!lead) return <div className="p-8 text-slate-400">Loading lead details...</div>;
 
   const handleSave = async () => {
-    await fetch(`/api/leads/${id}`, {
+    await apiFetch(`/api/leads/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...editForm, user_id: 1 }) // Hardcoded admin user for now
+      body: JSON.stringify({ ...editForm, user_id: currentUserId })
     });
     
-    const res = await fetch(`/api/leads/${id}`);
+    const res = await apiFetch(`/api/leads/${id}`);
     const data = await res.json();
     setLead(data);
     setIsEditing(false);
@@ -60,27 +61,27 @@ export default function LeadDetail() {
   const handleAddNote = async () => {
     if (!noteContent.trim()) return;
     
-    await fetch(`/api/leads/${id}/notes`, {
+    await apiFetch(`/api/leads/${id}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: noteContent, user_id: 1 }) // Hardcoded admin user
+      body: JSON.stringify({ content: noteContent, user_id: currentUserId })
     });
     
     setNoteContent('');
-    const res = await fetch(`/api/leads/${id}`);
+    const res = await apiFetch(`/api/leads/${id}`);
     const data = await res.json();
     setLead(data);
   };
 
   const handleDelete = async () => {
-    if (currentUser.role === 'Manager') {
+    if (currentUserRole === 'Manager') {
       alert('Managers are not allowed to delete leads.');
       return;
     }
     
     if (!confirm('Are you sure you want to delete this lead? This action cannot be undone.')) return;
     
-    const res = await fetch(`/api/leads/${id}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/leads/${id}`, { method: 'DELETE' });
     if (res.ok) {
       navigate('/leads');
     } else {
@@ -140,7 +141,7 @@ export default function LeadDetail() {
           </div>
         ) : (
           <div className="flex items-center space-x-3">
-            {currentUser.role !== 'Manager' && (
+            {currentUserRole !== 'Manager' && (
               <button 
                 onClick={handleDelete}
                 className="p-2 rounded-lg hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 transition-colors border border-white/5"

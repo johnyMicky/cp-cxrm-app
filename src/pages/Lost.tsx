@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { XCircle, ShieldAlert, Search, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { apiFetch } from '../utils/api';
 
 export default function Lost() {
   const [leads, setLeads] = useState<any[]>([]);
@@ -12,8 +13,8 @@ export default function Lost() {
     const loadData = async () => {
       try {
         const [leadsRes, dashboardRes] = await Promise.all([
-          fetch('/api/leads'),
-          fetch('/api/dashboard')
+          apiFetch('/api/leads'),
+          apiFetch('/api/dashboard')
         ]);
 
         if (!leadsRes.ok || !dashboardRes.ok) {

@@ -162,6 +162,11 @@ app.get('/api/health', (req, res) => {
 });
 
 app.post('/api/leads/bulk-status', (req, res) => {
+  const user = getUserContext(req);
+  if (!user || !['Administrator', 'Manager', 'Team Leader'].includes(user.role)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { lead_ids, status, user_id } = req.body;
   
   if (!lead_ids || !Array.isArray(lead_ids) || !status) {
@@ -186,6 +191,11 @@ app.post('/api/leads/bulk-status', (req, res) => {
 });
 
 app.post('/api/leads/reshuffle', (req, res) => {
+  const user = getUserContext(req);
+  if (!user || !['Administrator', 'Manager'].includes(user.role)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { agent_ids, user_id, status_filter } = req.body;
   
   if (!agent_ids || !Array.isArray(agent_ids) || agent_ids.length === 0) {
@@ -230,18 +240,32 @@ app.post('/api/leads/reshuffle', (req, res) => {
   }
 });
 
+// Helper to get user context
+const getUserContext = (req: express.Request) => {
+  const userId = req.headers['x-user-id'];
+  if (!userId) return null;
+  return db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId) as { id: number, role: string } | undefined;
+};
+
 app.get('/api/dashboard', (req, res) => {
   try {
-    const totalLeads = db.prepare('SELECT COUNT(*) as count FROM leads').get() as any;
-    const newToday = db.prepare("SELECT COUNT(*) as count FROM leads WHERE date(created_at) = date('now')").get() as any;
-    const activeLeads = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status NOT IN ('Deposit', 'Lost')").get() as any;
-    const convertedLeads = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'Deposit'").get() as any;
-    const lostLeads = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'Lost'").get() as any;
+    const user = getUserContext(req);
+    if (!user) return res.status(401).json({ error: 'Not authenticated' });
+
+    const isAgent = user.role === 'Agent';
+    const agentFilter = isAgent ? 'WHERE assigned_to = ?' : '';
+    const agentParam = isAgent ? [user.id] : [];
+
+    const totalLeads = db.prepare(`SELECT COUNT(*) as count FROM leads ${agentFilter}`).get(...agentParam) as any;
+    const newToday = db.prepare(`SELECT COUNT(*) as count FROM leads WHERE date(created_at) = date('now') ${isAgent ? 'AND assigned_to = ?' : ''}`).get(...agentParam) as any;
+    const activeLeads = db.prepare(`SELECT COUNT(*) as count FROM leads WHERE status NOT IN ('Deposit', 'Lost') ${isAgent ? 'AND assigned_to = ?' : ''}`).get(...agentParam) as any;
+    const convertedLeads = db.prepare(`SELECT COUNT(*) as count FROM leads WHERE status = 'Deposit' ${isAgent ? 'AND assigned_to = ?' : ''}`).get(...agentParam) as any;
+    const lostLeads = db.prepare(`SELECT COUNT(*) as count FROM leads WHERE status = 'Lost' ${isAgent ? 'AND assigned_to = ?' : ''}`).get(...agentParam) as any;
     
-    const leadsByStatus = db.prepare('SELECT status, COUNT(*) as count FROM leads GROUP BY status').all();
+    const leadsByStatus = db.prepare(`SELECT status, COUNT(*) as count FROM leads ${agentFilter} GROUP BY status`).all(...agentParam);
     const usersByRole = db.prepare('SELECT role, COUNT(*) as count FROM users GROUP BY role').all();
     
-    const topSources = db.prepare('SELECT source, COUNT(*) as count FROM leads GROUP BY source ORDER BY count DESC LIMIT 5').all();
+    const topSources = db.prepare(`SELECT source, COUNT(*) as count FROM leads ${agentFilter} GROUP BY source ORDER BY count DESC LIMIT 5`).all(...agentParam);
     
     const duplicatesCount = db.prepare(`
       SELECT COUNT(*) as count 
@@ -250,20 +274,18 @@ app.get('/api/dashboard', (req, res) => {
         SELECT phone 
         FROM leads 
         WHERE phone IS NOT NULL AND phone != ''
+        ${isAgent ? 'AND assigned_to = ?' : ''}
         GROUP BY phone 
         HAVING COUNT(*) > 1
       )
-    `).get() as any;
+      ${isAgent ? 'AND assigned_to = ?' : ''}
+    `).get(...(isAgent ? [user.id, user.id] : [])) as any;
     
-    const workload = db.prepare(`
-      SELECT u.id, u.name, u.avatar,
-             COUNT(l.id) as total_assigned
-      FROM users u
-      LEFT JOIN leads l ON u.id = l.assigned_to
-      GROUP BY u.id
-      HAVING total_assigned > 0
-      LIMIT 10
-    `).all().map((row: any) => ({
+    const workloadQuery = isAgent 
+      ? `SELECT u.id, u.name, u.avatar, COUNT(l.id) as total_assigned FROM users u LEFT JOIN leads l ON u.id = l.assigned_to WHERE u.id = ? GROUP BY u.id`
+      : `SELECT u.id, u.name, u.avatar, COUNT(l.id) as total_assigned FROM users u LEFT JOIN leads l ON u.id = l.assigned_to GROUP BY u.id HAVING total_assigned > 0 LIMIT 10`;
+    
+    const workload = db.prepare(workloadQuery).all(...agentParam).map((row: any) => ({
       ...row,
       new_leads: Math.floor(row.total_assigned * 0.3),
       in_progress: Math.floor(row.total_assigned * 0.5),
@@ -297,6 +319,11 @@ app.get('/api/users', (req, res) => {
 });
 
 app.post('/api/users', (req, res) => {
+  const userContext = getUserContext(req);
+  if (!userContext || userContext.role !== 'Administrator') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { name, email, password, role, avatar } = req.body;
   if (!password) {
     return res.status(400).json({ error: 'Password is required' });
@@ -311,6 +338,11 @@ app.post('/api/users', (req, res) => {
 });
 
 app.put('/api/users/:id', (req, res) => {
+  const userContext = getUserContext(req);
+  if (!userContext || userContext.role !== 'Administrator') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { name, email, password, role, avatar } = req.body;
   const { id } = req.params;
   try {
@@ -328,6 +360,11 @@ app.put('/api/users/:id', (req, res) => {
 });
 
 app.delete('/api/users/:id', (req, res) => {
+  const userContext = getUserContext(req);
+  if (!userContext || userContext.role !== 'Administrator') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { id } = req.params;
   try {
     const leads = db.prepare('SELECT COUNT(*) as count FROM leads WHERE assigned_to = ?').get(id) as any;
@@ -343,25 +380,39 @@ app.delete('/api/users/:id', (req, res) => {
 });
 
 app.get('/api/leads', (req, res) => {
-  const leads = db.prepare(`
+  const user = getUserContext(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+
+  const isAgent = user.role === 'Agent';
+  const query = `
     SELECT leads.*, users.name as assigned_to_name, users.avatar as assigned_to_avatar
     FROM leads
     LEFT JOIN users ON leads.assigned_to = users.id
+    ${isAgent ? 'WHERE leads.assigned_to = ?' : ''}
     ORDER BY leads.created_at DESC
-  `).all();
+  `;
+  
+  const leads = isAgent 
+    ? db.prepare(query).all(user.id)
+    : db.prepare(query).all();
+    
   res.json(leads);
 });
 
 app.get('/api/leads/:id', (req, res) => {
+  const user = getUserContext(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+
+  const isAgent = user.role === 'Agent';
   const lead = db.prepare(`
     SELECT leads.*, users.name as assigned_to_name, users.avatar as assigned_to_avatar
     FROM leads
     LEFT JOIN users ON leads.assigned_to = users.id
-    WHERE leads.id = ?
-  `).get(req.params.id);
+    WHERE leads.id = ? ${isAgent ? 'AND leads.assigned_to = ?' : ''}
+  `).get(...(isAgent ? [req.params.id, user.id] : [req.params.id]));
   
   if (!lead) {
-    return res.status(404).json({ error: 'Lead not found' });
+    return res.status(404).json({ error: 'Lead not found or access denied' });
   }
   
   const notes = db.prepare(`
@@ -384,7 +435,15 @@ app.get('/api/leads/:id', (req, res) => {
 });
 
 app.post('/api/leads', (req, res) => {
+  const user = getUserContext(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+
   const { name, phone, email, country, source, status, assigned_to, user_id, notes } = req.body;
+  
+  // If agent is creating, force assignment to them
+  const finalAssignedTo = user.role === 'Agent' ? user.id : (assigned_to || null);
+  const finalUserId = user.id;
+
   try {
     if (phone) {
       const existing = db.prepare('SELECT id FROM leads WHERE phone = ?').get(phone) as any;
@@ -394,15 +453,15 @@ app.post('/api/leads', (req, res) => {
     }
 
     const stmt = db.prepare('INSERT INTO leads (name, phone, email, country, source, status, assigned_to) VALUES (?, ?, ?, ?, ?, ?, ?)');
-    const result = stmt.run(name, phone || null, email || null, country || null, source || 'Website', status || 'New', assigned_to || null);
+    const result = stmt.run(name, phone || null, email || null, country || null, source || 'Website', status || 'New', finalAssignedTo);
     const leadId = result.lastInsertRowid;
     
     const historyStmt = db.prepare('INSERT INTO history (lead_id, user_id, action, details) VALUES (?, ?, ?, ?)');
-    historyStmt.run(leadId, user_id || 1, 'Created', 'Lead created');
+    historyStmt.run(leadId, finalUserId, 'Created', 'Lead created');
 
     if (notes && notes.trim()) {
       const noteStmt = db.prepare('INSERT INTO notes (lead_id, user_id, content) VALUES (?, ?, ?)');
-      noteStmt.run(leadId, user_id || 1, notes);
+      noteStmt.run(leadId, finalUserId, notes);
     }
     
     res.json({ id: leadId });
@@ -412,10 +471,20 @@ app.post('/api/leads', (req, res) => {
 });
 
 app.put('/api/leads/:id', (req, res) => {
-  const { name, phone, email, country, source, status, assigned_to, user_id } = req.body;
+  const user = getUserContext(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+
   const leadId = req.params.id;
-  
   const oldLead = db.prepare('SELECT * FROM leads WHERE id = ?').get(leadId) as any;
+
+  if (!oldLead) return res.status(404).json({ error: 'Lead not found' });
+
+  // Agents can only update their own leads
+  if (user.role === 'Agent' && oldLead.assigned_to !== user.id) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const { name, phone, email, country, source, status, assigned_to, user_id } = req.body;
   
   const stmt = db.prepare('UPDATE leads SET name = ?, phone = ?, email = ?, country = ?, source = ?, status = ?, assigned_to = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
   stmt.run(name, phone, email, country, source, status, assigned_to, leadId);
@@ -434,8 +503,20 @@ app.put('/api/leads/:id', (req, res) => {
 });
 
 app.post('/api/leads/:id/notes', (req, res) => {
-  const { user_id, content } = req.body;
+  const user = getUserContext(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+
   const leadId = req.params.id;
+  const lead = db.prepare('SELECT assigned_to FROM leads WHERE id = ?').get(leadId) as any;
+
+  if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+  // Agents can only add notes to their own leads
+  if (user.role === 'Agent' && lead.assigned_to !== user.id) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const { user_id, content } = req.body;
   
   const stmt = db.prepare('INSERT INTO notes (lead_id, user_id, content) VALUES (?, ?, ?)');
   stmt.run(leadId, user_id, content);
@@ -447,6 +528,11 @@ app.post('/api/leads/:id/notes', (req, res) => {
 });
 
 app.post('/api/leads/assign', (req, res) => {
+  const user = getUserContext(req);
+  if (!user || !['Administrator', 'Manager', 'Team Leader'].includes(user.role)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { lead_ids, assigned_to, user_id } = req.body;
   
   const stmt = db.prepare('UPDATE leads SET assigned_to = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
@@ -468,6 +554,11 @@ app.post('/api/leads/assign', (req, res) => {
 });
 
 app.post('/api/leads/distribute', (req, res) => {
+  const user = getUserContext(req);
+  if (!user || !['Administrator', 'Manager'].includes(user.role)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { lead_ids, agent_ids, user_id } = req.body;
   
   if (!lead_ids.length || !agent_ids.length) {
@@ -495,14 +586,22 @@ app.post('/api/leads/distribute', (req, res) => {
 });
 
 app.get('/api/history', (req, res) => {
+  const user = getUserContext(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+
+  const isAgent = user.role === 'Agent';
   try {
-    const history = db.prepare(`
+    const query = `
       SELECT history.*, users.name as user_name, users.avatar as user_avatar
       FROM history
       JOIN users ON history.user_id = users.id
+      ${isAgent ? 'WHERE history.lead_id IN (SELECT id FROM leads WHERE assigned_to = ?)' : ''}
       ORDER BY history.created_at DESC
       LIMIT 100
-    `).all();
+    `;
+    const history = isAgent 
+      ? db.prepare(query).all(user.id)
+      : db.prepare(query).all();
     res.json(history);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -510,6 +609,11 @@ app.get('/api/history', (req, res) => {
 });
 
 app.post('/api/leads/bulk', (req, res) => {
+  const user = getUserContext(req);
+  if (!user || !['Administrator', 'Manager'].includes(user.role)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { leads, user_id } = req.body;
   
   if (!Array.isArray(leads)) {
@@ -569,6 +673,11 @@ app.post('/api/leads/bulk', (req, res) => {
 });
 
 app.delete('/api/leads/:id', (req, res) => {
+  const user = getUserContext(req);
+  if (!user || !['Administrator', 'Manager'].includes(user.role)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const { id } = req.params;
   try {
     db.prepare('DELETE FROM notes WHERE lead_id = ?').run(id);

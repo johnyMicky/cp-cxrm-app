@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Search, UserPlus, Mail, Shield, Trash2, Edit2, AlertCircle } from 'lucide-react';
 import { format } from 'date-fns';
+import { apiFetch } from '../utils/api';
 
 interface User {
   id: number;
@@ -18,12 +19,12 @@ export default function Team() {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
   
-  const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' };
+  const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
 
   const fetchUsers = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/users');
+      const res = await apiFetch('/api/users');
       const contentType = res.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
         throw new Error('Server returned non-JSON response');
@@ -45,7 +46,7 @@ export default function Team() {
     if (!confirm('Are you sure you want to delete this user?')) return;
     
     try {
-      const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
       if (res.ok) {
         fetchUsers();
       } else {
@@ -74,7 +75,7 @@ export default function Team() {
     }
   };
 
-  if (currentUser.role !== 'Administrator') {
+  if (currentUserRole !== 'Administrator') {
     return (
       <div className="p-8 text-center">
         <h1 className="text-xl text-white">Access Denied</h1>
@@ -228,7 +229,7 @@ function UserModal({ user, onClose, onSuccess }: { user: User | null, onClose: (
         delete (payload as any).password;
       }
       
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Users, Filter, CheckSquare, Square, ArrowRightLeft, RefreshCw } from 'lucide-react';
+import { apiFetch } from '../utils/api';
 
 export default function Dispatcher() {
   const [leads, setLeads] = useState<any[]>([]);
@@ -8,7 +9,8 @@ export default function Dispatcher() {
   const [selectedAgents, setSelectedAgents] = useState<number[]>([]);
   const [isDistributing, setIsDistributing] = useState(false);
   
-  const currentUser = { role: window.localStorage.getItem('userRole') || 'Administrator' };
+  const currentUserId = localStorage.getItem('userId');
+  const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
 
   useEffect(() => {
     fetchData();
@@ -17,8 +19,8 @@ export default function Dispatcher() {
   const fetchData = async () => {
     try {
       const [leadsRes, usersRes] = await Promise.all([
-        fetch('/api/leads'),
-        fetch('/api/users')
+        apiFetch('/api/leads'),
+        apiFetch('/api/users')
       ]);
 
       if (!leadsRes.ok || !usersRes.ok) {
@@ -59,13 +61,13 @@ export default function Dispatcher() {
     if (selectedLeads.length === 0 || selectedAgents.length === 0) return;
     
     setIsDistributing(true);
-    await fetch('/api/leads/distribute', {
+    await apiFetch('/api/leads/distribute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         lead_ids: selectedLeads,
         agent_ids: selectedAgents,
-        user_id: 1 // Admin user
+        user_id: currentUserId
       })
     });
     
@@ -75,7 +77,7 @@ export default function Dispatcher() {
     setIsDistributing(false);
   };
 
-  if (currentUser.role !== 'Administrator' && currentUser.role !== 'Manager') {
+  if (currentUserRole !== 'Administrator' && currentUserRole !== 'Manager') {
     return (
       <div className="p-8 text-center">
         <h1 className="text-xl text-white">Access Denied</h1>
