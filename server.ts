@@ -7,7 +7,27 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database('database.sqlite');
+// BigInt serialization fix for JSON.stringify
+(BigInt.prototype as any).toJSON = function() {
+  return this.toString();
+};
+
+// Use /tmp for sqlite if on Vercel or similar read-only environments
+const dbPath = process.env.VERCEL || process.env.NODE_ENV === 'production' 
+  ? path.join('/tmp', 'database.sqlite') 
+  : 'database.sqlite';
+
+console.log(`Using database at: ${path.resolve(dbPath)}`);
+
+let db: Database.Database;
+try {
+  db = new Database(dbPath, { timeout: 7000 });
+  db.pragma('journal_mode = WAL'); // Better concurrency
+} catch (err) {
+  console.error('FAILED TO OPEN DATABASE:', err);
+  // Fallback to in-memory if file fails, to at least let the app start
+  db = new Database(':memory:');
+}
 
 // Initialize database
 try {
@@ -255,10 +275,30 @@ app.post('/api/leads/reshuffle', (req, res) => {
 
 // Helper to get user context
 const getUserContext = (req: express.Request) => {
-  const userId = req.headers['x-user-id'];
-  if (!userId) return null;
-  return db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId) as { id: number, role: string } | undefined;
+  try {
+    const userId = req.headers['x-user-id'];
+    if (!userId || userId === 'undefined' || userId === 'null' || userId === '') {
+      return null;
+    }
+    
+    // Ensure userId is a valid number if possible, or just pass it to sqlite
+    const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId) as { id: number, role: string } | undefined;
+    return user || null;
+  } catch (err) {
+    console.error('getUserContext error:', err);
+    return null;
+  }
 };
+
+// API routes go here
+app.get('/api/health', (req, res) => {
+  try {
+    const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as any;
+    res.json({ status: 'ok', database: 'connected', users: userCount.count });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', database: 'error', message: err.message });
+  }
+});
 
 app.get('/api/dashboard', (req, res) => {
   try {
@@ -748,11 +788,19 @@ setupVite();
 
 // Global error handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Unhandled Error:', err);
+  console.error('Unhandled Error:', {
+    message: err.message,
+    stack: err.stack,
+    path: req.path,
+    method: req.method,
+    body: req.body,
+    headers: req.headers
+  });
+  
   res.status(500).json({ 
     error: 'Internal server error', 
     message: err.message,
-    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    details: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
 });
 
