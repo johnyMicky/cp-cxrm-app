@@ -33,10 +33,10 @@ export default function Login() {
       }
 
       if (data) {
-        localStorage.setItem('userId', data.id.toString());
-        localStorage.setItem('userRole', data.role);
-        localStorage.setItem('userName', data.name);
-        localStorage.setItem('userAvatar', data.avatar);
+        localStorage.setItem('userId', (data.id || '').toString());
+        localStorage.setItem('userRole', data.role || 'Agent');
+        localStorage.setItem('userName', data.name || 'User');
+        localStorage.setItem('userAvatar', data.avatar || `https://i.pravatar.cc/150?u=${data.id}`);
         window.location.href = '/';
       } else {
         setError('Invalid credentials');

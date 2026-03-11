@@ -32,10 +32,10 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   
-  const currentUserRole = localStorage.getItem('userRole') || 'Agent';
-  const currentUserId = localStorage.getItem('userId');
-  const userName = localStorage.getItem('userName') || 'User';
-  const userAvatar = localStorage.getItem('userAvatar') || `https://i.pravatar.cc/150?u=${currentUserId}`;
+  const currentUserRole = (localStorage.getItem('userRole') === 'undefined' ? null : localStorage.getItem('userRole')) || 'Agent';
+  const currentUserId = localStorage.getItem('userId') === 'undefined' ? null : localStorage.getItem('userId');
+  const userName = (localStorage.getItem('userName') === 'undefined' ? null : localStorage.getItem('userName')) || 'User';
+  const userAvatar = (localStorage.getItem('userAvatar') === 'undefined' ? null : localStorage.getItem('userAvatar')) || `https://i.pravatar.cc/150?u=${currentUserId}`;
 
   const fetchNotifications = async () => {
     if (!currentUserId || currentUserId === '1') return;

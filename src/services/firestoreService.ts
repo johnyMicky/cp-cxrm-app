@@ -110,9 +110,9 @@ export const firestoreService = {
       }
       const finalUserData = {
         uid: user.uid,
-        email: user.email,
+        email: user.email || email,
         role: userData?.role || 'Agent',
-        name: userData?.name || user.displayName || email.split('@')[0],
+        name: userData?.name || user.displayName || email.split('@')[0] || 'User',
         avatar: userData?.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
         isOnline: true,
         createdAt: userData?.createdAt || serverTimestamp(),
@@ -790,7 +790,8 @@ export const firestoreService = {
     const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     const roleMap: any = {};
     users.forEach((u: any) => {
-      roleMap[u.role] = (roleMap[u.role] || 0) + 1;
+      const role = u.role || 'Undefined';
+      roleMap[role] = (roleMap[role] || 0) + 1;
     });
     stats.usersByRole = Object.entries(roleMap)
       .map(([role, count]) => ({ role, count }))
