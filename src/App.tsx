@@ -284,6 +284,8 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
   );
 }
 
+import ErrorBoundary from './components/ErrorBoundary';
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('userId'));
   const [currentUserId, setCurrentUserId] = useState(localStorage.getItem('userId'));
@@ -373,35 +375,37 @@ export default function App() {
   }, [isAuthenticated, currentUserId, currentUserRole]);
 
   return (
-    <Router>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route
-          path="/*"
-          element={
-            isAuthenticated ? (
-              <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30">
-                <Sidebar onOpenChat={() => setIsChatOpen(true)} unreadChatCount={unreadChatCount} />
-                <main className="flex-1 overflow-auto">
-                  <Routes>
-                    <Route path="/" element={<Dashboard />} />
-                    <Route path="/leads" element={<Leads />} />
-                    <Route path="/leads/:id" element={<LeadDetail />} />
-                    <Route path="/team" element={<Team />} />
-                    <Route path="/dispatcher" element={<Dispatcher />} />
-                    <Route path="/lost" element={<Lost />} />
-                    <Route path="/activity" element={<ActivityPage />} />
-                    <Route path="/imports" element={<Imports />} />
-                  </Routes>
-                </main>
-                <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
-              </div>
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
-        />
-      </Routes>
-    </Router>
+    <ErrorBoundary>
+      <Router>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/*"
+            element={
+              isAuthenticated ? (
+                <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30">
+                  <Sidebar onOpenChat={() => setIsChatOpen(true)} unreadChatCount={unreadChatCount} />
+                  <main className="flex-1 overflow-auto">
+                    <Routes>
+                      <Route path="/" element={<Dashboard />} />
+                      <Route path="/leads" element={<Leads />} />
+                      <Route path="/leads/:id" element={<LeadDetail />} />
+                      <Route path="/team" element={<Team />} />
+                      <Route path="/dispatcher" element={<Dispatcher />} />
+                      <Route path="/lost" element={<Lost />} />
+                      <Route path="/activity" element={<ActivityPage />} />
+                      <Route path="/imports" element={<Imports />} />
+                    </Routes>
+                  </main>
+                  <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
+                </div>
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+        </Routes>
+      </Router>
+    </ErrorBoundary>
   );
 }

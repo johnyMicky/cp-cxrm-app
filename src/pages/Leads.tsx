@@ -5,6 +5,7 @@ import { format } from 'date-fns';
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
 import { firestoreService } from '../services/firestoreService';
+import { safeLower } from '../utils/stringUtils';
 
 const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'No Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
 
@@ -146,16 +147,18 @@ export default function Leads() {
   };
 
   const filteredLeads = leads.filter(lead => {
+    const query = safeLower(search);
+
     const matchesSearch = 
-      lead.name.toLowerCase().includes(search.toLowerCase()) ||
-      (lead.email && lead.email.toLowerCase().includes(search.toLowerCase())) ||
-      (lead.phone && lead.phone.includes(search)) ||
-      (lead.country && lead.country.toLowerCase().includes(search.toLowerCase()));
+      safeLower(lead.name).includes(query) ||
+      safeLower(lead.email).includes(query) ||
+      safeLower(lead.phone).includes(query) ||
+      safeLower(lead.country).includes(query);
     
     const matchesStatus = filters.statuses.length === 0 || filters.statuses.includes(lead.status);
-    const matchesSource = !filters.source || (lead.source && lead.source.toLowerCase().includes(filters.source.toLowerCase()));
+    const matchesSource = !filters.source || safeLower(lead.source).includes(safeLower(filters.source));
     const matchesAgent = filters.agents.length === 0 || filters.agents.includes(lead.assigned_to);
-    const matchesCountry = !filters.country || (lead.country && lead.country.toLowerCase().includes(filters.country.toLowerCase()));
+    const matchesCountry = !filters.country || safeLower(lead.country).includes(safeLower(filters.country));
 
     return matchesSearch && matchesStatus && matchesSource && matchesAgent && matchesCountry;
   });

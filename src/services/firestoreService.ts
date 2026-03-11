@@ -192,8 +192,28 @@ export const firestoreService = {
   },
 
   async getUsers() {
-    const querySnapshot = await getDocs(collection(db, USERS_COL));
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    try {
+      const querySnapshot = await getDocs(collection(db, USERS_COL));
+      return querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          name: data.name || '',
+          email: data.email || '',
+          role: data.role || 'Agent',
+          avatar: data.avatar || `https://i.pravatar.cc/150?u=${doc.id}`,
+          isOnline: data.isOnline || false,
+          lastSeen: data.lastSeen || null,
+          createdAt: data.createdAt || null
+        };
+      });
+    } catch (err: any) {
+      if (err.code === 'resource-exhausted') {
+        console.error('Firestore quota exceeded');
+        throw new Error('Firebase storage limit reached. Please wait for reset or upgrade plan.');
+      }
+      throw err;
+    }
   },
 
   async createUser(userData: any) {
@@ -240,19 +260,50 @@ export const firestoreService = {
       // Fetch all leads and sort/filter in memory to avoid index requirements
       const q = query(collection(db, LEADS_COL), orderBy("createdAt", "desc"));
       const querySnapshot = await getDocs(q);
-      const allLeads = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const allLeads = querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          name: data.name || '',
+          email: data.email || '',
+          phone: data.phone || '',
+          country: data.country || '',
+          status: data.status || 'New',
+          source: data.source || '',
+          assigned_to: data.assigned_to || '',
+          createdAt: data.createdAt || null,
+          updatedAt: data.updatedAt || null
+        };
+      });
       
       if (agentId) {
         return allLeads.filter((lead: any) => String(lead.assigned_to) === String(agentId));
       }
       
       return allLeads;
-    } catch (err) {
+    } catch (err: any) {
+      if (err.code === 'resource-exhausted') {
+        throw new Error('Firebase storage limit reached. Please wait for reset or upgrade plan.');
+      }
       console.error('Error fetching leads:', err);
       // Fallback: try without orderBy if it fails
       const q = query(collection(db, LEADS_COL));
       const querySnapshot = await getDocs(q);
-      const allLeads = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const allLeads = querySnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          name: data.name || '',
+          email: data.email || '',
+          phone: data.phone || '',
+          country: data.country || '',
+          status: data.status || 'New',
+          source: data.source || '',
+          assigned_to: data.assigned_to || '',
+          createdAt: data.createdAt || null,
+          updatedAt: data.updatedAt || null
+        };
+      });
       
       let filtered = allLeads;
       if (agentId) {

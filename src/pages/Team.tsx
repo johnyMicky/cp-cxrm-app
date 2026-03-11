@@ -3,6 +3,8 @@ import { Plus, Search, UserPlus, Mail, Shield, Trash2, Edit2, AlertCircle } from
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
 
+import { safeLower } from '../utils/stringUtils';
+
 interface User {
   id: string;
   name: string;
@@ -26,8 +28,9 @@ export default function Team() {
     try {
       const data = await firestoreService.getUsers();
       setUsers(data as User[]);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch users:', err);
+      setError(err.message || 'Failed to fetch users');
     } finally {
       setIsLoading(false);
     }
@@ -48,14 +51,16 @@ export default function Team() {
     }
   };
 
-  const filteredUsers = users.filter(user => 
-    user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    user.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    user.role.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredUsers = users.filter(user => {
+    const query = safeLower(searchQuery);
+    
+    return safeLower(user.name).includes(query) ||
+           safeLower(user.email).includes(query) ||
+           safeLower(user.role).includes(query);
+  });
 
   const getRoleBadgeColor = (role: string) => {
-    switch (role.toLowerCase()) {
+    switch (safeLower(role)) {
       case 'admin':
       case 'administrator': return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
       case 'manager': return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
