@@ -38,7 +38,7 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
   const validate = () => {
     const newErrors: Record<string, string> = {};
     if (!formData.name.trim()) newErrors.name = 'Full Name is required';
-    if (!formData.email.trim() && !formData.phone.trim()) {
+    if (!String(formData.email || '').trim() && !String(formData.phone || '').trim()) {
       newErrors.contact = 'At least one contact field (Email or Phone) is required';
     }
     setErrors(newErrors);

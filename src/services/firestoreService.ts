@@ -156,11 +156,14 @@ export const firestoreService = {
       
       const results = await Promise.all(chunk.map(async (lead) => {
         try {
+          const phone = lead.phone ? String(lead.phone).trim() : '';
+          const email = lead.email ? String(lead.email).trim() : '';
+
           let q;
-          if (lead.phone && lead.phone.trim()) {
-            q = query(collection(db, LEADS_COL), where("phone", "==", lead.phone));
-          } else if (lead.email && lead.email.trim()) {
-            q = query(collection(db, LEADS_COL), where("email", "==", lead.email));
+          if (phone) {
+            q = query(collection(db, LEADS_COL), where("phone", "==", phone));
+          } else if (email) {
+            q = query(collection(db, LEADS_COL), where("email", "==", email));
           }
 
           if (q) {
