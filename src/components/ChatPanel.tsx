@@ -53,6 +53,8 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   const [isCreatingLead, setIsCreatingLead] = useState<any>(null);
   const [foundUser, setFoundUser] = useState<any>(null);
   const [isSearchingUser, setIsSearchingUser] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<{file: File, preview: string, type: 'image' | 'file'}[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -104,61 +106,111 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!newMessage.trim() || !selectedChat) return;
+    if ((!newMessage.trim() && pendingFiles.length === 0) || !selectedChat) return;
 
-    const msg = {
-      text: newMessage,
-      senderId: currentUserId,
-      senderName: userName,
-      type: 'text'
-    };
-
+    const text = newMessage;
+    const filesToSend = [...pendingFiles];
+    
     setNewMessage('');
-    await chatService.sendMessage(selectedChat.id, msg);
-    chatService.setTyping(selectedChat.id, currentUserId, false);
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'file') => {
-    const file = e.target.files?.[0];
-    if (!file || !selectedChat) return;
+    setPendingFiles([]);
+    setIsUploading(true);
 
     try {
-      const url = await chatService.uploadFile(file);
-      const msg = {
-        senderId: currentUserId,
-        senderName: userName,
-        type,
-        fileUrl: url,
-        fileName: file.name,
-        fileType: file.type,
-        fileSize: file.size
-      };
-      await chatService.sendMessage(selectedChat.id, msg);
+      // Send files first
+      for (const item of filesToSend) {
+        const url = await chatService.uploadFile(item.file);
+        await chatService.sendMessage(selectedChat.id, {
+          senderId: currentUserId,
+          senderName: userName,
+          type: item.type,
+          fileUrl: url,
+          fileName: item.file.name,
+          fileType: item.file.type,
+          fileSize: item.file.size
+        });
+      }
+
+      // Send text message if exists
+      if (text.trim()) {
+        await chatService.sendMessage(selectedChat.id, {
+          text: text,
+          senderId: currentUserId,
+          senderName: userName,
+          type: 'text'
+        });
+      }
+      
+      chatService.setTyping(selectedChat.id, currentUserId, false);
     } catch (err) {
-      console.error("Upload failed:", err);
-      alert("Upload failed");
+      console.error("Failed to send message:", err);
+      alert("Failed to send message or files");
+    } finally {
+      setIsUploading(false);
     }
   };
 
-  const handlePaste = async (e: React.ClipboardEvent) => {
-    const items = e.clipboardData.items;
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.indexOf('image') !== -1) {
-        const file = items[i].getAsFile();
-        if (file && selectedChat) {
-          const url = await chatService.uploadFile(file);
-          await chatService.sendMessage(selectedChat.id, {
-            senderId: currentUserId,
-            senderName: userName,
-            type: 'image',
-            fileUrl: url,
-            fileName: 'pasted_image.png',
-            fileType: 'image/png',
-            fileSize: file.size
-          });
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'file') => {
+    const files = Array.from(e.target.files || []) as File[];
+    if (files.length === 0 || !selectedChat) return;
+
+    const newPending = files.map(file => ({
+      file,
+      preview: type === 'image' ? URL.createObjectURL(file) : '',
+      type
+    }));
+
+    setPendingFiles(prev => [...prev, ...newPending]);
+    if (e.target) e.target.value = ''; // Reset input
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData.items) as DataTransferItem[];
+    const files = Array.from(e.clipboardData.files) as File[];
+    
+    let hasFiles = false;
+
+    // Handle files from clipboard (e.g. copied from file explorer)
+    if (files.length > 0) {
+      const newPending = files.map(file => ({
+        file,
+        preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+        type: (file.type.startsWith('image/') ? 'image' : 'file') as 'image' | 'file'
+      }));
+      setPendingFiles(prev => [...prev, ...newPending]);
+      hasFiles = true;
+    } 
+    // Handle items (e.g. copied image from browser/editor)
+    else {
+      items.forEach(item => {
+        if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (file) {
+            const type = file.type.startsWith('image/') ? 'image' : 'file';
+            setPendingFiles(prev => [...prev, {
+              file,
+              preview: type === 'image' ? URL.createObjectURL(file) : '',
+              type: type as 'image' | 'file'
+            }]);
+            hasFiles = true;
+          }
         }
-      }
+      });
     }
+
+    if (hasFiles) {
+      e.preventDefault();
+    }
+  };
+
+  const removePendingFile = (index: number) => {
+    setPendingFiles(prev => {
+      const newFiles = [...prev];
+      if (newFiles[index].preview) {
+        URL.revokeObjectURL(newFiles[index].preview);
+      }
+      newFiles.splice(index, 1);
+      return newFiles;
+    });
   };
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -551,6 +603,30 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
 
                     {/* Input Area */}
                     <div className="p-4 bg-white/[0.02] border-t border-white/10">
+                      {/* Pending Files Preview */}
+                      {pendingFiles.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mb-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                          {pendingFiles.map((item, idx) => (
+                            <div key={idx} className="relative group">
+                              {item.type === 'image' ? (
+                                <img src={item.preview} className="w-16 h-16 rounded-lg object-cover border border-white/10" alt="Preview" />
+                              ) : (
+                                <div className="w-16 h-16 rounded-lg bg-white/5 border border-white/10 flex flex-col items-center justify-center p-1">
+                                  <FileText className="w-6 h-6 text-blue-400" />
+                                  <span className="text-[8px] text-slate-400 truncate w-full text-center">{item.file.name}</span>
+                                </div>
+                              )}
+                              <button 
+                                onClick={() => removePendingFile(idx)}
+                                className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-red-600 transition-colors"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       <form onSubmit={handleSendMessage} className="flex items-end space-x-2">
                         <div className="flex items-center space-x-1 pb-1">
                           <button 
@@ -571,23 +647,28 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                         <div className="flex-1 relative">
                           <input 
                             type="text" 
-                            placeholder="Type a message..."
+                            placeholder={isUploading ? "Uploading..." : "Type a message..."}
                             value={newMessage}
                             onChange={handleTyping}
                             onPaste={handlePaste}
-                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                            disabled={isUploading}
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50"
                           />
                         </div>
                         <button 
                           type="submit"
-                          disabled={!newMessage.trim()}
+                          disabled={(!newMessage.trim() && pendingFiles.length === 0) || isUploading}
                           className="p-2.5 rounded-xl bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-blue-500/20"
                         >
-                          <Send className="w-5 h-5" />
+                          {isUploading ? (
+                            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          ) : (
+                            <Send className="w-5 h-5" />
+                          )}
                         </button>
                       </form>
-                      <input type="file" ref={imageInputRef} className="hidden" accept="image/*" onChange={(e) => handleFileUpload(e, 'image')} />
-                      <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => handleFileUpload(e, 'file')} />
+                      <input type="file" ref={imageInputRef} className="hidden" accept="image/*" multiple onChange={(e) => handleFileUpload(e, 'image')} />
+                      <input type="file" ref={fileInputRef} className="hidden" multiple onChange={(e) => handleFileUpload(e, 'file')} />
                     </div>
                   </>
                 ) : (
