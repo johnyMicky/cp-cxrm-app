@@ -54,6 +54,7 @@ export default function Leads() {
   const [quickNoteId, setQuickNoteId] = useState<string | null>(null);
   const [quickNoteText, setQuickNoteText] = useState('');
   const [isAssigning, setIsAssigning] = useState(false);
+  const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -225,7 +226,8 @@ export default function Leads() {
         .map(([name, count]) => `${name}: ${count}`)
         .join(', ');
         
-      handleSuccess(`Distributed ${count} leads. Summary: ${summaryText}`);
+      handleSuccess(`Distributed ${count} leads.`);
+      setDistributionResult(summary);
       setSelectedBulkAgents([]);
     } catch (err) {
       console.error('Bulk assign failed:', err);
@@ -847,6 +849,54 @@ export default function Leads() {
           onClose={() => setIsImportOpen(false)} 
           onSuccess={() => handleSuccess('Leads imported successfully')}
         />
+      )}
+
+      {/* Distribution Summary Modal */}
+      {distributionResult && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="bg-[#0A0F1C] border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in duration-300">
+            <div className="p-8 text-center border-b border-white/5 bg-white/[0.02]">
+              <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+                <CheckCircle2 className="w-10 h-10 text-emerald-500" />
+              </div>
+              <h3 className="text-2xl font-bold text-white tracking-tight">Distribution Complete!</h3>
+              <p className="text-slate-400 mt-2">Leads have been successfully assigned to agents.</p>
+            </div>
+            
+            <div className="p-8 space-y-4">
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Assignment Summary</h4>
+              <div className="grid grid-cols-1 gap-3">
+                {Object.entries(distributionResult).map(([name, count]) => (
+                  <div key={name} className="flex items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center overflow-hidden">
+                        <img 
+                          src={`https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`} 
+                          alt="" 
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <span className="font-semibold text-white">{name}</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-2xl font-bold text-blue-400">{count}</span>
+                      <span className="text-xs text-slate-500 font-medium uppercase tracking-wider">Leads</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-6 bg-white/[0.02] border-t border-white/5">
+              <button 
+                onClick={() => setDistributionResult(null)}
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold transition-all shadow-lg shadow-blue-500/20 active:scale-[0.98]"
+              >
+                Got it, thanks!
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
