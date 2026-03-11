@@ -312,9 +312,10 @@ export default function Leads() {
           duration: result.duration
         });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Delete leads failed:', err);
-      alert('Failed to delete leads. Please try again.');
+      const errorMessage = err.message || 'Failed to delete leads. Please try again.';
+      alert(`Error: ${errorMessage}`);
       fetchLeads(); // Restore state on error
     } finally {
       setIsDeletingAll(false);

@@ -349,33 +349,41 @@ export const firestoreService = {
   },
 
   async bulkDeleteLeads(leadIds: string[], userId: string) {
-    const response = await fetch('/api/leads/delete-selected', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: leadIds, userId })
-    });
-    
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Failed to delete selected leads');
+    try {
+      const response = await fetch('/api/leads/delete-selected', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: leadIds, userId })
+      });
+      
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || data.code || 'Failed to delete selected leads');
+      }
+      return data;
+    } catch (error: any) {
+      console.error('bulkDeleteLeads error:', error);
+      throw error;
     }
-    
-    return await response.json();
   },
 
   async deleteAllLeads(userId: string) {
-    const response = await fetch('/api/leads/delete-all', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId })
-    });
-    
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Failed to delete all leads');
+    try {
+      const response = await fetch('/api/leads/delete-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId })
+      });
+      
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || data.code || 'Failed to delete all leads');
+      }
+      return data;
+    } catch (error: any) {
+      console.error('deleteAllLeads error:', error);
+      throw error;
     }
-    
-    return await response.json();
   },
 
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
