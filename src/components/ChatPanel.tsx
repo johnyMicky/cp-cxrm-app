@@ -60,7 +60,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
-  const currentUserId = localStorage.getItem('userId') || '1';
+  const currentUserId = localStorage.getItem('userId');
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
   const userName = localStorage.getItem('userName') || 'User';
 

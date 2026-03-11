@@ -15,6 +15,8 @@ import ActivityPage from './pages/Activity';
 import Imports from './pages/Imports';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
+import { auth } from './firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 import { firestoreService } from './services/firestoreService';
 import { chatService } from './services/chatService';
 
@@ -28,12 +30,13 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   
-  const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
-  const currentUserId = localStorage.getItem('userId') || '1';
-  const userName = localStorage.getItem('userName') || 'Admin User';
-  const userAvatar = localStorage.getItem('userAvatar') || 'https://i.pravatar.cc/150?u=admin';
+  const currentUserRole = localStorage.getItem('userRole') || 'Agent';
+  const currentUserId = localStorage.getItem('userId');
+  const userName = localStorage.getItem('userName') || 'User';
+  const userAvatar = localStorage.getItem('userAvatar') || `https://i.pravatar.cc/150?u=${currentUserId}`;
 
   const fetchNotifications = async () => {
+    if (!currentUserId || currentUserId === '1') return;
     try {
       const data = await firestoreService.getNotifications(currentUserId);
       setNotifications(data);
@@ -121,7 +124,12 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
       .catch(err => console.error('Health check failed:', err));
   }, []);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await firestoreService.logout();
+    } catch (err) {
+      console.error('Logout failed:', err);
+    }
     localStorage.removeItem('userId');
     localStorage.removeItem('userRole');
     localStorage.removeItem('userName');
@@ -277,15 +285,31 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
 }
 
 export default function App() {
-  const isAuthenticated = !!localStorage.getItem('userId');
-  const currentUserId = localStorage.getItem('userId');
-  const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
+  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('userId'));
+  const [currentUserId, setCurrentUserId] = useState(localStorage.getItem('userId'));
+  const currentUserRole = localStorage.getItem('userRole') || 'Agent';
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    if (isAuthenticated && currentUserId) {
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setIsAuthenticated(true);
+        setCurrentUserId(user.uid);
+        localStorage.setItem('userId', user.uid);
+      } else {
+        setIsAuthenticated(false);
+        setCurrentUserId(null);
+        localStorage.removeItem('userId');
+      }
+    });
+
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated && currentUserId && currentUserId !== '1') {
       chatService.setUserOnline(currentUserId, true);
       
       const handleBeforeUnload = () => {

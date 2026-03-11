@@ -9,8 +9,8 @@ export default function Dispatcher() {
   const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
   const [isDistributing, setIsDistributing] = useState(false);
   
-  const currentUserId = localStorage.getItem('userId') || '1';
-  const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
+  const currentUserId = localStorage.getItem('userId');
+  const currentUserRole = localStorage.getItem('userRole') || 'Agent';
 
   useEffect(() => {
     fetchData();

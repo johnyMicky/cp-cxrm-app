@@ -35,7 +35,7 @@ export default function LeadDetail() {
   const [isSchedulingCallback, setIsSchedulingCallback] = useState(false);
   const [callbackDate, setCallbackDate] = useState('');
   
-  const currentUserId = localStorage.getItem('userId') || '1';
+  const currentUserId = localStorage.getItem('userId');
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
 
   useEffect(() => {

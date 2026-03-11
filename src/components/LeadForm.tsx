@@ -51,7 +51,7 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
 
     setIsSubmitting(true);
     try {
-      const currentUserId = localStorage.getItem('userId') || '1';
+      const currentUserId = localStorage.getItem('userId');
       
       if (initialData?.id) {
         await firestoreService.updateLead(initialData.id, {

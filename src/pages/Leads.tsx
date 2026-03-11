@@ -99,8 +99,8 @@ export default function Leads() {
   };
 
   const currentUser = { 
-    id: localStorage.getItem('userId') || '1',
-    role: localStorage.getItem('userRole') || 'Administrator' 
+    id: localStorage.getItem('userId'),
+    role: localStorage.getItem('userRole') || 'Agent' 
   };
 
   const fetchLeads = async () => {

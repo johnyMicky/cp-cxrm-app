@@ -133,7 +133,7 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
       }
 
       // Send to firestore
-      const currentUserId = localStorage.getItem('userId') || '1';
+      const currentUserId = localStorage.getItem('userId');
       setProgress({ current: 0, total: uniqueLeads.length });
       const result = await firestoreService.bulkCreateLeads(uniqueLeads, currentUserId, file.name, (current, total) => {
         setProgress({ current, total });

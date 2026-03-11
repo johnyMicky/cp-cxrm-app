@@ -15,8 +15,14 @@ import {
   setDoc,
   writeBatch
 } from "firebase/firestore";
+import { 
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged
+} from "firebase/auth";
 import { format } from 'date-fns';
-import { db } from "../firebase";
+import { db, auth } from "../firebase";
 
 // Collections
 const LEADS_COL = "leads";
@@ -38,13 +44,64 @@ const sanitizeData = (data: any) => {
 export const firestoreService = {
   // Auth / Users
   async login(email: string, password: string) {
-    const q = query(collection(db, USERS_COL), where("email", "==", email), where("password", "==", password));
-    const querySnapshot = await getDocs(q);
-    if (querySnapshot.empty) {
-      throw new Error("Invalid email or password");
+    const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    const user = userCredential.user;
+    
+    // Get or create user document in Firestore
+    const userDocRef = doc(db, USERS_COL, user.uid);
+    const userDocSnap = await getDoc(userDocRef);
+    
+    if (!userDocSnap.exists()) {
+      // This might happen if user was created in Auth but not in Firestore
+      // We'll try to find a legacy user document by email
+      const q = query(collection(db, USERS_COL), where("email", "==", email));
+      const querySnapshot = await getDocs(q);
+      
+      let userData: any = {
+        uid: user.uid,
+        email: user.email,
+        role: 'Agent', // Default role
+        name: user.displayName || email.split('@')[0],
+        avatar: `https://i.pravatar.cc/150?u=${user.uid}`,
+        isOnline: true,
+        createdAt: serverTimestamp(),
+        lastSeen: serverTimestamp()
+      };
+
+      if (!querySnapshot.empty) {
+        // Migrate legacy user data
+        const legacyData = querySnapshot.docs[0].data();
+        userData = { ...userData, ...legacyData, uid: user.uid };
+        // Delete legacy document if it has a different ID
+        if (querySnapshot.docs[0].id !== user.uid) {
+          await deleteDoc(doc(db, USERS_COL, querySnapshot.docs[0].id));
+        }
+      }
+
+      await setDoc(userDocRef, userData);
+      return { id: user.uid, ...userData };
     }
-    const userDoc = querySnapshot.docs[0];
-    return { id: userDoc.id, ...userDoc.data() };
+
+    const userData = userDocSnap.data();
+    // Update last seen and online status
+    await updateDoc(userDocRef, { 
+      isOnline: true, 
+      lastSeen: serverTimestamp(),
+      uid: user.uid // Ensure UID is stored
+    });
+
+    return { id: user.uid, ...userData };
+  },
+
+  async logout() {
+    if (auth.currentUser) {
+      const userDocRef = doc(db, USERS_COL, auth.currentUser.uid);
+      await updateDoc(userDocRef, { 
+        isOnline: false, 
+        lastSeen: serverTimestamp() 
+      }).catch(console.error);
+    }
+    await signOut(auth);
   },
 
   async getUsers() {
@@ -54,11 +111,30 @@ export const firestoreService = {
 
   async createUser(userData: any) {
     const sanitized = sanitizeData(userData);
-    const docRef = await addDoc(collection(db, USERS_COL), {
-      ...sanitized,
-      createdAt: serverTimestamp()
-    });
-    return { id: docRef.id, ...sanitized };
+    const { email, password, ...rest } = sanitized;
+    
+    try {
+      // Create in Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      
+      // Create in Firestore with UID as document ID
+      const userDocData = {
+        ...rest,
+        uid: user.uid,
+        email,
+        createdAt: serverTimestamp(),
+        isOnline: false,
+        lastSeen: serverTimestamp(),
+        avatar: rest.avatar || `https://i.pravatar.cc/150?u=${user.uid}`
+      };
+      
+      await setDoc(doc(db, USERS_COL, user.uid), userDocData);
+      return { id: user.uid, ...userDocData };
+    } catch (error: any) {
+      console.error("Error creating user:", error);
+      throw error;
+    }
   },
 
   async updateUser(id: string, userData: any) {

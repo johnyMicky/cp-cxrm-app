@@ -13,7 +13,8 @@ import {
   getDocs,
   getDoc,
   limit,
-  Timestamp
+  Timestamp,
+  setDoc
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "../firebase";
@@ -25,8 +26,12 @@ const USERS_COL = "users";
 export const chatService = {
   // User Status
   async setUserOnline(userId: string, isOnline: boolean) {
+    if (!userId || userId === '1') return; // Skip invalid IDs
     try {
-      await updateDoc(doc(db, USERS_COL, userId), { isOnline });
+      await setDoc(doc(db, USERS_COL, userId), { 
+        isOnline,
+        lastSeen: serverTimestamp()
+      }, { merge: true });
     } catch (err) {
       console.error("Failed to set user status:", err);
     }
