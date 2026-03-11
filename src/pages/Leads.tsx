@@ -203,36 +203,51 @@ export default function Leads() {
     });
 
     try {
-      // Optimistic update: Update local state immediately
+      // 1. Calculate distribution locally for "Instant" feel
+      const localSummary: Record<string, number> = {};
+      selectedBulkAgents.forEach(id => {
+        localSummary[agentNamesMap[id] || id] = 0;
+      });
+
       const updatedLeads = leads.map(lead => {
         if (selectedLeads.includes(lead.id)) {
           const index = selectedLeads.indexOf(lead.id);
           const agentId = selectedBulkAgents[index % selectedBulkAgents.length];
+          const agentName = agentNamesMap[agentId] || agentId;
+          localSummary[agentName] = (localSummary[agentName] || 0) + 1;
           return { ...lead, assigned_to: agentId };
         }
         return lead;
       });
+
+      // 2. Update UI immediately (Optimistic)
       setLeads(updatedLeads);
-      
-      // Close dropdown and clear selection immediately for better UX
       setActiveDropdown(null);
       const count = selectedLeads.length;
-      setSelectedLeads([]);
-
-      // Perform actual distribution in background
-      const summary = await firestoreService.distributeLeads(selectedLeads, selectedBulkAgents, currentUser.id, agentNamesMap);
+      const leadsToDistribute = [...selectedLeads];
+      const agentsToUse = [...selectedBulkAgents];
       
-      const summaryText = Object.entries(summary)
-        .map(([name, count]) => `${name}: ${count}`)
-        .join(', ');
-        
-      handleSuccess(`Distributed ${count} leads.`);
-      setDistributionResult(summary);
+      setSelectedLeads([]);
       setSelectedBulkAgents([]);
+      setIsAssigning(false); // Stop loading state immediately
+      
+      // 3. Show the result modal immediately
+      setDistributionResult(localSummary);
+      setToastMessage(`Distributed ${count} leads successfully!`);
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 3000);
+
+      // 4. Perform actual Firestore distribution in background (don't await)
+      firestoreService.distributeLeads(leadsToDistribute, agentsToUse, currentUser.id, agentNamesMap)
+        .catch(err => {
+          console.error('Background distribution failed:', err);
+          // If it fails, we might want to refresh the data to show the real state
+          fetchLeads();
+        });
+
     } catch (err) {
       console.error('Bulk assign failed:', err);
-      alert('Failed to distribute leads. Please try again.');
-    } finally {
+      alert('Failed to start distribution. Please try again.');
       setIsAssigning(false);
     }
   };

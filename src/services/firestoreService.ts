@@ -315,7 +315,7 @@ export const firestoreService = {
   async distributeLeads(leadIds: string[], agentIds: string[], userId: string, agentNamesMap?: Record<string, string>) {
     const distributionSummary: Record<string, number> = {};
     
-    // 2. Use writeBatch for maximum speed (up to 500 operations per batch)
+    // Use writeBatch for maximum speed (up to 500 operations per batch)
     const BATCH_SIZE = 500;
     const batches = [];
     let currentBatch = writeBatch(db);
@@ -350,10 +350,10 @@ export const firestoreService = {
       batches.push(currentBatch.commit());
     }
 
-    // 3. Execute all batches in parallel
+    // Execute all batches in parallel
     await Promise.all(batches);
 
-    // 4. Log a single summary activity in background
+    // Log a single summary activity in background
     this.logActivity({
       user_id: userId,
       action: "Bulk Distribution",
