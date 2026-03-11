@@ -349,66 +349,33 @@ export const firestoreService = {
   },
 
   async bulkDeleteLeads(leadIds: string[], userId: string) {
-    const BATCH_SIZE = 500;
-    const batches = [];
-    let currentBatch = writeBatch(db);
-    let count = 0;
-
-    for (const id of leadIds) {
-      currentBatch.delete(doc(db, LEADS_COL, id));
-      count++;
-
-      if (count === BATCH_SIZE) {
-        batches.push(currentBatch.commit());
-        currentBatch = writeBatch(db);
-        count = 0;
-      }
+    const response = await fetch('/api/leads/delete-selected', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: leadIds, userId })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to delete selected leads');
     }
-
-    if (count > 0) {
-      batches.push(currentBatch.commit());
-    }
-
-    await Promise.all(batches);
-
-    this.logActivity({
-      user_id: userId,
-      action: "Bulk Delete",
-      details: `Deleted ${leadIds.length} leads.`
-    }).catch(() => {});
+    
+    return await response.json();
   },
 
   async deleteAllLeads(userId: string) {
-    let deletedCount = 0;
+    const response = await fetch('/api/leads/delete-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId })
+    });
     
-    // Recursive function to delete in chunks until collection is empty
-    const deleteBatch = async () => {
-      const q = query(collection(db, LEADS_COL), limit(500));
-      const snap = await getDocs(q);
-      
-      if (snap.empty) return;
-
-      const batch = writeBatch(db);
-      snap.docs.forEach(d => batch.delete(d.ref));
-      
-      await batch.commit();
-      deletedCount += snap.size;
-      
-      // Continue deleting if we hit the limit
-      if (snap.size === 500) {
-        await deleteBatch();
-      }
-    };
-
-    await deleteBatch();
-
-    if (deletedCount > 0) {
-      this.logActivity({
-        user_id: userId,
-        action: "Bulk Delete All",
-        details: `Permanently deleted all ${deletedCount} leads.`
-      }).catch(() => {});
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to delete all leads');
     }
+    
+    return await response.json();
   },
 
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {

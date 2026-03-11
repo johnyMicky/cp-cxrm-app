@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send } from 'lucide-react';
+import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, Clock, AlertTriangle } from 'lucide-react';
 import { format } from 'date-fns';
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
@@ -57,6 +57,13 @@ export default function Leads() {
   const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
+  const [deleteSummary, setDeleteSummary] = useState<{
+    type: 'all' | 'selected';
+    selected: number;
+    deleted: number;
+    failed: number;
+    duration: number;
+  } | null>(null);
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -271,32 +278,44 @@ export default function Leads() {
     setIsDeletingAll(true);
     try {
       if (selectedLeads.length > 0) {
-        // Optimistic update: remove from local state
         const count = selectedLeads.length;
         const idsToDelete = [...selectedLeads];
+        
+        // Optimistic UI: Hide leads immediately
         setLeads(prev => prev.filter(l => !idsToDelete.includes(l.id)));
         setSelectedLeads([]);
         setIsDeleteAllModalOpen(false);
         
-        // Background delete
-        await firestoreService.bulkDeleteLeads(idsToDelete, currentUser.id);
-        handleSuccess(`Deleted ${count} selected leads`);
+        const result = await firestoreService.bulkDeleteLeads(idsToDelete, currentUser.id);
+        
+        setDeleteSummary({
+          type: 'selected',
+          selected: count,
+          deleted: result.deletedCount,
+          failed: result.failedCount,
+          duration: result.duration
+        });
       } else {
-        // Delete everything
-        // 1. Clear UI immediately
+        const totalCount = leads.length;
+        
+        // Optimistic UI: Clear list immediately
         setLeads([]);
         setIsDeleteAllModalOpen(false);
         
-        // 2. Perform server-side delete
-        await firestoreService.deleteAllLeads(currentUser.id);
+        const result = await firestoreService.deleteAllLeads(currentUser.id);
         
-        // 3. Final confirmation and refresh
-        handleSuccess('All leads have been deleted successfully', true);
+        setDeleteSummary({
+          type: 'all',
+          selected: totalCount,
+          deleted: result.deletedCount,
+          failed: result.failedCount,
+          duration: result.duration
+        });
       }
     } catch (err) {
       console.error('Delete leads failed:', err);
       alert('Failed to delete leads. Please try again.');
-      fetchLeads(); // Refresh to restore state if failed
+      fetchLeads(); // Restore state on error
     } finally {
       setIsDeletingAll(false);
     }
@@ -345,15 +364,26 @@ export default function Leads() {
           <p className="text-sm text-slate-400 mt-1">View, filter, and manage all incoming leads.</p>
         </div>
         <div className="flex items-center space-x-3">
-          {currentUser.role !== 'Agent' && (
+          {currentUser.role === 'Administrator' && selectedLeads.length === 0 && (
             <button 
               onClick={() => setIsDeleteAllModalOpen(true)}
               className="shimmer-btn bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-rose-500/20"
             >
-              <X className="w-4 h-4" />
-              <span>{selectedLeads.length > 0 ? `Delete ${selectedLeads.length} Selected` : 'Delete All Leads'}</span>
+              <AlertTriangle className="w-4 h-4" />
+              <span>Delete All Leads</span>
             </button>
           )}
+          
+          {selectedLeads.length > 0 && currentUser.role !== 'Agent' && (
+            <button 
+              onClick={() => setIsDeleteAllModalOpen(true)}
+              className="shimmer-btn bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-rose-500/20"
+            >
+              <X className="w-4 h-4" />
+              <span>Delete {selectedLeads.length} Selected</span>
+            </button>
+          )}
+
           {currentUser.role !== 'Agent' && (
             <button 
               onClick={() => setIsImportOpen(true)}
@@ -918,7 +948,7 @@ export default function Leads() {
           <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="flex items-center justify-between p-6 border-b border-white/5 bg-white/[0.02]">
               <h2 className="text-xl font-semibold text-white tracking-tight flex items-center space-x-2">
-                <X className="w-5 h-5 text-rose-500" />
+                <AlertTriangle className="w-5 h-5 text-rose-500" />
                 <span>{selectedLeads.length > 0 ? `Delete ${selectedLeads.length} Leads` : 'Delete All Leads'}</span>
               </h2>
               <button 
@@ -939,8 +969,8 @@ export default function Leads() {
               </div>
               <p className="text-xs text-slate-400">
                 {selectedLeads.length > 0
-                  ? 'The selected leads will be permanently removed from the system.'
-                  : 'All lead data, including assigned agents, status history, and notes will be permanently removed from the system.'
+                  ? 'The selected leads will be permanently removed from the system using server-side batch processing.'
+                  : 'All lead data will be permanently removed from the system. This process runs on the server for maximum reliability.'
                 }
               </p>
             </div>
@@ -964,9 +994,62 @@ export default function Leads() {
                 ) : (
                   <>
                     <X className="w-4 h-4" />
-                    <span>Delete Everything</span>
+                    <span>Confirm Delete</span>
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Summary Modal */}
+      {deleteSummary && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="bg-[#0A0F1C] border border-white/10 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in duration-300">
+            <div className="p-8 text-center border-b border-white/5 bg-white/[0.02]">
+              <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+                <CheckCircle2 className="w-10 h-10 text-emerald-500" />
+              </div>
+              <h3 className="text-2xl font-bold text-white tracking-tight">Deletion Complete</h3>
+              <p className="text-slate-400 mt-2">
+                {deleteSummary.type === 'all' ? 'All leads have been removed.' : `${deleteSummary.deleted} selected leads have been removed.`}
+              </p>
+            </div>
+            
+            <div className="p-8 space-y-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Selected</p>
+                  <p className="text-2xl font-bold text-white">{deleteSummary.selected}</p>
+                </div>
+                <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
+                  <p className="text-xs font-bold text-emerald-500 uppercase tracking-widest mb-1">Deleted</p>
+                  <p className="text-2xl font-bold text-emerald-400">{deleteSummary.deleted}</p>
+                </div>
+                <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/20">
+                  <p className="text-xs font-bold text-rose-500 uppercase tracking-widest mb-1">Failed</p>
+                  <p className="text-2xl font-bold text-rose-400">{deleteSummary.failed}</p>
+                </div>
+                <div className="p-4 rounded-2xl bg-blue-500/10 border border-blue-500/20">
+                  <p className="text-xs font-bold text-blue-500 uppercase tracking-widest mb-1">Duration</p>
+                  <p className="text-2xl font-bold text-blue-400 flex items-center space-x-1">
+                    <span>{deleteSummary.duration.toFixed(1)}</span>
+                    <span className="text-sm font-medium">s</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 bg-white/[0.02] border-t border-white/5">
+              <button 
+                onClick={() => {
+                  setDeleteSummary(null);
+                  fetchLeads();
+                }}
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold transition-all shadow-lg shadow-blue-500/20 active:scale-[0.98]"
+              >
+                Done
               </button>
             </div>
           </div>
