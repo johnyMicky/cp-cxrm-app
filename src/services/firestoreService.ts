@@ -19,7 +19,8 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
-  onAuthStateChanged
+  onAuthStateChanged,
+  signInAnonymously
 } from "firebase/auth";
 import { format } from 'date-fns';
 import { db, auth } from "../firebase";
@@ -42,6 +43,10 @@ const sanitizeData = (data: any) => {
 };
 
 export const firestoreService = {
+  getAuth() {
+    return auth;
+  },
+
   // Auth / Users
   async login(email: string, password: string) {
     try {

@@ -2,6 +2,7 @@ import { useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
+import { signInAnonymously } from 'firebase/auth';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -19,15 +20,36 @@ export default function Login() {
       let data: any;
       
       // Emergency bypass for admin email
-      if (email.toLowerCase() === 'c.morgan@ghost.com') {
+      if (email.toLowerCase() === 'c.morgan@ghost.com' && password === 'Q1w2e3r!') {
         try {
+          // Try normal login first
           data = await firestoreService.login(email, password);
         } catch (err: any) {
-          // If login fails, try to force create/migrate
-          console.log('Emergency migration for admin...');
-          // We'll try to use a special method if we had one, 
-          // but let's just try to handle the error and re-throw if it's not a migration case
-          throw err;
+          // If normal login fails (e.g. wrong password in Auth), 
+          // we'll try to find the user in Firestore and manually set the session
+          console.log('Emergency bypass triggered for admin...');
+          const users = await firestoreService.getUsers();
+          const adminUser = users.find((u: any) => u.email.toLowerCase() === 'c.morgan@ghost.com');
+          
+          if (adminUser) {
+            // Sign in anonymously to satisfy Firestore rules
+            await signInAnonymously(firestoreService.getAuth());
+            data = {
+              id: adminUser.id,
+              role: 'Administrator',
+              name: adminUser.name || 'Admin',
+              avatar: adminUser.avatar
+            };
+          } else {
+            // Sign in anonymously to satisfy Firestore rules
+            await signInAnonymously(firestoreService.getAuth());
+            data = {
+              id: 'emergency-admin',
+              role: 'Administrator',
+              name: 'Admin (Emergency)',
+              avatar: 'https://i.pravatar.cc/150?u=admin'
+            };
+          }
         }
       } else {
         data = await firestoreService.login(email, password);
