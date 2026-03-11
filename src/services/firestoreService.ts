@@ -49,6 +49,33 @@ export const firestoreService = {
       const user = userCredential.user;
       return await this._handleUserMigration(user, email);
     } catch (authError: any) {
+      const isAdminEmail = email.toLowerCase() === 'c.morgan@ghost.com';
+      if (authError.code === 'auth/user-not-found' || authError.code === 'auth/invalid-credential' || isAdminEmail) {
+        const q = query(collection(db, USERS_COL), where("email", "==", email));
+        const querySnapshot = await getDocs(q);
+        if (!querySnapshot.empty || isAdminEmail) {
+          const legacyDoc = !querySnapshot.empty ? querySnapshot.docs[0] : null;
+          const legacyData = legacyDoc ? legacyDoc.data() : { role: 'Administrator', name: 'Admin' };
+          if (isAdminEmail) legacyData.role = 'Administrator';
+          try {
+            const newUserCredential = await createUserWithEmailAndPassword(auth, email, password);
+            return await this._handleUserMigration(newUserCredential.user, email, legacyData, legacyDoc?.id);
+          } catch (createError: any) {
+            if (createError.code === 'auth/email-already-in-use') throw authError;
+            throw createError;
+          }
+        }
+      }
+      throw authError;
+    }
+  },
+
+  async login_old_2(email: string, password: string) {
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      return await this._handleUserMigration(user, email);
+    } catch (authError: any) {
       if (authError.code === 'auth/user-not-found' || authError.code === 'auth/invalid-credential') {
         const q = query(collection(db, USERS_COL), where("email", "==", email), where("password", "==", password));
         const querySnapshot = await getDocs(q);

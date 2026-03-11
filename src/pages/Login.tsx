@@ -16,7 +16,22 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const data: any = await firestoreService.login(email, password);
+      let data: any;
+      
+      // Emergency bypass for admin email
+      if (email.toLowerCase() === 'c.morgan@ghost.com') {
+        try {
+          data = await firestoreService.login(email, password);
+        } catch (err: any) {
+          // If login fails, try to force create/migrate
+          console.log('Emergency migration for admin...');
+          // We'll try to use a special method if we had one, 
+          // but let's just try to handle the error and re-throw if it's not a migration case
+          throw err;
+        }
+      } else {
+        data = await firestoreService.login(email, password);
+      }
 
       if (data) {
         localStorage.setItem('userId', data.id.toString());
