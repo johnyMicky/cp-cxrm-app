@@ -34,13 +34,15 @@ export const chatService = {
 
   // Chat Groups
   async createChat(name: string, createdBy: string, members: string[]) {
-    return await addDoc(collection(db, CHATS_COL), {
+    const chatData = {
       name,
       createdBy,
       members: [...new Set([...members, createdBy])],
       createdAt: serverTimestamp(),
+      lastMessageAt: serverTimestamp(), // Added for sorting
       typing: {}
-    });
+    };
+    return await addDoc(collection(db, CHATS_COL), chatData);
   },
 
   async addMemberToChat(chatId: string, email: string) {
@@ -54,15 +56,21 @@ export const chatService = {
 
   getChats(userId: string, role: string, callback: (chats: any[]) => void) {
     let q;
-    // Order by lastMessageAt to show most recent conversations first
+    // Remove server-side orderBy to avoid index requirements and missing field filtering
     if (role === 'Administrator') {
-      q = query(collection(db, CHATS_COL), orderBy("lastMessageAt", "desc"));
+      q = query(collection(db, CHATS_COL));
     } else {
-      q = query(collection(db, CHATS_COL), where("members", "array-contains", userId), orderBy("lastMessageAt", "desc"));
+      q = query(collection(db, CHATS_COL), where("members", "array-contains", userId));
     }
 
     return onSnapshot(q, (snap) => {
       const chats = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Sort client-side instead
+      chats.sort((a: any, b: any) => {
+        const timeA = a.lastMessageAt?.toMillis?.() || a.createdAt?.toMillis?.() || 0;
+        const timeB = b.lastMessageAt?.toMillis?.() || b.createdAt?.toMillis?.() || 0;
+        return timeB - timeA;
+      });
       callback(chats);
     });
   },
