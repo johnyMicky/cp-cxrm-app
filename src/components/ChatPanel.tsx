@@ -116,7 +116,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     setIsUploading(true);
 
     try {
-      // Send files in parallel
+      // Send files in parallel with a safety timeout
       const uploadPromises = filesToSend.map(async (item) => {
         const url = await chatService.uploadFile(item.file);
         return chatService.sendMessage(selectedChat.id, {
@@ -130,7 +130,12 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
         });
       });
 
-      await Promise.all(uploadPromises);
+      // Global timeout for the entire upload process (20 seconds)
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Upload timed out. Please try again.")), 20000)
+      );
+
+      await Promise.race([Promise.all(uploadPromises), timeoutPromise]);
 
       // Send text message if exists
       if (text.trim()) {
@@ -143,9 +148,9 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       }
       
       chatService.setTyping(selectedChat.id, currentUserId, false);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to send message:", err);
-      alert("Failed to send message or files");
+      alert(err.message || "Failed to send message or files");
     } finally {
       setIsUploading(false);
     }

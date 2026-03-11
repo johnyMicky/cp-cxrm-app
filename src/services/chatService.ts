@@ -16,7 +16,6 @@ import {
   Timestamp
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import imageCompression from 'browser-image-compression';
 import { db, storage } from "../firebase";
 
 const CHATS_COL = "chats";
@@ -118,34 +117,17 @@ export const chatService = {
 
   // Files
   async uploadFile(file: File) {
-    let fileToUpload = file;
-
-    // Compress if it's an image
-    if (file.type.startsWith('image/')) {
-      try {
-        const options = {
-          maxSizeMB: 0.5, // Even smaller for speed
-          maxWidthOrHeight: 1280, // Standard HD is enough
-          useWebWorker: false, // Disable web worker as it can hang in some environments
-          initialQuality: 0.7
-        };
-        
-        // Add a timeout to compression so it doesn't hang the whole process
-        const compressionPromise = imageCompression(file, options);
-        const timeoutPromise = new Promise<null>((_, reject) => 
-          setTimeout(() => reject(new Error("Compression timeout")), 3000)
-        );
-
-        const result = await Promise.race([compressionPromise, timeoutPromise]);
-        if (result) fileToUpload = result;
-      } catch (error) {
-        console.warn("Compression skipped or failed:", error);
-      }
+    // Clean filename to avoid issues with special characters
+    const cleanName = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
+    const storageRef = ref(storage, `chat_files/${Date.now()}_${cleanName}`);
+    
+    try {
+      await uploadBytes(storageRef, file);
+      return await getDownloadURL(storageRef);
+    } catch (error) {
+      console.error("Firebase upload error:", error);
+      throw error;
     }
-
-    const storageRef = ref(storage, `chat_files/${Date.now()}_${fileToUpload.name}`);
-    await uploadBytes(storageRef, fileToUpload);
-    return await getDownloadURL(storageRef);
   },
 
   // Typing Indicator
