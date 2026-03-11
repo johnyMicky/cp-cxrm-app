@@ -124,13 +124,22 @@ export const chatService = {
     if (file.type.startsWith('image/')) {
       try {
         const options = {
-          maxSizeMB: 1,
-          maxWidthOrHeight: 1920,
-          useWebWorker: true
+          maxSizeMB: 0.5, // Even smaller for speed
+          maxWidthOrHeight: 1280, // Standard HD is enough
+          useWebWorker: false, // Disable web worker as it can hang in some environments
+          initialQuality: 0.7
         };
-        fileToUpload = await imageCompression(file, options);
+        
+        // Add a timeout to compression so it doesn't hang the whole process
+        const compressionPromise = imageCompression(file, options);
+        const timeoutPromise = new Promise<null>((_, reject) => 
+          setTimeout(() => reject(new Error("Compression timeout")), 3000)
+        );
+
+        const result = await Promise.race([compressionPromise, timeoutPromise]);
+        if (result) fileToUpload = result;
       } catch (error) {
-        console.error("Compression failed, uploading original:", error);
+        console.warn("Compression skipped or failed:", error);
       }
     }
 
