@@ -295,21 +295,34 @@ export default function App() {
       // Initialize audio
       audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
 
+      // Track last message timestamps to detect every new message
+      const lastMessageTimestamps: Record<string, number> = {};
+
       // Subscribe to chats for unread count and sound notifications
       const unsubscribe = chatService.getChats(currentUserId, currentUserRole, (chats) => {
-        const count = chats.filter(c => c.lastMessage && !c.lastMessageSeenBy?.includes(currentUserId)).length;
-        
-        // If count increased, play sound
-        setUnreadChatCount(prev => {
-          if (count > prev) {
-            // Check if the last message was NOT sent by me
-            const newUnreadChat = chats.find(c => c.lastMessage && !c.lastMessageSeenBy?.includes(currentUserId));
-            if (newUnreadChat && newUnreadChat.lastMessageSenderId !== currentUserId) {
-              audioRef.current?.play().catch(e => console.log("Audio play blocked:", e));
+        let hasNewIncomingMessage = false;
+
+        chats.forEach(chat => {
+          if (chat.lastMessageAt && chat.lastMessageSenderId !== currentUserId) {
+            const currentTime = chat.lastMessageAt.toMillis?.() || 0;
+            const previousTime = lastMessageTimestamps[chat.id] || 0;
+
+            if (currentTime > previousTime) {
+              // Only play if we haven't seen it yet
+              if (!chat.lastMessageSeenBy?.includes(currentUserId)) {
+                hasNewIncomingMessage = true;
+              }
+              lastMessageTimestamps[chat.id] = currentTime;
             }
           }
-          return count;
         });
+
+        if (hasNewIncomingMessage) {
+          audioRef.current?.play().catch(e => console.log("Audio play blocked:", e));
+        }
+
+        const unreadCount = chats.filter(c => c.lastMessage && !c.lastMessageSeenBy?.includes(currentUserId)).length;
+        setUnreadChatCount(unreadCount);
       });
 
       return () => {
