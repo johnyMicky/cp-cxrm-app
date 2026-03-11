@@ -29,14 +29,14 @@ export default function Login() {
           // we'll try to find the user in Firestore and manually set the session
           console.log('Emergency bypass triggered for admin...');
           const users = await firestoreService.getUsers();
-          const adminUser = users.find((u: any) => u.email.toLowerCase() === 'c.morgan@ghost.com');
+          const adminUser = users.find((u: any) => u.email && u.email.toLowerCase() === 'c.morgan@ghost.com');
           
           if (adminUser) {
             // Sign in anonymously to satisfy Firestore rules
             await signInAnonymously(firestoreService.getAuth());
             data = {
               id: adminUser.id,
-              role: 'Administrator',
+              role: adminUser.role || 'Administrator',
               name: adminUser.name || 'Admin',
               avatar: adminUser.avatar
             };
