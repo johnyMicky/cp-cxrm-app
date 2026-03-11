@@ -297,6 +297,7 @@ export default function App() {
 
       // Track last message timestamps to detect every new message
       const lastMessageTimestamps: Record<string, number> = {};
+      let isInitialLoad = true;
 
       // Subscribe to chats for unread count and sound notifications
       const unsubscribe = chatService.getChats(currentUserId, currentUserRole, (chats) => {
@@ -307,9 +308,9 @@ export default function App() {
             const currentTime = chat.lastMessageAt.toMillis?.() || 0;
             const previousTime = lastMessageTimestamps[chat.id] || 0;
 
+            // If we have a newer message than what we last saw in this session
             if (currentTime > previousTime) {
-              // Only play if we haven't seen it yet
-              if (!chat.lastMessageSeenBy?.includes(currentUserId)) {
+              if (!isInitialLoad) {
                 hasNewIncomingMessage = true;
               }
               lastMessageTimestamps[chat.id] = currentTime;
@@ -318,8 +319,13 @@ export default function App() {
         });
 
         if (hasNewIncomingMessage) {
-          audioRef.current?.play().catch(e => console.log("Audio play blocked:", e));
+          if (audioRef.current) {
+            audioRef.current.currentTime = 0; // Reset to start
+            audioRef.current.play().catch(e => console.log("Audio play blocked:", e));
+          }
         }
+
+        isInitialLoad = false;
 
         const unreadCount = chats.filter(c => c.lastMessage && !c.lastMessageSeenBy?.includes(currentUserId)).length;
         setUnreadChatCount(unreadCount);
