@@ -299,9 +299,16 @@ export default function App() {
         setCurrentUserId(user.uid);
         localStorage.setItem('userId', user.uid);
       } else {
-        setIsAuthenticated(false);
-        setCurrentUserId(null);
-        localStorage.removeItem('userId');
+        // Only reset if we don't have an emergency bypass session
+        const localUserId = localStorage.getItem('userId');
+        if (localUserId === 'admin-id-fallback' || localUserId === 'emergency-admin') {
+          setIsAuthenticated(true);
+          setCurrentUserId(localUserId);
+        } else {
+          setIsAuthenticated(false);
+          setCurrentUserId(null);
+          localStorage.removeItem('userId');
+        }
       }
     });
 

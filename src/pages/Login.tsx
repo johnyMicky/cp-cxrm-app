@@ -19,38 +19,15 @@ export default function Login() {
     try {
       let data: any;
       
-      // Emergency bypass for admin email
+      // Emergency bypass for admin email - NO FIREBASE AUTH REQUIRED
       if (email.toLowerCase() === 'c.morgan@ghost.com' && password === 'Q1w2e3r!') {
-        try {
-          // Try normal login first
-          data = await firestoreService.login(email, password);
-        } catch (err: any) {
-          // If normal login fails (e.g. wrong password in Auth), 
-          // we'll try to find the user in Firestore and manually set the session
-          console.log('Emergency bypass triggered for admin...');
-          const users = await firestoreService.getUsers();
-          const adminUser = users.find((u: any) => u.email && u.email.toLowerCase() === 'c.morgan@ghost.com');
-          
-          if (adminUser) {
-            // Sign in anonymously to satisfy Firestore rules
-            await signInAnonymously(firestoreService.getAuth());
-            data = {
-              id: adminUser.id,
-              role: adminUser.role || 'Administrator',
-              name: adminUser.name || 'Admin',
-              avatar: adminUser.avatar
-            };
-          } else {
-            // Sign in anonymously to satisfy Firestore rules
-            await signInAnonymously(firestoreService.getAuth());
-            data = {
-              id: 'emergency-admin',
-              role: 'Administrator',
-              name: 'Admin (Emergency)',
-              avatar: 'https://i.pravatar.cc/150?u=admin'
-            };
-          }
-        }
+        console.log('Emergency bypass triggered for admin...');
+        data = {
+          id: 'admin-id-fallback', // Hardcoded fallback ID
+          role: 'Administrator',
+          name: 'Admin User',
+          avatar: 'https://i.pravatar.cc/150?u=admin'
+        };
       } else {
         data = await firestoreService.login(email, password);
       }
