@@ -194,8 +194,15 @@ export default function Leads() {
   const handleBulkAssign = async () => {
     if (selectedBulkAgents.length === 0) return;
     setIsAssigning(true);
+    
+    // Create a map of agent names for the summary
+    const agentNamesMap: Record<string, string> = {};
+    agents.forEach(a => {
+      agentNamesMap[a.id] = a.name;
+    });
+
     try {
-      const summary = await firestoreService.distributeLeads(selectedLeads, selectedBulkAgents, currentUser.id);
+      const summary = await firestoreService.distributeLeads(selectedLeads, selectedBulkAgents, currentUser.id, agentNamesMap);
       
       const summaryText = Object.entries(summary)
         .map(([name, count]) => `${name}: ${count}`)

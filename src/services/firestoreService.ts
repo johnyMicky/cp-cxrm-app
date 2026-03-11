@@ -281,50 +281,62 @@ export const firestoreService = {
   },
 
   async bulkUpdateLeadsStatus(leadIds: string[], status: string, userId: string) {
-    const promises = leadIds.map(async (id) => {
+    const BATCH_SIZE = 500;
+    const batches = [];
+    let currentBatch = writeBatch(db);
+    let count = 0;
+    const now = new Date();
+
+    for (const id of leadIds) {
       const docRef = doc(db, LEADS_COL, id);
-      await updateDoc(docRef, { status, updatedAt: serverTimestamp() });
-      await this.logActivity({
-        lead_id: id,
-        user_id: userId,
-        action: "Status Changed",
-        details: `Bulk status update to ${status}`
-      });
-    });
-    await Promise.all(promises);
+      currentBatch.update(docRef, { status, updatedAt: now });
+      count++;
+
+      if (count === BATCH_SIZE) {
+        batches.push(currentBatch.commit());
+        currentBatch = writeBatch(db);
+        count = 0;
+      }
+    }
+
+    if (count > 0) {
+      batches.push(currentBatch.commit());
+    }
+
+    await Promise.all(batches);
+
+    this.logActivity({
+      user_id: userId,
+      action: "Bulk Status Change",
+      details: `Updated ${leadIds.length} leads to ${status}`
+    }).catch(() => {});
   },
 
-  async distributeLeads(leadIds: string[], agentIds: string[], userId: string) {
-    // 1. Fetch all agents once
-    const agentsSnap = await getDocs(collection(db, USERS_COL));
-    const agentsMap: Record<string, string> = {};
-    agentsSnap.docs.forEach(d => {
-      agentsMap[d.id] = d.data().name || 'Unknown';
-    });
-
+  async distributeLeads(leadIds: string[], agentIds: string[], userId: string, agentNamesMap?: Record<string, string>) {
     const distributionSummary: Record<string, number> = {};
-    agentIds.forEach(id => {
-      distributionSummary[agentsMap[id] || id] = 0;
-    });
-
+    
     // 2. Use writeBatch for maximum speed (up to 500 operations per batch)
     const BATCH_SIZE = 500;
     const batches = [];
     let currentBatch = writeBatch(db);
     let count = 0;
+    const now = new Date();
 
     for (let i = 0; i < leadIds.length; i++) {
       const id = leadIds[i];
       const agentId = agentIds[i % agentIds.length];
-      const agentName = agentsMap[agentId] || 'Unknown';
       
       const docRef = doc(db, LEADS_COL, id);
       currentBatch.update(docRef, { 
         assigned_to: agentId, 
-        updatedAt: serverTimestamp() 
+        updatedAt: now 
       });
       
-      distributionSummary[agentName] = (distributionSummary[agentName] || 0) + 1;
+      if (agentNamesMap) {
+        const agentName = agentNamesMap[agentId] || agentId;
+        distributionSummary[agentName] = (distributionSummary[agentName] || 0) + 1;
+      }
+      
       count++;
 
       if (count === BATCH_SIZE) {
@@ -341,16 +353,12 @@ export const firestoreService = {
     // 3. Execute all batches in parallel
     await Promise.all(batches);
 
-    // 4. Log a single summary activity instead of 1600+ individual ones
-    const summaryText = Object.entries(distributionSummary)
-      .map(([name, count]) => `${name}: ${count}`)
-      .join(', ');
-
-    await this.logActivity({
+    // 4. Log a single summary activity in background
+    this.logActivity({
       user_id: userId,
       action: "Bulk Distribution",
-      details: `Distributed ${leadIds.length} leads. ${summaryText}`
-    });
+      details: `Distributed ${leadIds.length} leads.`
+    }).catch(() => {});
     
     return distributionSummary;
   },
