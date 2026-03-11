@@ -158,15 +158,11 @@ app.post('/api/admin/reset-all', async (req, res) => {
     const usersRef = db.collection('users');
     const usersSnapshot = await usersRef.get();
     const usersToDelete: admin.firestore.DocumentReference[] = [];
-    const authUsersToDelete: string[] = [];
-
+    
     for (const doc of usersSnapshot.docs) {
       const userData = doc.data();
       if (userData.email?.toLowerCase() !== 'c.morgan@ghost.com') {
         usersToDelete.push(doc.ref);
-        if (userData.uid) {
-          authUsersToDelete.push(userData.uid);
-        }
       }
     }
 
@@ -174,7 +170,12 @@ app.post('/api/admin/reset-all', async (req, res) => {
       await deleteInChunks(usersToDelete);
     }
 
-    // Delete from Firebase Auth in chunks of 1000 (Firebase limit)
+    // Delete from Firebase Auth by listing all users
+    const listUsersResult = await admin.auth().listUsers();
+    const authUsersToDelete = listUsersResult.users
+      .filter(user => user.email?.toLowerCase() !== 'c.morgan@ghost.com')
+      .map(user => user.uid);
+
     if (authUsersToDelete.length > 0) {
       for (let i = 0; i < authUsersToDelete.length; i += 1000) {
         const chunk = authUsersToDelete.slice(i, i + 1000);
