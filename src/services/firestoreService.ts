@@ -155,55 +155,40 @@ export const firestoreService = {
     const importRef = await addDoc(collection(db, IMPORTS_COL), {
       fileName,
       createdBy: userId,
-      createdAt: serverTimestamp(),
+      createdAt: new Date(),
       totalLeads: leads.length,
       status: 'processing'
     });
 
-    const total = leads.length;
-    const chunkSize = 20;
-    for (let i = 0; i < leads.length; i += chunkSize) {
-      const chunk = leads.slice(i, i + chunkSize);
+    const BATCH_SIZE = 500;
+    const now = new Date();
+
+    for (let i = 0; i < leads.length; i += BATCH_SIZE) {
+      const chunk = leads.slice(i, i + BATCH_SIZE);
+      const batch = writeBatch(db);
       
-      const results = await Promise.all(chunk.map(async (lead) => {
+      chunk.forEach(lead => {
         try {
-          const phone = lead.phone ? String(lead.phone).trim() : '';
-          const email = lead.email ? String(lead.email).trim() : '';
-
-          let q;
-          if (phone) {
-            q = query(collection(db, LEADS_COL), where("phone", "==", phone));
-          } else if (email) {
-            q = query(collection(db, LEADS_COL), where("email", "==", email));
-          }
-
-          if (q) {
-            const snap = await getDocs(q);
-            if (!snap.empty) {
-              return { type: 'duplicate' };
-            }
-          }
-
-          await this.createLead({
+          const docRef = doc(collection(db, LEADS_COL));
+          const sanitized = sanitizeData({
             ...lead,
             createdBy: userId,
-            importId: importRef.id
+            importId: importRef.id,
+            createdAt: now,
+            updatedAt: now
           });
-          return { type: 'success' };
+          batch.set(docRef, sanitized);
+          imported++;
         } catch (err) {
-          console.error('Bulk import error for lead:', lead, err);
-          return { type: 'error' };
+          console.error('Lead sanitization error:', err);
+          errors++;
         }
-      }));
-
-      results.forEach(res => {
-        if (res.type === 'success') imported++;
-        else if (res.type === 'duplicate') duplicates++;
-        else errors++;
       });
 
+      await batch.commit();
+
       if (onProgress) {
-        onProgress(Math.min(i + chunkSize, total), total);
+        onProgress(Math.min(i + BATCH_SIZE, leads.length), leads.length);
       }
     }
 
