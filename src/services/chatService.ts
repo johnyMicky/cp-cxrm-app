@@ -16,6 +16,7 @@ import {
   Timestamp
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import imageCompression from 'browser-image-compression';
 import { db, storage } from "../firebase";
 
 const CHATS_COL = "chats";
@@ -117,8 +118,24 @@ export const chatService = {
 
   // Files
   async uploadFile(file: File) {
-    const storageRef = ref(storage, `chat_files/${Date.now()}_${file.name}`);
-    await uploadBytes(storageRef, file);
+    let fileToUpload = file;
+
+    // Compress if it's an image
+    if (file.type.startsWith('image/')) {
+      try {
+        const options = {
+          maxSizeMB: 1,
+          maxWidthOrHeight: 1920,
+          useWebWorker: true
+        };
+        fileToUpload = await imageCompression(file, options);
+      } catch (error) {
+        console.error("Compression failed, uploading original:", error);
+      }
+    }
+
+    const storageRef = ref(storage, `chat_files/${Date.now()}_${fileToUpload.name}`);
+    await uploadBytes(storageRef, fileToUpload);
     return await getDownloadURL(storageRef);
   },
 

@@ -116,10 +116,10 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     setIsUploading(true);
 
     try {
-      // Send files first
-      for (const item of filesToSend) {
+      // Send files in parallel
+      const uploadPromises = filesToSend.map(async (item) => {
         const url = await chatService.uploadFile(item.file);
-        await chatService.sendMessage(selectedChat.id, {
+        return chatService.sendMessage(selectedChat.id, {
           senderId: currentUserId,
           senderName: userName,
           type: item.type,
@@ -128,7 +128,9 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
           fileType: item.file.type,
           fileSize: item.file.size
         });
-      }
+      });
+
+      await Promise.all(uploadPromises);
 
       // Send text message if exists
       if (text.trim()) {
