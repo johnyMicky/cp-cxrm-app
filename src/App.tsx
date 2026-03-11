@@ -13,12 +13,14 @@ import Team from './pages/Team';
 import Lost from './pages/Lost';
 import ActivityPage from './pages/Activity';
 import Imports from './pages/Imports';
+import SettingsPage from './pages/Settings';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
 import { auth } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { firestoreService } from './services/firestoreService';
 import { chatService } from './services/chatService';
+import ErrorBoundary from './components/ErrorBoundary';
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
@@ -284,8 +286,6 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
   );
 }
 
-import ErrorBoundary from './components/ErrorBoundary';
-
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('userId'));
   const [currentUserId, setCurrentUserId] = useState(localStorage.getItem('userId'));
@@ -395,6 +395,7 @@ export default function App() {
                       <Route path="/lost" element={<Lost />} />
                       <Route path="/activity" element={<ActivityPage />} />
                       <Route path="/imports" element={<Imports />} />
+                      <Route path="/settings" element={<SettingsPage />} />
                     </Routes>
                   </main>
                   <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />

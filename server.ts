@@ -140,6 +140,90 @@ app.post('/api/leads/delete-selected', async (req, res) => {
   }
 });
 
+// Reset All Data Endpoint
+app.post('/api/admin/reset-all', async (req, res) => {
+  const { userId } = req.body;
+  console.log(`Starting Reset All operation triggered by ${userId}`);
+  const startTime = Date.now();
+
+  try {
+    // 1. Delete all leads
+    const leadsRef = db.collection('leads');
+    const leadsSnapshot = await leadsRef.select().get();
+    if (!leadsSnapshot.empty) {
+      await deleteInChunks(leadsSnapshot.docs.map(doc => doc.ref));
+    }
+
+    // 2. Delete all users except c.morgan@ghost.com
+    const usersRef = db.collection('users');
+    const usersSnapshot = await usersRef.get();
+    const usersToDelete: admin.firestore.DocumentReference[] = [];
+    const authUsersToDelete: string[] = [];
+
+    for (const doc of usersSnapshot.docs) {
+      const userData = doc.data();
+      if (userData.email?.toLowerCase() !== 'c.morgan@ghost.com') {
+        usersToDelete.push(doc.ref);
+        if (userData.uid) {
+          authUsersToDelete.push(userData.uid);
+        }
+      }
+    }
+
+    if (usersToDelete.length > 0) {
+      await deleteInChunks(usersToDelete);
+    }
+
+    // Delete from Firebase Auth in chunks of 1000 (Firebase limit)
+    if (authUsersToDelete.length > 0) {
+      for (let i = 0; i < authUsersToDelete.length; i += 1000) {
+        const chunk = authUsersToDelete.slice(i, i + 1000);
+        await admin.auth().deleteUsers(chunk);
+      }
+    }
+
+    // 3. Delete all history/activity
+    const historyRef = db.collection('history');
+    const historySnapshot = await historyRef.select().get();
+    if (!historySnapshot.empty) {
+      await deleteInChunks(historySnapshot.docs.map(doc => doc.ref));
+    }
+
+    // 4. Delete all notes
+    const notesRef = db.collection('notes');
+    const notesSnapshot = await notesRef.select().get();
+    if (!notesSnapshot.empty) {
+      await deleteInChunks(notesSnapshot.docs.map(doc => doc.ref));
+    }
+
+    // 5. Delete all notifications
+    const notificationsRef = db.collection('notifications');
+    const notificationsSnapshot = await notificationsRef.select().get();
+    if (!notificationsSnapshot.empty) {
+      await deleteInChunks(notificationsSnapshot.docs.map(doc => doc.ref));
+    }
+
+    // 6. Delete all imports
+    const importsRef = db.collection('imports');
+    const importsSnapshot = await importsRef.select().get();
+    if (!importsSnapshot.empty) {
+      await deleteInChunks(importsSnapshot.docs.map(doc => doc.ref));
+    }
+
+    const duration = (Date.now() - startTime) / 1000;
+    console.log(`Reset All finished. Duration: ${duration}s`);
+    
+    res.json({ success: true, duration });
+  } catch (error: any) {
+    console.error('Reset all error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      code: error.code || 'UNKNOWN_ERROR'
+    });
+  }
+});
+
 // Vite/Static handling
 async function setupVite() {
   if (process.env.NODE_ENV !== 'production') {

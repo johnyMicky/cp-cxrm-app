@@ -428,7 +428,7 @@ export default function Leads() {
             >
               <Filter className="w-4 h-4" />
               <span>Filters</span>
-              {(filters.status || filters.source || filters.agent || filters.country) && (
+              {(filters.statuses.length > 0 || filters.source || filters.agents.length > 0 || filters.country) && (
                 <span className="ml-1 w-2 h-2 rounded-full bg-blue-500" />
               )}
             </button>

@@ -600,6 +600,25 @@ export const firestoreService = {
     }
   },
 
+  async resetSystem(userId: string) {
+    try {
+      const response = await fetch('/api/admin/reset-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId })
+      });
+      
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || data.code || 'Failed to reset system');
+      }
+      return data;
+    } catch (error: any) {
+      console.error('resetSystem error:', error);
+      throw error;
+    }
+  },
+
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
     let q = query(collection(db, LEADS_COL), where("assigned_to", "!=", null));
     if (statusFilter.length > 0) {
