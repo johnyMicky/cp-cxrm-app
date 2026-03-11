@@ -127,8 +127,8 @@ export default function Leads() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
-  const handleSuccess = (message?: string) => {
-    fetchLeads();
+  const handleSuccess = (message?: string, skipFetch = false) => {
+    if (!skipFetch) fetchLeads();
     setSelectedLeads([]);
     setBulkAction({ type: null, value: null });
     setIsReshuffleModalOpen(false);
@@ -283,10 +283,15 @@ export default function Leads() {
         handleSuccess(`Deleted ${count} selected leads`);
       } else {
         // Delete everything
-        await firestoreService.deleteAllLeads(currentUser.id);
+        // 1. Clear UI immediately
         setLeads([]);
-        handleSuccess('All leads have been deleted successfully');
         setIsDeleteAllModalOpen(false);
+        
+        // 2. Perform server-side delete
+        await firestoreService.deleteAllLeads(currentUser.id);
+        
+        // 3. Final confirmation and refresh
+        handleSuccess('All leads have been deleted successfully', true);
       }
     } catch (err) {
       console.error('Delete leads failed:', err);

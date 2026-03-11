@@ -379,38 +379,36 @@ export const firestoreService = {
   },
 
   async deleteAllLeads(userId: string) {
-    // To make it faster, we fetch only IDs if possible, but Firestore getDocs fetches whole docs.
-    // For very large collections, this is always the bottleneck.
-    const snap = await getDocs(collection(db, LEADS_COL));
-    if (snap.empty) return;
+    let deletedCount = 0;
+    
+    // Recursive function to delete in chunks until collection is empty
+    const deleteBatch = async () => {
+      const q = query(collection(db, LEADS_COL), limit(500));
+      const snap = await getDocs(q);
+      
+      if (snap.empty) return;
 
-    const BATCH_SIZE = 500;
-    const batches = [];
-    let currentBatch = writeBatch(db);
-    let count = 0;
-
-    for (const d of snap.docs) {
-      currentBatch.delete(d.ref);
-      count++;
-
-      if (count === BATCH_SIZE) {
-        batches.push(currentBatch.commit());
-        currentBatch = writeBatch(db);
-        count = 0;
+      const batch = writeBatch(db);
+      snap.docs.forEach(d => batch.delete(d.ref));
+      
+      await batch.commit();
+      deletedCount += snap.size;
+      
+      // Continue deleting if we hit the limit
+      if (snap.size === 500) {
+        await deleteBatch();
       }
+    };
+
+    await deleteBatch();
+
+    if (deletedCount > 0) {
+      this.logActivity({
+        user_id: userId,
+        action: "Bulk Delete All",
+        details: `Permanently deleted all ${deletedCount} leads.`
+      }).catch(() => {});
     }
-
-    if (count > 0) {
-      batches.push(currentBatch.commit());
-    }
-
-    await Promise.all(batches);
-
-    this.logActivity({
-      user_id: userId,
-      action: "Bulk Delete All",
-      details: `Deleted all ${snap.size} leads.`
-    }).catch(() => {});
   },
 
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
