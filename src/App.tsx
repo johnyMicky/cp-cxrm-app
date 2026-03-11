@@ -145,7 +145,7 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
           >
             <MessageSquare className="w-5 h-5" />
             {unreadChatCount > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-blue-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-[#0A0F1C] animate-pulse">
+              <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-amber-400 text-slate-900 text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-[#0A0F1C] animate-pulse">
                 {unreadChatCount}
               </span>
             )}

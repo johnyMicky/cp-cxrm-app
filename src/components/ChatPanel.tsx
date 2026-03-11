@@ -403,7 +403,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                         {/* Simple unread dot if any message in this chat isn't seen by current user */}
                         {/* Note: In a real app, this would be optimized and tracked per chat */}
                         {chat.lastMessage && !chat.lastMessageSeenBy?.includes(currentUserId) && (
-                          <div className="w-2 h-2 bg-blue-500 rounded-full" />
+                          <div className="w-2 h-2 bg-amber-400 rounded-full shadow-sm shadow-amber-400/50" />
                         )}
                       </button>
                     );
