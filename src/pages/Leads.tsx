@@ -53,6 +53,7 @@ export default function Leads() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [quickNoteId, setQuickNoteId] = useState<string | null>(null);
   const [quickNoteText, setQuickNoteText] = useState('');
+  const [isAssigning, setIsAssigning] = useState(false);
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -192,13 +193,22 @@ export default function Leads() {
 
   const handleBulkAssign = async () => {
     if (selectedBulkAgents.length === 0) return;
+    setIsAssigning(true);
     try {
-      await firestoreService.distributeLeads(selectedLeads, selectedBulkAgents, currentUser.id);
-      handleSuccess(`Distributed ${selectedLeads.length} leads among ${selectedBulkAgents.length} agents`);
+      const summary = await firestoreService.distributeLeads(selectedLeads, selectedBulkAgents, currentUser.id);
+      
+      const summaryText = Object.entries(summary)
+        .map(([name, count]) => `${name}: ${count}`)
+        .join(', ');
+        
+      handleSuccess(`Distributed ${selectedLeads.length} leads. Summary: ${summaryText}`);
       setSelectedBulkAgents([]);
       setActiveDropdown(null);
     } catch (err) {
       console.error('Bulk assign failed:', err);
+      alert('Failed to distribute leads. Please try again.');
+    } finally {
+      setIsAssigning(false);
     }
   };
 
@@ -246,9 +256,9 @@ export default function Leads() {
     <div className="p-8 max-w-7xl mx-auto space-y-6 relative">
       {/* Success Toast */}
       {showToast && (
-        <div className="fixed bottom-8 right-8 z-[100] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300">
-          <CheckCircle2 className="w-5 h-5" />
-          <span className="font-medium">{toastMessage}</span>
+        <div className="fixed bottom-8 right-8 z-[100] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300 max-w-md">
+          <CheckCircle2 className="w-5 h-5 shrink-0" />
+          <span className="font-medium text-sm leading-tight">{toastMessage}</span>
         </div>
       )}
 
@@ -379,10 +389,17 @@ export default function Leads() {
                     <div className="p-2 border-t border-white/5">
                       <button 
                         onClick={handleBulkAssign}
-                        disabled={selectedBulkAgents.length === 0}
-                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2 rounded-lg text-xs font-medium transition-colors"
+                        disabled={selectedBulkAgents.length === 0 || isAssigning}
+                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center space-x-2"
                       >
-                        Assign to {selectedBulkAgents.length} Agents
+                        {isAssigning ? (
+                          <>
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                            <span>Assigning...</span>
+                          </>
+                        ) : (
+                          <span>Assign to {selectedBulkAgents.length} Agents</span>
+                        )}
                       </button>
                     </div>
                   </div>

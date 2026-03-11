@@ -294,23 +294,46 @@ export const firestoreService = {
   },
 
   async distributeLeads(leadIds: string[], agentIds: string[], userId: string) {
-    let agentIndex = 0;
-    const promises = leadIds.map(async (id) => {
-      const agentId = agentIds[agentIndex];
-      const agent = (await getDocs(query(collection(db, USERS_COL), where("__name__", "==", agentId)))).docs[0]?.data();
-      
-      const docRef = doc(db, LEADS_COL, id);
-      await updateDoc(docRef, { assigned_to: agentId, updatedAt: serverTimestamp() });
-      await this.logActivity({
-        lead_id: id,
-        user_id: userId,
-        action: "Auto-Distributed",
-        details: `Assigned to ${agent?.name || 'Unknown'}`
-      });
-      
-      agentIndex = (agentIndex + 1) % agentIds.length;
+    // 1. Fetch all agents once to avoid repeated queries
+    const agentsSnap = await getDocs(collection(db, USERS_COL));
+    const agentsMap: Record<string, string> = {};
+    agentsSnap.docs.forEach(d => {
+      agentsMap[d.id] = d.data().name || 'Unknown';
     });
-    await Promise.all(promises);
+
+    const distributionSummary: Record<string, number> = {};
+    agentIds.forEach(id => {
+      distributionSummary[agentsMap[id] || id] = 0;
+    });
+
+    const chunkSize = 50; // Process in chunks to avoid overwhelming the browser/network
+    
+    for (let i = 0; i < leadIds.length; i += chunkSize) {
+      const chunk = leadIds.slice(i, i + chunkSize);
+      
+      await Promise.all(chunk.map(async (id, j) => {
+        const globalIndex = i + j;
+        const agentId = agentIds[globalIndex % agentIds.length];
+        const agentName = agentsMap[agentId] || 'Unknown';
+        
+        // Update lead
+        const docRef = doc(db, LEADS_COL, id);
+        await updateDoc(docRef, { assigned_to: agentId, updatedAt: serverTimestamp() });
+        
+        // Log activity
+        await this.logActivity({
+          lead_id: id,
+          user_id: userId,
+          action: "Auto-Distributed",
+          details: `Assigned to ${agentName}`
+        });
+        
+        // Atomic update of summary (safe in JS as it's single-threaded)
+        distributionSummary[agentName] = (distributionSummary[agentName] || 0) + 1;
+      }));
+    }
+    
+    return distributionSummary;
   },
 
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
