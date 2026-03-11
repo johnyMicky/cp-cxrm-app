@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -12,6 +12,7 @@ import Dispatcher from './pages/Dispatcher';
 import Team from './pages/Team';
 import Lost from './pages/Lost';
 import ActivityPage from './pages/Activity';
+import Imports from './pages/Imports';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
 import { firestoreService } from './services/firestoreService';
@@ -99,6 +100,7 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator'] },
+    { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager'] },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
     { name: 'Activity', path: '/activity', icon: Activity, roles: ['Administrator', 'Manager'] },
     { name: 'Settings', path: '/settings', icon: Settings, roles: ['Administrator'] },
@@ -358,6 +360,7 @@ export default function App() {
                     <Route path="/dispatcher" element={<Dispatcher />} />
                     <Route path="/lost" element={<Lost />} />
                     <Route path="/activity" element={<ActivityPage />} />
+                    <Route path="/imports" element={<Imports />} />
                   </Routes>
                 </main>
                 <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />

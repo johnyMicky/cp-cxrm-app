@@ -22,6 +22,7 @@ const LEADS_COL = "leads";
 const USERS_COL = "users";
 const ACTIVITY_COL = "activity";
 const NOTIFICATIONS_COL = "notifications";
+const IMPORTS_COL = "imports";
 
 const sanitizeData = (data: any) => {
   const sanitized: any = {};
@@ -144,10 +145,19 @@ export const firestoreService = {
     return { id: docRef.id };
   },
 
-  async bulkCreateLeads(leads: any[], userId: string, onProgress?: (current: number, total: number) => void) {
+  async bulkCreateLeads(leads: any[], userId: string, fileName: string, onProgress?: (current: number, total: number) => void) {
     let imported = 0;
     let duplicates = 0;
     let errors = 0;
+
+    // Create an import record
+    const importRef = await addDoc(collection(db, IMPORTS_COL), {
+      fileName,
+      createdBy: userId,
+      createdAt: serverTimestamp(),
+      totalLeads: leads.length,
+      status: 'processing'
+    });
 
     const total = leads.length;
     const chunkSize = 20;
@@ -175,7 +185,8 @@ export const firestoreService = {
 
           await this.createLead({
             ...lead,
-            createdBy: userId
+            createdBy: userId,
+            importId: importRef.id
           });
           return { type: 'success' };
         } catch (err) {
@@ -195,7 +206,34 @@ export const firestoreService = {
       }
     }
 
+    // Update import record with final stats
+    await updateDoc(importRef, {
+      importedCount: imported,
+      duplicateCount: duplicates,
+      errorCount: errors,
+      status: 'completed'
+    });
+
     return { imported, duplicates, errors };
+  },
+
+  async getImports() {
+    const q = query(collection(db, IMPORTS_COL), orderBy("createdAt", "desc"));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+
+  async deleteImport(importId: string) {
+    // 1. Find all leads associated with this import
+    const q = query(collection(db, LEADS_COL), where("importId", "==", importId));
+    const snap = await getDocs(q);
+    
+    // 2. Delete all leads (even if assigned to agents)
+    const deletePromises = snap.docs.map(d => deleteDoc(doc(db, LEADS_COL, d.id)));
+    await Promise.all(deletePromises);
+    
+    // 3. Delete the import record itself
+    await deleteDoc(doc(db, IMPORTS_COL, importId));
   },
 
   async updateLead(id: string, leadData: any) {
