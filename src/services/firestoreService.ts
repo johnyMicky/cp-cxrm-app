@@ -363,6 +363,39 @@ export const firestoreService = {
     return distributionSummary;
   },
 
+  async deleteAllLeads(userId: string) {
+    const snap = await getDocs(collection(db, LEADS_COL));
+    if (snap.empty) return;
+
+    const BATCH_SIZE = 500;
+    const batches = [];
+    let currentBatch = writeBatch(db);
+    let count = 0;
+
+    for (const d of snap.docs) {
+      currentBatch.delete(d.ref);
+      count++;
+
+      if (count === BATCH_SIZE) {
+        batches.push(currentBatch.commit());
+        currentBatch = writeBatch(db);
+        count = 0;
+      }
+    }
+
+    if (count > 0) {
+      batches.push(currentBatch.commit());
+    }
+
+    await Promise.all(batches);
+
+    await this.logActivity({
+      user_id: userId,
+      action: "Bulk Delete",
+      details: `Deleted all ${snap.size} leads.`
+    });
+  },
+
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
     let q = query(collection(db, LEADS_COL), where("assigned_to", "!=", null));
     if (statusFilter.length > 0) {
