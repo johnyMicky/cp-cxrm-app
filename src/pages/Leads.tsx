@@ -202,15 +202,31 @@ export default function Leads() {
     });
 
     try {
+      // Optimistic update: Update local state immediately
+      const updatedLeads = leads.map(lead => {
+        if (selectedLeads.includes(lead.id)) {
+          const index = selectedLeads.indexOf(lead.id);
+          const agentId = selectedBulkAgents[index % selectedBulkAgents.length];
+          return { ...lead, assigned_to: agentId };
+        }
+        return lead;
+      });
+      setLeads(updatedLeads);
+      
+      // Close dropdown and clear selection immediately for better UX
+      setActiveDropdown(null);
+      const count = selectedLeads.length;
+      setSelectedLeads([]);
+
+      // Perform actual distribution in background
       const summary = await firestoreService.distributeLeads(selectedLeads, selectedBulkAgents, currentUser.id, agentNamesMap);
       
       const summaryText = Object.entries(summary)
         .map(([name, count]) => `${name}: ${count}`)
         .join(', ');
         
-      handleSuccess(`Distributed ${selectedLeads.length} leads. Summary: ${summaryText}`);
+      handleSuccess(`Distributed ${count} leads. Summary: ${summaryText}`);
       setSelectedBulkAgents([]);
-      setActiveDropdown(null);
     } catch (err) {
       console.error('Bulk assign failed:', err);
       alert('Failed to distribute leads. Please try again.');
@@ -677,6 +693,7 @@ export default function Leads() {
                 </th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Lead</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Status</th>
+                <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Agent</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Source</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Phone</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Actions</th>
@@ -718,6 +735,24 @@ export default function Leads() {
                         <option key={s} value={s} className="bg-[#0A0F1C] text-slate-300">{s}</option>
                       ))}
                     </select>
+                  </td>
+                  <td className="px-6 py-4">
+                    {lead.assigned_to ? (
+                      <div className="flex items-center space-x-2">
+                        <div className="w-5 h-5 rounded-full bg-blue-500/10 flex items-center justify-center overflow-hidden">
+                          <img 
+                            src={agents.find(a => a.id === lead.assigned_to)?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(agents.find(a => a.id === lead.assigned_to)?.name || 'U')}&background=random`} 
+                            alt="" 
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <span className="text-xs text-slate-300 font-medium truncate max-w-[100px]">
+                          {agents.find(a => a.id === lead.assigned_to)?.name || 'Unknown'}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-[10px] text-slate-500 italic font-medium uppercase tracking-wider">Unassigned</span>
+                    )}
                   </td>
                   <td className="px-6 py-4">
                     <span className="text-sm text-slate-300">{lead.source}</span>
