@@ -12,7 +12,8 @@ import {
   limit, 
   serverTimestamp,
   Timestamp,
-  setDoc
+  setDoc,
+  writeBatch
 } from "firebase/firestore";
 import { format } from 'date-fns';
 import { db } from "../firebase";
@@ -294,7 +295,7 @@ export const firestoreService = {
   },
 
   async distributeLeads(leadIds: string[], agentIds: string[], userId: string) {
-    // 1. Fetch all agents once to avoid repeated queries
+    // 1. Fetch all agents once
     const agentsSnap = await getDocs(collection(db, USERS_COL));
     const agentsMap: Record<string, string> = {};
     agentsSnap.docs.forEach(d => {
@@ -306,32 +307,50 @@ export const firestoreService = {
       distributionSummary[agentsMap[id] || id] = 0;
     });
 
-    const chunkSize = 50; // Process in chunks to avoid overwhelming the browser/network
-    
-    for (let i = 0; i < leadIds.length; i += chunkSize) {
-      const chunk = leadIds.slice(i, i + chunkSize);
+    // 2. Use writeBatch for maximum speed (up to 500 operations per batch)
+    const BATCH_SIZE = 500;
+    const batches = [];
+    let currentBatch = writeBatch(db);
+    let count = 0;
+
+    for (let i = 0; i < leadIds.length; i++) {
+      const id = leadIds[i];
+      const agentId = agentIds[i % agentIds.length];
+      const agentName = agentsMap[agentId] || 'Unknown';
       
-      await Promise.all(chunk.map(async (id, j) => {
-        const globalIndex = i + j;
-        const agentId = agentIds[globalIndex % agentIds.length];
-        const agentName = agentsMap[agentId] || 'Unknown';
-        
-        // Update lead
-        const docRef = doc(db, LEADS_COL, id);
-        await updateDoc(docRef, { assigned_to: agentId, updatedAt: serverTimestamp() });
-        
-        // Log activity
-        await this.logActivity({
-          lead_id: id,
-          user_id: userId,
-          action: "Auto-Distributed",
-          details: `Assigned to ${agentName}`
-        });
-        
-        // Atomic update of summary (safe in JS as it's single-threaded)
-        distributionSummary[agentName] = (distributionSummary[agentName] || 0) + 1;
-      }));
+      const docRef = doc(db, LEADS_COL, id);
+      currentBatch.update(docRef, { 
+        assigned_to: agentId, 
+        updatedAt: serverTimestamp() 
+      });
+      
+      distributionSummary[agentName] = (distributionSummary[agentName] || 0) + 1;
+      count++;
+
+      if (count === BATCH_SIZE) {
+        batches.push(currentBatch.commit());
+        currentBatch = writeBatch(db);
+        count = 0;
+      }
     }
+
+    if (count > 0) {
+      batches.push(currentBatch.commit());
+    }
+
+    // 3. Execute all batches in parallel
+    await Promise.all(batches);
+
+    // 4. Log a single summary activity instead of 1600+ individual ones
+    const summaryText = Object.entries(distributionSummary)
+      .map(([name, count]) => `${name}: ${count}`)
+      .join(', ');
+
+    await this.logActivity({
+      user_id: userId,
+      action: "Bulk Distribution",
+      details: `Distributed ${leadIds.length} leads. ${summaryText}`
+    });
     
     return distributionSummary;
   },
