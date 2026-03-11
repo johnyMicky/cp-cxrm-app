@@ -87,7 +87,8 @@ export const chatService = {
     await updateDoc(doc(db, CHATS_COL, chatId), {
       lastMessage: messageData.text || `[${messageData.type}]`,
       lastMessageAt: serverTimestamp(),
-      lastMessageSeenBy: [messageData.senderId]
+      lastMessageSeenBy: [messageData.senderId],
+      lastMessageSenderId: messageData.senderId
     });
 
     return msgRef;

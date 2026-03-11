@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare } from 'lucide-react';
 import { format } from 'date-fns';
@@ -21,7 +21,7 @@ export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
 }
 
-function Sidebar({ onOpenChat }: { onOpenChat: () => void }) {
+function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unreadChatCount: number }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -144,6 +144,11 @@ function Sidebar({ onOpenChat }: { onOpenChat: () => void }) {
             title="Team Chat"
           >
             <MessageSquare className="w-5 h-5" />
+            {unreadChatCount > 0 && (
+              <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-blue-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-[#0A0F1C] animate-pulse">
+                {unreadChatCount}
+              </span>
+            )}
           </button>
           
           <div className="relative">
@@ -272,7 +277,10 @@ function Sidebar({ onOpenChat }: { onOpenChat: () => void }) {
 export default function App() {
   const isAuthenticated = !!localStorage.getItem('userId');
   const currentUserId = localStorage.getItem('userId');
+  const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     if (isAuthenticated && currentUserId) {
@@ -283,12 +291,34 @@ export default function App() {
       };
       
       window.addEventListener('beforeunload', handleBeforeUnload);
+
+      // Initialize audio
+      audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
+
+      // Subscribe to chats for unread count and sound notifications
+      const unsubscribe = chatService.getChats(currentUserId, currentUserRole, (chats) => {
+        const count = chats.filter(c => c.lastMessage && !c.lastMessageSeenBy?.includes(currentUserId)).length;
+        
+        // If count increased, play sound
+        setUnreadChatCount(prev => {
+          if (count > prev) {
+            // Check if the last message was NOT sent by me
+            const newUnreadChat = chats.find(c => c.lastMessage && !c.lastMessageSeenBy?.includes(currentUserId));
+            if (newUnreadChat && newUnreadChat.lastMessageSenderId !== currentUserId) {
+              audioRef.current?.play().catch(e => console.log("Audio play blocked:", e));
+            }
+          }
+          return count;
+        });
+      });
+
       return () => {
         window.removeEventListener('beforeunload', handleBeforeUnload);
         chatService.setUserOnline(currentUserId, false);
+        unsubscribe();
       };
     }
-  }, [isAuthenticated, currentUserId]);
+  }, [isAuthenticated, currentUserId, currentUserRole]);
 
   return (
     <Router>
@@ -299,7 +329,7 @@ export default function App() {
           element={
             isAuthenticated ? (
               <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30">
-                <Sidebar onOpenChat={() => setIsChatOpen(true)} />
+                <Sidebar onOpenChat={() => setIsChatOpen(true)} unreadChatCount={unreadChatCount} />
                 <main className="flex-1 overflow-auto">
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
