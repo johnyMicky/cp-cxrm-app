@@ -54,10 +54,11 @@ export const chatService = {
 
   getChats(userId: string, role: string, callback: (chats: any[]) => void) {
     let q;
+    // Order by lastMessageAt to show most recent conversations first
     if (role === 'Administrator') {
-      q = query(collection(db, CHATS_COL), orderBy("createdAt", "desc"));
+      q = query(collection(db, CHATS_COL), orderBy("lastMessageAt", "desc"));
     } else {
-      q = query(collection(db, CHATS_COL), where("members", "array-contains", userId), orderBy("createdAt", "desc"));
+      q = query(collection(db, CHATS_COL), where("members", "array-contains", userId), orderBy("lastMessageAt", "desc"));
     }
 
     return onSnapshot(q, (snap) => {
@@ -176,10 +177,11 @@ export const chatService = {
 
     // Create new direct chat
     const docRef = await addDoc(collection(db, CHATS_COL), {
-      name: user2Name, // For direct chats, we can use the other person's name as the chat name
+      name: user2Name, 
       members: [userId1, userId2],
       isDirect: true,
       createdAt: serverTimestamp(),
+      lastMessageAt: serverTimestamp(), // Ensure it has a timestamp for ordering
       typing: {}
     });
 

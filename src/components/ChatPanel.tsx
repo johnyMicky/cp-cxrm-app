@@ -365,37 +365,49 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                 </div>
 
                 <div className="flex-1 overflow-y-auto custom-scrollbar px-2 space-y-1">
-                  {filteredChats.map(chat => (
-                    <button 
-                      key={chat.id}
-                      onClick={() => setSelectedChat(chat)}
-                      className={cn(
-                        "w-full flex items-center space-x-3 p-3 rounded-xl transition-all group",
-                        selectedChat?.id === chat.id ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20" : "hover:bg-white/5 text-slate-400"
-                      )}
-                    >
-                      <div className="relative">
-                        <div className={cn("w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold", selectedChat?.id === chat.id ? "bg-white/20" : "bg-white/5")}>
-                          {chat.name.charAt(0).toUpperCase()}
-                        </div>
-                        {/* Show online status if it's a 1-on-1 or just show for the group if any member is online */}
-                        {chat.members?.some((mId: string) => users.find(u => u.id === mId)?.isOnline) && (
-                          <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 border-2 border-[#0A0F1C] rounded-full" />
+                  {filteredChats.map(chat => {
+                    // For direct chats, find the other member's name
+                    let displayName = chat.name;
+                    if (chat.isDirect) {
+                      const otherMemberId = chat.members?.find((mId: string) => mId !== currentUserId);
+                      const otherUser = users.find(u => u.id === otherMemberId);
+                      if (otherUser) {
+                        displayName = otherUser.name || otherUser.email;
+                      }
+                    }
+
+                    return (
+                      <button 
+                        key={chat.id}
+                        onClick={() => setSelectedChat(chat)}
+                        className={cn(
+                          "w-full flex items-center space-x-3 p-3 rounded-xl transition-all group",
+                          selectedChat?.id === chat.id ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20" : "hover:bg-white/5 text-slate-400"
                         )}
-                      </div>
-                      <div className="flex-1 text-left min-w-0">
-                        <p className={cn("text-sm font-semibold truncate", selectedChat?.id === chat.id ? "text-white" : "text-slate-200")}>{chat.name}</p>
-                        <p className="text-[10px] opacity-60 truncate">
-                          {Object.values(chat.typing || {}).some(v => v) ? "Someone is typing..." : "Click to view messages"}
-                        </p>
-                      </div>
-                      {/* Simple unread dot if any message in this chat isn't seen by current user */}
-                      {/* Note: In a real app, this would be optimized and tracked per chat */}
-                      {chat.lastMessage && !chat.lastMessageSeenBy?.includes(currentUserId) && (
-                        <div className="w-2 h-2 bg-blue-500 rounded-full" />
-                      )}
-                    </button>
-                  ))}
+                      >
+                        <div className="relative">
+                          <div className={cn("w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold", selectedChat?.id === chat.id ? "bg-white/20" : "bg-white/5")}>
+                            {displayName.charAt(0).toUpperCase()}
+                          </div>
+                          {/* Show online status if it's a 1-on-1 or just show for the group if any member is online */}
+                          {chat.members?.some((mId: string) => users.find(u => u.id === mId)?.isOnline) && (
+                            <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 border-2 border-[#0A0F1C] rounded-full" />
+                          )}
+                        </div>
+                        <div className="flex-1 text-left min-w-0">
+                          <p className={cn("text-sm font-semibold truncate", selectedChat?.id === chat.id ? "text-white" : "text-slate-200")}>{displayName}</p>
+                          <p className="text-[10px] opacity-60 truncate">
+                            {Object.values(chat.typing || {}).some(v => v) ? "Someone is typing..." : "Click to view messages"}
+                          </p>
+                        </div>
+                        {/* Simple unread dot if any message in this chat isn't seen by current user */}
+                        {/* Note: In a real app, this would be optimized and tracked per chat */}
+                        {chat.lastMessage && !chat.lastMessageSeenBy?.includes(currentUserId) && (
+                          <div className="w-2 h-2 bg-blue-500 rounded-full" />
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
