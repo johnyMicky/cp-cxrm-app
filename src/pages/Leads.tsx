@@ -270,12 +270,28 @@ export default function Leads() {
   const handleDeleteAll = async () => {
     setIsDeletingAll(true);
     try {
-      await firestoreService.deleteAllLeads(currentUser.id);
-      handleSuccess('All leads have been deleted successfully');
-      setIsDeleteAllModalOpen(false);
+      if (selectedLeads.length > 0) {
+        // Optimistic update: remove from local state
+        const count = selectedLeads.length;
+        const idsToDelete = [...selectedLeads];
+        setLeads(prev => prev.filter(l => !idsToDelete.includes(l.id)));
+        setSelectedLeads([]);
+        setIsDeleteAllModalOpen(false);
+        
+        // Background delete
+        await firestoreService.bulkDeleteLeads(idsToDelete, currentUser.id);
+        handleSuccess(`Deleted ${count} selected leads`);
+      } else {
+        // Delete everything
+        await firestoreService.deleteAllLeads(currentUser.id);
+        setLeads([]);
+        handleSuccess('All leads have been deleted successfully');
+        setIsDeleteAllModalOpen(false);
+      }
     } catch (err) {
-      console.error('Delete all leads failed:', err);
-      alert('Failed to delete all leads. Please try again.');
+      console.error('Delete leads failed:', err);
+      alert('Failed to delete leads. Please try again.');
+      fetchLeads(); // Refresh to restore state if failed
     } finally {
       setIsDeletingAll(false);
     }
@@ -330,7 +346,7 @@ export default function Leads() {
               className="shimmer-btn bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-rose-500/20"
             >
               <X className="w-4 h-4" />
-              <span>Delete All Leads</span>
+              <span>{selectedLeads.length > 0 ? `Delete ${selectedLeads.length} Selected` : 'Delete All Leads'}</span>
             </button>
           )}
           {currentUser.role !== 'Agent' && (
@@ -898,7 +914,7 @@ export default function Leads() {
             <div className="flex items-center justify-between p-6 border-b border-white/5 bg-white/[0.02]">
               <h2 className="text-xl font-semibold text-white tracking-tight flex items-center space-x-2">
                 <X className="w-5 h-5 text-rose-500" />
-                <span>Delete All Leads</span>
+                <span>{selectedLeads.length > 0 ? `Delete ${selectedLeads.length} Leads` : 'Delete All Leads'}</span>
               </h2>
               <button 
                 onClick={() => setIsDeleteAllModalOpen(false)}
@@ -910,11 +926,17 @@ export default function Leads() {
             <div className="p-6 space-y-4">
               <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl">
                 <p className="text-sm text-rose-400 leading-relaxed font-medium">
-                  Are you absolutely sure you want to delete ALL leads? This action is permanent and cannot be undone.
+                  {selectedLeads.length > 0 
+                    ? `Are you sure you want to delete the ${selectedLeads.length} selected leads?`
+                    : 'Are you absolutely sure you want to delete ALL leads? This action is permanent and cannot be undone.'
+                  }
                 </p>
               </div>
               <p className="text-xs text-slate-400">
-                All lead data, including assigned agents, status history, and notes will be permanently removed from the system.
+                {selectedLeads.length > 0
+                  ? 'The selected leads will be permanently removed from the system.'
+                  : 'All lead data, including assigned agents, status history, and notes will be permanently removed from the system.'
+                }
               </p>
             </div>
             <div className="flex items-center justify-end space-x-3 p-6 border-t border-white/5 bg-white/[0.01]">

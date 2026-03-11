@@ -363,7 +363,39 @@ export const firestoreService = {
     return distributionSummary;
   },
 
+  async bulkDeleteLeads(leadIds: string[], userId: string) {
+    const BATCH_SIZE = 500;
+    const batches = [];
+    let currentBatch = writeBatch(db);
+    let count = 0;
+
+    for (const id of leadIds) {
+      currentBatch.delete(doc(db, LEADS_COL, id));
+      count++;
+
+      if (count === BATCH_SIZE) {
+        batches.push(currentBatch.commit());
+        currentBatch = writeBatch(db);
+        count = 0;
+      }
+    }
+
+    if (count > 0) {
+      batches.push(currentBatch.commit());
+    }
+
+    await Promise.all(batches);
+
+    this.logActivity({
+      user_id: userId,
+      action: "Bulk Delete",
+      details: `Deleted ${leadIds.length} leads.`
+    }).catch(() => {});
+  },
+
   async deleteAllLeads(userId: string) {
+    // To make it faster, we fetch only IDs if possible, but Firestore getDocs fetches whole docs.
+    // For very large collections, this is always the bottleneck.
     const snap = await getDocs(collection(db, LEADS_COL));
     if (snap.empty) return;
 
@@ -389,11 +421,11 @@ export const firestoreService = {
 
     await Promise.all(batches);
 
-    await this.logActivity({
+    this.logActivity({
       user_id: userId,
-      action: "Bulk Delete",
+      action: "Bulk Delete All",
       details: `Deleted all ${snap.size} leads.`
-    });
+    }).catch(() => {});
   },
 
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
