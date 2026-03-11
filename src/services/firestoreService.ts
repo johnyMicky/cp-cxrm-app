@@ -44,6 +44,61 @@ const sanitizeData = (data: any) => {
 export const firestoreService = {
   // Auth / Users
   async login(email: string, password: string) {
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      return await this._handleUserMigration(user, email);
+    } catch (authError: any) {
+      if (authError.code === 'auth/user-not-found' || authError.code === 'auth/invalid-credential') {
+        const q = query(collection(db, USERS_COL), where("email", "==", email), where("password", "==", password));
+        const querySnapshot = await getDocs(q);
+        if (!querySnapshot.empty) {
+          const legacyDoc = querySnapshot.docs[0];
+          const legacyData = legacyDoc.data();
+          const newUserCredential = await createUserWithEmailAndPassword(auth, email, password);
+          return await this._handleUserMigration(newUserCredential.user, email, legacyData, legacyDoc.id);
+        }
+      }
+      throw authError;
+    }
+  },
+
+  async _handleUserMigration(user: any, email: string, providedLegacyData?: any, legacyId?: string) {
+    const userDocRef = doc(db, USERS_COL, user.uid);
+    const userDocSnap = await getDoc(userDocRef);
+    if (!userDocSnap.exists()) {
+      let userData: any = providedLegacyData || null;
+      if (!userData) {
+        const q = query(collection(db, USERS_COL), where("email", "==", email));
+        const querySnapshot = await getDocs(q);
+        if (!querySnapshot.empty) {
+          userData = querySnapshot.docs[0].data();
+          legacyId = querySnapshot.docs[0].id;
+        }
+      }
+      const finalUserData = {
+        uid: user.uid,
+        email: user.email,
+        role: userData?.role || 'Agent',
+        name: userData?.name || user.displayName || email.split('@')[0],
+        avatar: userData?.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
+        isOnline: true,
+        createdAt: userData?.createdAt || serverTimestamp(),
+        lastSeen: serverTimestamp(),
+        password: userData?.password || ''
+      };
+      await setDoc(userDocRef, finalUserData);
+      if (legacyId && legacyId !== user.uid) {
+        await deleteDoc(doc(db, USERS_COL, legacyId)).catch(console.error);
+      }
+      return { id: user.uid, ...finalUserData };
+    }
+    const existingData = userDocSnap.data();
+    await updateDoc(userDocRef, { isOnline: true, lastSeen: serverTimestamp(), uid: user.uid });
+    return { id: user.uid, ...existingData };
+  },
+
+  async login_old(email: string, password: string) {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
     const user = userCredential.user;
     
