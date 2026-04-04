@@ -18,9 +18,7 @@ import {
 import { 
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged,
-  signInAnonymously
+  signOut
 } from "firebase/auth";
 import { format } from 'date-fns';
 import { db, auth } from "../firebase";
@@ -49,48 +47,40 @@ export const firestoreService = {
 
   // Auth / Users
   async login(email: string, password: string) {
+    const cleanEmail = (email || '').trim().toLowerCase();
+
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, password);
       const user = userCredential.user;
-      return await this._handleUserMigration(user, email);
+      return await this._handleUserMigration(user, cleanEmail);
     } catch (authError: any) {
-      const isAdminEmail = email.toLowerCase() === 'c.morgan@ghost.com';
-      if (authError.code === 'auth/user-not-found' || authError.code === 'auth/invalid-credential' || isAdminEmail) {
-        const q = query(collection(db, USERS_COL), where("email", "==", email));
+      // მხოლოდ იმ შემთხვევაში ვცდილობთ migration/create-ს,
+      // თუ auth-ში იუზერი საერთოდ არ არსებობს
+      if (authError.code === 'auth/user-not-found') {
+        const q = query(collection(db, USERS_COL), where("email", "==", cleanEmail));
         const querySnapshot = await getDocs(q);
-        if (!querySnapshot.empty || isAdminEmail) {
-          const legacyDoc = !querySnapshot.empty ? querySnapshot.docs[0] : null;
-          const legacyData = legacyDoc ? legacyDoc.data() : { role: 'Administrator', name: 'Admin' };
-          if (isAdminEmail) legacyData.role = 'Administrator';
+
+        if (!querySnapshot.empty) {
+          const legacyDoc = querySnapshot.docs[0];
+          const legacyData = legacyDoc.data();
+
           try {
-            const newUserCredential = await createUserWithEmailAndPassword(auth, email, password);
-            return await this._handleUserMigration(newUserCredential.user, email, legacyData, legacyDoc?.id);
+            const newUserCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+            return await this._handleUserMigration(
+              newUserCredential.user,
+              cleanEmail,
+              legacyData,
+              legacyDoc.id
+            );
           } catch (createError: any) {
-            if (createError.code === 'auth/email-already-in-use') throw authError;
+            // თუ auth-ში უკვე არსებობს ან სხვა auth ერორია,
+            // ნამდვილი ერორი დავაბრუნოთ
             throw createError;
           }
         }
       }
-      throw authError;
-    }
-  },
 
-  async login_old_2(email: string, password: string) {
-    try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const user = userCredential.user;
-      return await this._handleUserMigration(user, email);
-    } catch (authError: any) {
-      if (authError.code === 'auth/user-not-found' || authError.code === 'auth/invalid-credential') {
-        const q = query(collection(db, USERS_COL), where("email", "==", email), where("password", "==", password));
-        const querySnapshot = await getDocs(q);
-        if (!querySnapshot.empty) {
-          const legacyDoc = querySnapshot.docs[0];
-          const legacyData = legacyDoc.data();
-          const newUserCredential = await createUserWithEmailAndPassword(auth, email, password);
-          return await this._handleUserMigration(newUserCredential.user, email, legacyData, legacyDoc.id);
-        }
-      }
+      // invalid-credential / wrong-password / email-already-in-use და სხვები
       throw authError;
     }
   },
@@ -98,16 +88,20 @@ export const firestoreService = {
   async _handleUserMigration(user: any, email: string, providedLegacyData?: any, legacyId?: string) {
     const userDocRef = doc(db, USERS_COL, user.uid);
     const userDocSnap = await getDoc(userDocRef);
+
     if (!userDocSnap.exists()) {
       let userData: any = providedLegacyData || null;
+
       if (!userData) {
         const q = query(collection(db, USERS_COL), where("email", "==", email));
         const querySnapshot = await getDocs(q);
+
         if (!querySnapshot.empty) {
           userData = querySnapshot.docs[0].data();
           legacyId = querySnapshot.docs[0].id;
         }
       }
+
       const finalUserData = {
         uid: user.uid,
         email: user.email || email,
@@ -119,65 +113,25 @@ export const firestoreService = {
         lastSeen: serverTimestamp(),
         password: userData?.password || ''
       };
+
       await setDoc(userDocRef, finalUserData);
+
       if (legacyId && legacyId !== user.uid) {
         await deleteDoc(doc(db, USERS_COL, legacyId)).catch(console.error);
       }
+
       return { id: user.uid, ...finalUserData };
     }
+
     const existingData = userDocSnap.data();
-    await updateDoc(userDocRef, { isOnline: true, lastSeen: serverTimestamp(), uid: user.uid });
-    return { id: user.uid, ...existingData };
-  },
 
-  async login_old(email: string, password: string) {
-    const userCredential = await signInWithEmailAndPassword(auth, email, password);
-    const user = userCredential.user;
-    
-    // Get or create user document in Firestore
-    const userDocRef = doc(db, USERS_COL, user.uid);
-    const userDocSnap = await getDoc(userDocRef);
-    
-    if (!userDocSnap.exists()) {
-      // This might happen if user was created in Auth but not in Firestore
-      // We'll try to find a legacy user document by email
-      const q = query(collection(db, USERS_COL), where("email", "==", email));
-      const querySnapshot = await getDocs(q);
-      
-      let userData: any = {
-        uid: user.uid,
-        email: user.email,
-        role: 'Agent', // Default role
-        name: user.displayName || email.split('@')[0],
-        avatar: `https://i.pravatar.cc/150?u=${user.uid}`,
-        isOnline: true,
-        createdAt: serverTimestamp(),
-        lastSeen: serverTimestamp()
-      };
-
-      if (!querySnapshot.empty) {
-        // Migrate legacy user data
-        const legacyData = querySnapshot.docs[0].data();
-        userData = { ...userData, ...legacyData, uid: user.uid };
-        // Delete legacy document if it has a different ID
-        if (querySnapshot.docs[0].id !== user.uid) {
-          await deleteDoc(doc(db, USERS_COL, querySnapshot.docs[0].id));
-        }
-      }
-
-      await setDoc(userDocRef, userData);
-      return { id: user.uid, ...userData };
-    }
-
-    const userData = userDocSnap.data();
-    // Update last seen and online status
-    await updateDoc(userDocRef, { 
-      isOnline: true, 
+    await updateDoc(userDocRef, {
+      isOnline: true,
       lastSeen: serverTimestamp(),
-      uid: user.uid // Ensure UID is stored
+      uid: user.uid
     });
 
-    return { id: user.uid, ...userData };
+    return { id: user.uid, ...existingData };
   },
 
   async logout() {
@@ -221,15 +175,15 @@ export const firestoreService = {
     const { email, password, ...rest } = sanitized;
     
     try {
-      // Create in Firebase Auth
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const cleanEmail = (email || '').trim().toLowerCase();
+
+      const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       const user = userCredential.user;
       
-      // Create in Firestore with UID as document ID
       const userDocData = {
         ...rest,
         uid: user.uid,
-        email,
+        email: cleanEmail,
         createdAt: serverTimestamp(),
         isOnline: false,
         lastSeen: serverTimestamp(),
@@ -257,7 +211,6 @@ export const firestoreService = {
   // Leads
   async getLeads(agentId?: string) {
     try {
-      // Fetch all leads and sort/filter in memory to avoid index requirements
       const q = query(collection(db, LEADS_COL), orderBy("createdAt", "desc"));
       const querySnapshot = await getDocs(q);
       const allLeads = querySnapshot.docs.map(doc => {
@@ -286,7 +239,7 @@ export const firestoreService = {
         throw new Error('Firebase storage limit reached. Please wait for reset or upgrade plan.');
       }
       console.error('Error fetching leads:', err);
-      // Fallback: try without orderBy if it fails
+
       const q = query(collection(db, LEADS_COL));
       const querySnapshot = await getDocs(q);
       const allLeads = querySnapshot.docs.map(doc => {
@@ -310,7 +263,6 @@ export const firestoreService = {
         filtered = allLeads.filter((lead: any) => String(lead.assigned_to) === String(agentId));
       }
       
-      // Sort manually
       return filtered.sort((a: any, b: any) => {
         const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
         const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
@@ -324,7 +276,6 @@ export const firestoreService = {
     const docSnap = await getDoc(docRef);
     if (!docSnap.exists()) throw new Error("Lead not found");
     
-    // Fetch without orderBy to avoid index requirements, sort in memory
     const notesQ = query(collection(db, "notes"), where("lead_id", "==", id));
     const historyQ = query(collection(db, "history"), where("lead_id", "==", id));
     
@@ -365,7 +316,6 @@ export const firestoreService = {
     let duplicates = 0;
     let errors = 0;
 
-    // Create an import record
     const importRef = await addDoc(collection(db, IMPORTS_COL), {
       fileName,
       createdBy: userId,
@@ -406,7 +356,6 @@ export const firestoreService = {
       }
     }
 
-    // Update import record with final stats
     await updateDoc(importRef, {
       importedCount: imported,
       duplicateCount: duplicates,
@@ -424,15 +373,12 @@ export const firestoreService = {
   },
 
   async deleteImport(importId: string) {
-    // 1. Find all leads associated with this import
     const q = query(collection(db, LEADS_COL), where("importId", "==", importId));
     const snap = await getDocs(q);
     
-    // 2. Delete all leads (even if assigned to agents)
     const deletePromises = snap.docs.map(d => deleteDoc(doc(db, LEADS_COL, d.id)));
     await Promise.all(deletePromises);
     
-    // 3. Delete the import record itself
     await deleteDoc(doc(db, IMPORTS_COL, importId));
   },
 
@@ -514,7 +460,6 @@ export const firestoreService = {
   async distributeLeads(leadIds: string[], agentIds: string[], userId: string, agentNamesMap?: Record<string, string>) {
     const distributionSummary: Record<string, number> = {};
     
-    // Use writeBatch for maximum speed (up to 500 operations per batch)
     const BATCH_SIZE = 500;
     const batches = [];
     let currentBatch = writeBatch(db);
@@ -549,10 +494,8 @@ export const firestoreService = {
       batches.push(currentBatch.commit());
     }
 
-    // Execute all batches in parallel
     await Promise.all(batches);
 
-    // Log a single summary activity in background
     this.logActivity({
       user_id: userId,
       action: "Bulk Distribution",
@@ -659,8 +602,6 @@ export const firestoreService = {
 
   async getHistory(agentId?: string) {
     let q = query(collection(db, "history"), orderBy("createdAt", "desc"), limit(100));
-    // Filtering history by agent leads would be complex in Firestore without subcollections or denormalization
-    // For now, let's just fetch all or filter if we have lead IDs
     const querySnapshot = await getDocs(q);
     return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   },
@@ -706,7 +647,7 @@ export const firestoreService = {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    let startDate = new Date(0); // Default to all time
+    let startDate = new Date(0);
     let prevStartDate = new Date(0);
     let prevEndDate = new Date(0);
 
@@ -776,7 +717,6 @@ export const firestoreService = {
       workload: [] as any[]
     };
 
-    // Group by status
     const statusMap: any = {};
     currentLeads.forEach(l => {
       statusMap[l.status] = (statusMap[l.status] || 0) + 1;
@@ -785,7 +725,6 @@ export const firestoreService = {
       .map(([status, count]) => ({ status, count }))
       .sort((a: any, b: any) => b.count - a.count);
 
-    // Users by role
     const usersSnap = await getDocs(collection(db, USERS_COL));
     const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     const roleMap: any = {};
@@ -797,7 +736,6 @@ export const firestoreService = {
       .map(([role, count]) => ({ role, count }))
       .sort((a: any, b: any) => b.count - a.count);
 
-    // Top Sources
     const sourceMap: any = {};
     currentLeads.forEach(l => {
       if (l.source) {
@@ -809,7 +747,6 @@ export const firestoreService = {
       .sort((a: any, b: any) => b.count - a.count)
       .slice(0, 5);
 
-    // Workload (for agents)
     const agents = users.filter((u: any) => ['Agent', 'Team Leader'].includes(u.role));
     stats.workload = agents.map((agent: any) => {
       const agentLeads = currentLeads.filter(l => l.assigned_to === agent.id);
@@ -824,7 +761,6 @@ export const firestoreService = {
     .sort((a: any, b: any) => b.total - a.total)
     .slice(0, 5);
 
-    // Recent Activity
     const historySnap = await getDocs(query(collection(db, "history"), orderBy("createdAt", "desc"), limit(10)));
     const recentActivity = historySnap.docs.map(d => {
       const data = d.data();
