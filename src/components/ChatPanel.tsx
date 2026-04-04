@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   MessageSquare,
   Send,
@@ -56,9 +56,14 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [isDeletingChat, setIsDeletingChat] = useState(false);
 
+  const [showMentionDropdown, setShowMentionDropdown] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionStartIndex, setMentionStartIndex] = useState<number | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const messageInputRef = useRef<HTMLInputElement>(null);
 
   const currentUserId = localStorage.getItem('userId') || '';
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
@@ -180,6 +185,177 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     return chat.name || 'Unnamed Chat';
   };
 
+  const escapeRegExp = (value: string) => {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  };
+
+  const normalizeMentionKey = (value: string) => {
+    return (value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_');
+  };
+
+  const mentionCandidates = useMemo(() => {
+    if (!selectedChat || selectedChat.isDirect) return [];
+
+    const members = users.filter((u) => selectedChat.members?.includes(u.id));
+
+    const base = members
+      .filter((u) => u.id !== currentUserId)
+      .map((u) => ({
+        id: u.id,
+        name: u.name || u.email || 'User',
+        email: u.email || '',
+        role: u.role || 'Member',
+        avatar: u.avatar || '',
+        mentionKey: normalizeMentionKey(u.name || u.email?.split('@')[0] || u.email || 'user'),
+        isEveryone: false
+      }));
+
+    return [
+      {
+        id: '__everyone__',
+        name: 'everyone',
+        email: 'Notify everyone in this group',
+        role: 'Group',
+        avatar: '',
+        mentionKey: 'everyone',
+        isEveryone: true
+      },
+      ...base
+    ];
+  }, [selectedChat, users, currentUserId]);
+
+  const filteredMentionCandidates = useMemo(() => {
+    if (!showMentionDropdown) return [];
+
+    const q = mentionQuery.trim().toLowerCase();
+
+    if (!q) return mentionCandidates.slice(0, 8);
+
+    return mentionCandidates.filter((item) => {
+      return (
+        item.mentionKey.includes(q) ||
+        (item.name || '').toLowerCase().includes(q) ||
+        (item.email || '').toLowerCase().includes(q)
+      );
+    }).slice(0, 8);
+  }, [mentionCandidates, mentionQuery, showMentionDropdown]);
+
+  const updateMentionState = useCallback((value: string) => {
+    if (!selectedChat || selectedChat.isDirect) {
+      setShowMentionDropdown(false);
+      setMentionQuery('');
+      setMentionStartIndex(null);
+      return;
+    }
+
+    const input = messageInputRef.current;
+    const cursorPos = input?.selectionStart ?? value.length;
+    const beforeCursor = value.slice(0, cursorPos);
+
+    const match = beforeCursor.match(/(^|\s)@([a-zA-Z0-9._-]*)$/);
+
+    if (!match) {
+      setShowMentionDropdown(false);
+      setMentionQuery('');
+      setMentionStartIndex(null);
+      return;
+    }
+
+    const queryPart = match[2] || '';
+    const atIndex = beforeCursor.lastIndexOf('@');
+
+    setShowMentionDropdown(true);
+    setMentionQuery(queryPart);
+    setMentionStartIndex(atIndex);
+  }, [selectedChat]);
+
+  const insertMention = (candidate: any) => {
+    if (mentionStartIndex === null) return;
+
+    const input = messageInputRef.current;
+    const cursorPos = input?.selectionStart ?? newMessage.length;
+
+    const before = newMessage.slice(0, mentionStartIndex);
+    const after = newMessage.slice(cursorPos);
+    const mentionText = `@${candidate.mentionKey} `;
+    const nextValue = `${before}${mentionText}${after}`;
+
+    setNewMessage(nextValue);
+    setShowMentionDropdown(false);
+    setMentionQuery('');
+    setMentionStartIndex(null);
+
+    setTimeout(() => {
+      if (messageInputRef.current) {
+        const pos = (before + mentionText).length;
+        messageInputRef.current.focus();
+        messageInputRef.current.setSelectionRange(pos, pos);
+      }
+    }, 0);
+  };
+
+  const extractMentionsFromText = (text: string) => {
+    if (!selectedChat || selectedChat.isDirect) {
+      return {
+        mentions: [],
+        mentionAll: false
+      };
+    }
+
+    const members = users.filter((u) => selectedChat.members?.includes(u.id));
+    const mentionAll = /(^|\s)@everyone\b/i.test(text);
+
+    const mentionedIds: string[] = [];
+
+    members.forEach((user) => {
+      const possibleKeys = [
+        normalizeMentionKey(user.name || ''),
+        normalizeMentionKey(user.email || ''),
+        normalizeMentionKey((user.email || '').split('@')[0] || '')
+      ].filter(Boolean);
+
+      const isMentioned = possibleKeys.some((key) => {
+        const regex = new RegExp(`(^|\\s)@${escapeRegExp(key)}\\b`, 'i');
+        return regex.test(text);
+      });
+
+      if (isMentioned) {
+        mentionedIds.push(user.id);
+      }
+    });
+
+    return {
+      mentions: [...new Set(mentionedIds)],
+      mentionAll
+    };
+  };
+
+  const renderMessageText = (text: string) => {
+    const parts = text.split(/(\s+)/);
+
+    return (
+      <p className="text-sm whitespace-pre-wrap break-words">
+        {parts.map((part, index) => {
+          if (/^@[a-zA-Z0-9._-]+$/i.test(part)) {
+            return (
+              <span
+                key={index}
+                className="inline-block px-1.5 py-0.5 rounded-md bg-blue-500/15 text-blue-300 font-medium"
+              >
+                {part}
+              </span>
+            );
+          }
+
+          return <React.Fragment key={index}>{part}</React.Fragment>;
+        })}
+      </p>
+    );
+  };
+
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if ((!newMessage.trim() && pendingFiles.length === 0) || !selectedChat) return;
@@ -189,6 +365,9 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
 
     setNewMessage('');
     setPendingFiles([]);
+    setShowMentionDropdown(false);
+    setMentionQuery('');
+    setMentionStartIndex(null);
     setIsUploading(true);
 
     try {
@@ -212,11 +391,15 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       await Promise.race([Promise.all(uploadPromises), timeoutPromise]);
 
       if (text.trim()) {
+        const { mentions, mentionAll } = extractMentionsFromText(text);
+
         await chatService.sendMessage(selectedChat.id, {
           text,
           senderId: currentUserId,
           senderName: userName,
-          type: 'text'
+          type: 'text',
+          mentions,
+          mentionAll
         });
       }
 
@@ -295,7 +478,9 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   };
 
   const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setNewMessage(e.target.value);
+    const value = e.target.value;
+    setNewMessage(value);
+    updateMentionState(value);
 
     if (!isTyping && selectedChat) {
       setIsTyping(true);
@@ -774,9 +959,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                                     : "bg-white/5 text-slate-200 rounded-tl-none"
                                 )}
                               >
-                                {msg.type === 'text' && (
-                                  <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
-                                )}
+                                {msg.type === 'text' && renderMessageText(msg.text || '')}
 
                                 {msg.type === 'image' && (
                                   <div className="space-y-2">
@@ -1016,12 +1199,72 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                         </div>
 
                         <div className="flex-1 relative">
+                          {showMentionDropdown && filteredMentionCandidates.length > 0 && (
+                            <div className="absolute bottom-[52px] left-0 right-0 z-30 bg-[#0F172A] border border-white/10 rounded-xl shadow-2xl overflow-hidden">
+                              <div className="max-h-64 overflow-y-auto custom-scrollbar p-2 space-y-1">
+                                {filteredMentionCandidates.map((candidate) => (
+                                  <button
+                                    key={candidate.id}
+                                    type="button"
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      insertMention(candidate);
+                                    }}
+                                    className="w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-white/5 transition-colors"
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      {candidate.isEveryone ? (
+                                        <div className="w-9 h-9 rounded-full bg-amber-500/15 text-amber-300 flex items-center justify-center font-bold">
+                                          @
+                                        </div>
+                                      ) : candidate.avatar ? (
+                                        <img
+                                          src={candidate.avatar}
+                                          alt={candidate.name}
+                                          className="w-9 h-9 rounded-full object-cover border border-white/10"
+                                        />
+                                      ) : (
+                                        <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold">
+                                          {(candidate.name || candidate.email || '?').charAt(0).toUpperCase()}
+                                        </div>
+                                      )}
+
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-semibold text-white truncate">
+                                          @{candidate.mentionKey}
+                                        </p>
+                                        <p className="text-[11px] text-slate-500 truncate">
+                                          {candidate.isEveryone
+                                            ? 'Mention everyone in this group'
+                                            : (candidate.name || candidate.email)}
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    {!candidate.isEveryone && (
+                                      <span className="text-[10px] text-slate-600 truncate max-w-[90px]">
+                                        {candidate.role}
+                                      </span>
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
                           <input
+                            ref={messageInputRef}
                             type="text"
                             placeholder={isUploading ? "Uploading..." : "Type a message..."}
                             value={newMessage}
                             onChange={handleTyping}
                             onPaste={handlePaste}
+                            onBlur={() => {
+                              setTimeout(() => {
+                                setShowMentionDropdown(false);
+                              }, 150);
+                            }}
+                            onFocus={() => updateMentionState(newMessage)}
                             disabled={isUploading}
                             className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50"
                           />
