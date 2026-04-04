@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   MessageSquare,
   Send,
@@ -15,7 +15,9 @@ import {
   Sparkles,
   FileText,
   ChevronDown,
-  Trash2
+  Trash2,
+  Users,
+  MessageCircle
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { motion, AnimatePresence } from 'motion/react';
@@ -39,6 +41,8 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   const [newGroupName, setNewGroupName] = useState('');
   const [isAddingMember, setIsAddingMember] = useState(false);
   const [newMemberEmail, setNewMemberEmail] = useState('');
+  const [memberSearchTerm, setMemberSearchTerm] = useState('');
+  const [showMembersPanel, setShowMembersPanel] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const [pinnedMessage, setPinnedMessage] = useState<any>(null);
@@ -66,7 +70,6 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     const unsubscribe = chatService.getChats(currentUserId, currentUserRole, (data) => {
       setChats(data);
 
-      // keep selected chat fresh if it changes in realtime
       if (selectedChat?.id) {
         const updatedSelectedChat = data.find((c: any) => c.id === selectedChat.id);
         if (updatedSelectedChat) {
@@ -75,6 +78,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
           setSelectedChat(null);
           setMessages([]);
           setPinnedMessage(null);
+          setShowMembersPanel(false);
         }
       }
     });
@@ -126,6 +130,55 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       currentUserRole === 'Manager' ||
       selectedChat.createdBy === currentUserId
     );
+
+  const selectedChatMembers = useMemo(() => {
+    if (!selectedChat?.members?.length) return [];
+    return users.filter((u) => selectedChat.members.includes(u.id));
+  }, [selectedChat, users]);
+
+  const filteredMemberResults = useMemo(() => {
+    const term = memberSearchTerm.trim().toLowerCase();
+
+    const baseUsers = users.filter((u) => {
+      if (!selectedChat) return false;
+      return !selectedChat.members?.includes(u.id);
+    });
+
+    if (!term) return baseUsers.slice(0, 8);
+
+    return baseUsers
+      .filter((u) => {
+        const name = (u.name || '').toLowerCase();
+        const email = (u.email || '').toLowerCase();
+        const role = (u.role || '').toLowerCase();
+        return name.includes(term) || email.includes(term) || role.includes(term);
+      })
+      .slice(0, 12);
+  }, [users, selectedChat, memberSearchTerm]);
+
+  const filteredVisibleMembers = useMemo(() => {
+    const term = memberSearchTerm.trim().toLowerCase();
+    if (!term) return selectedChatMembers;
+
+    return selectedChatMembers.filter((u) => {
+      const name = (u.name || '').toLowerCase();
+      const email = (u.email || '').toLowerCase();
+      const role = (u.role || '').toLowerCase();
+      return name.includes(term) || email.includes(term) || role.includes(term);
+    });
+  }, [selectedChatMembers, memberSearchTerm]);
+
+  const getChatDisplayName = (chat: any) => {
+    if (!chat) return 'Chat';
+
+    if (chat.isDirect) {
+      const otherMemberId = chat.members?.find((mId: string) => mId !== currentUserId);
+      const otherUser = users.find((u) => u.id === otherMemberId);
+      if (otherUser) return otherUser.name || otherUser.email || 'Direct Chat';
+    }
+
+    return chat.name || 'Unnamed Chat';
+  };
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -227,9 +280,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       });
     }
 
-    if (hasFiles) {
-      e.preventDefault();
-    }
+    if (hasFiles) e.preventDefault();
   };
 
   const removePendingFile = (index: number) => {
@@ -291,6 +342,8 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       setSelectedChat(chat);
       setSearchTerm('');
       setFoundUser(null);
+      setShowMembersPanel(false);
+      setMemberSearchTerm('');
     } catch (err) {
       console.error("Failed to start direct chat:", err);
       alert("Failed to start chat");
@@ -305,6 +358,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       setSelectedChat(createdChat);
       setNewGroupName('');
       setIsCreatingGroup(false);
+      setShowMembersPanel(false);
     } catch (err: any) {
       console.error("Failed to create group:", err);
       alert(err.message || "Failed to create group");
@@ -317,8 +371,23 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     try {
       await chatService.addMemberToChat(selectedChat.id, newMemberEmail);
       setNewMemberEmail('');
+      setMemberSearchTerm('');
       setIsAddingMember(false);
     } catch (err: any) {
+      alert(err.message || "Failed to add member");
+    }
+  };
+
+  const handleQuickAddMember = async (user: any) => {
+    if (!selectedChat || !user?.email) return;
+
+    try {
+      await chatService.addMemberToChat(selectedChat.id, user.email);
+      setNewMemberEmail('');
+      setMemberSearchTerm('');
+      setIsAddingMember(false);
+    } catch (err: any) {
+      console.error(err);
       alert(err.message || "Failed to add member");
     }
   };
@@ -341,6 +410,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       setSelectedChat(null);
       setMessages([]);
       setPinnedMessage(null);
+      setShowMembersPanel(false);
       setPendingFiles((prev) => {
         prev.forEach((item) => {
           if (item.preview) URL.revokeObjectURL(item.preview);
@@ -411,7 +481,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   };
 
   const filteredChats = chats.filter((c) =>
-    (c.name || '').toLowerCase().includes(searchTerm.toLowerCase())
+    (getChatDisplayName(c) || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -431,7 +501,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="fixed top-0 right-0 bottom-0 w-full max-w-md bg-[#0A0F1C] border-l border-white/10 z-[120] flex flex-col shadow-2xl"
+            className="fixed top-0 right-0 bottom-0 w-full max-w-5xl bg-[#0A0F1C] border-l border-white/10 z-[120] flex flex-col shadow-2xl"
           >
             <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
               <div className="flex items-center space-x-3">
@@ -457,8 +527,8 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
             <div className="flex-1 flex overflow-hidden">
               <div
                 className={cn(
-                  "w-full transition-all duration-300 flex flex-col border-r border-white/5",
-                  selectedChat && "hidden md:flex md:w-1/3"
+                  "w-full md:w-[300px] xl:w-[320px] transition-all duration-300 flex flex-col border-r border-white/5",
+                  selectedChat && "hidden md:flex"
                 )}
               >
                 <div className="p-4 space-y-4">
@@ -515,20 +585,15 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
 
                 <div className="flex-1 overflow-y-auto custom-scrollbar px-2 space-y-1">
                   {filteredChats.map((chat) => {
-                    let displayName = chat.name;
-
-                    if (chat.isDirect) {
-                      const otherMemberId = chat.members?.find((mId: string) => mId !== currentUserId);
-                      const otherUser = users.find((u) => u.id === otherMemberId);
-                      if (otherUser) {
-                        displayName = otherUser.name || otherUser.email;
-                      }
-                    }
+                    const displayName = getChatDisplayName(chat);
 
                     return (
                       <button
                         key={chat.id}
-                        onClick={() => setSelectedChat(chat)}
+                        onClick={() => {
+                          setSelectedChat(chat);
+                          setShowMembersPanel(false);
+                        }}
                         className={cn(
                           "w-full flex items-center space-x-3 p-3 rounded-xl transition-all group",
                           selectedChat?.id === chat.id
@@ -561,7 +626,9 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                             {displayName}
                           </p>
                           <p className="text-[10px] opacity-60 truncate">
-                            {Object.values(chat.typing || {}).some((v) => v) ? "Someone is typing..." : "Click to view messages"}
+                            {Object.values(chat.typing || {}).some((v: any) => !!v)
+                              ? "Someone is typing..."
+                              : (chat.isDirect ? "Direct conversation" : "Click to view messages")}
                           </p>
                         </div>
 
@@ -592,13 +659,20 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                         </button>
 
                         <div>
-                          <h3 className="text-sm font-bold text-white">{selectedChat.name}</h3>
-                          <div className="flex items-center space-x-2">
+                          <h3 className="text-sm font-bold text-white">
+                            {getChatDisplayName(selectedChat)}
+                          </h3>
+                          <button
+                            onClick={() => {
+                              setShowMembersPanel((prev) => !prev);
+                              setMemberSearchTerm('');
+                            }}
+                            className="flex items-center space-x-2 text-[10px] text-slate-500 font-medium hover:text-slate-300 transition-colors"
+                          >
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                            <span className="text-[10px] text-slate-500 font-medium">
-                              {selectedChat.members?.length || 0} Members
-                            </span>
-                          </div>
+                            <span>{selectedChat.members?.length || 0} Members</span>
+                            {!selectedChat.isDirect && <Users className="w-3 h-3" />}
+                          </button>
                         </div>
                       </div>
 
@@ -612,13 +686,35 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                           <Sparkles className={cn("w-4 h-4", isSummarizing && "animate-spin")} />
                         </button>
 
-                        {canManageGroups && (
+                        {!selectedChat.isDirect && canManageGroups && (
                           <button
-                            onClick={() => setIsAddingMember(true)}
+                            onClick={() => {
+                              setIsAddingMember(true);
+                              setMemberSearchTerm('');
+                              setNewMemberEmail('');
+                            }}
                             className="p-2 rounded-lg hover:bg-white/5 text-slate-400 transition-colors"
                             title="Add Member"
                           >
                             <UserPlus className="w-4 h-4" />
+                          </button>
+                        )}
+
+                        {!selectedChat.isDirect && (
+                          <button
+                            onClick={() => {
+                              setShowMembersPanel((prev) => !prev);
+                              setMemberSearchTerm('');
+                            }}
+                            className={cn(
+                              "p-2 rounded-lg transition-colors",
+                              showMembersPanel
+                                ? "bg-white/10 text-white"
+                                : "hover:bg-white/5 text-slate-400"
+                            )}
+                            title="View Members"
+                          >
+                            <Users className="w-4 h-4" />
                           </button>
                         )}
 
@@ -653,109 +749,212 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                       </div>
                     )}
 
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
-                      {messages.map((msg, i) => {
-                        const isMe = msg.senderId === currentUserId;
-                        const showAvatar = i === 0 || messages[i - 1].senderId !== msg.senderId;
+                    <div className="flex-1 flex min-h-0">
+                      <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+                        {messages.map((msg, i) => {
+                          const isMe = msg.senderId === currentUserId;
+                          const showAvatar = i === 0 || messages[i - 1].senderId !== msg.senderId;
 
-                        return (
-                          <div
-                            key={msg.id}
-                            className={cn("flex flex-col", isMe ? "items-end" : "items-start")}
-                          >
-                            {!isMe && showAvatar && (
-                              <span className="text-[10px] font-bold text-slate-500 mb-1 ml-1">
-                                {msg.senderName}
-                              </span>
-                            )}
-
+                          return (
                             <div
-                              className={cn(
-                                "max-w-[85%] rounded-2xl p-3 shadow-sm relative group",
-                                isMe
-                                  ? "bg-blue-600 text-white rounded-tr-none"
-                                  : "bg-white/5 text-slate-200 rounded-tl-none"
-                              )}
+                              key={msg.id}
+                              className={cn("flex flex-col", isMe ? "items-end" : "items-start")}
                             >
-                              {msg.type === 'text' && (
-                                <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
-                              )}
-
-                              {msg.type === 'image' && (
-                                <div className="space-y-2">
-                                  <img
-                                    src={msg.fileUrl}
-                                    alt="Chat"
-                                    className="rounded-lg max-h-64 cursor-pointer hover:opacity-90 transition-opacity"
-                                    onClick={() => setShowPhotoModal(msg.fileUrl)}
-                                  />
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-[10px] opacity-60">{msg.fileName}</span>
-                                    <a href={msg.fileUrl} download className="p-1 hover:bg-white/10 rounded">
-                                      <Download className="w-3 h-3" />
-                                    </a>
-                                  </div>
-                                </div>
-                              )}
-
-                              {msg.type === 'file' && (
-                                <div className="flex items-center space-x-3 bg-black/20 p-2 rounded-lg border border-white/5">
-                                  <div className="w-10 h-10 rounded bg-white/5 flex items-center justify-center">
-                                    <FileText className="w-5 h-5 text-blue-400" />
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs font-medium truncate">{msg.fileName}</p>
-                                    <p className="text-[10px] opacity-60">
-                                      {(msg.fileSize / 1024).toFixed(1)} KB
-                                    </p>
-                                  </div>
-                                  <a
-                                    href={msg.fileUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="p-2 hover:bg-white/10 rounded-lg"
-                                  >
-                                    <Download className="w-4 h-4" />
-                                  </a>
-                                </div>
+                              {!isMe && showAvatar && (
+                                <span className="text-[10px] font-bold text-slate-500 mb-1 ml-1">
+                                  {msg.senderName}
+                                </span>
                               )}
 
                               <div
                                 className={cn(
-                                  "absolute top-0 -translate-y-full opacity-0 group-hover:opacity-100 transition-opacity flex items-center space-x-1 bg-[#0F172A] border border-white/10 rounded-lg p-1 shadow-xl z-10",
-                                  isMe ? "right-0" : "left-0"
+                                  "max-w-[85%] rounded-2xl p-3 shadow-sm relative group",
+                                  isMe
+                                    ? "bg-blue-600 text-white rounded-tr-none"
+                                    : "bg-white/5 text-slate-200 rounded-tl-none"
                                 )}
                               >
-                                <button
-                                  onClick={() => chatService.pinMessage(selectedChat.id, msg.id)}
-                                  className="p-1 hover:bg-white/5 text-slate-400 hover:text-blue-400 rounded"
+                                {msg.type === 'text' && (
+                                  <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
+                                )}
+
+                                {msg.type === 'image' && (
+                                  <div className="space-y-2">
+                                    <img
+                                      src={msg.fileUrl}
+                                      alt="Chat"
+                                      className="rounded-lg max-h-64 cursor-pointer hover:opacity-90 transition-opacity"
+                                      onClick={() => setShowPhotoModal(msg.fileUrl)}
+                                    />
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[10px] opacity-60">{msg.fileName}</span>
+                                      <a href={msg.fileUrl} download className="p-1 hover:bg-white/10 rounded">
+                                        <Download className="w-3 h-3" />
+                                      </a>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {msg.type === 'file' && (
+                                  <div className="flex items-center space-x-3 bg-black/20 p-2 rounded-lg border border-white/5">
+                                    <div className="w-10 h-10 rounded bg-white/5 flex items-center justify-center">
+                                      <FileText className="w-5 h-5 text-blue-400" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-xs font-medium truncate">{msg.fileName}</p>
+                                      <p className="text-[10px] opacity-60">
+                                        {(msg.fileSize / 1024).toFixed(1)} KB
+                                      </p>
+                                    </div>
+                                    <a
+                                      href={msg.fileUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="p-2 hover:bg-white/10 rounded-lg"
+                                    >
+                                      <Download className="w-4 h-4" />
+                                    </a>
+                                  </div>
+                                )}
+
+                                <div
+                                  className={cn(
+                                    "absolute top-0 -translate-y-full opacity-0 group-hover:opacity-100 transition-opacity flex items-center space-x-1 bg-[#0F172A] border border-white/10 rounded-lg p-1 shadow-xl z-10",
+                                    isMe ? "right-0" : "left-0"
+                                  )}
                                 >
-                                  <Pin className="w-3 h-3" />
-                                </button>
+                                  <button
+                                    onClick={() => chatService.pinMessage(selectedChat.id, msg.id)}
+                                    className="p-1 hover:bg-white/5 text-slate-400 hover:text-blue-400 rounded"
+                                  >
+                                    <Pin className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleCreateLeadFromMsg(msg)}
+                                    className="p-1 hover:bg-white/5 text-slate-400 hover:text-emerald-400 rounded"
+                                  >
+                                    <UserPlus className="w-3 h-3" />
+                                  </button>
+                                </div>
+
+                                <div className="flex items-center justify-end space-x-1 mt-1 opacity-60">
+                                  <span className="text-[9px]">
+                                    {msg.createdAt?.toDate ? format(msg.createdAt.toDate(), 'HH:mm') : '...'}
+                                  </span>
+                                  {isMe &&
+                                    (msg.seenBy?.length > 1 ? (
+                                      <CheckCheck className="w-3 h-3 text-blue-300" />
+                                    ) : (
+                                      <Check className="w-3 h-3" />
+                                    ))}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div ref={messagesEndRef} />
+                      </div>
+
+                      <AnimatePresence>
+                        {showMembersPanel && !selectedChat.isDirect && (
+                          <motion.div
+                            initial={{ width: 0, opacity: 0 }}
+                            animate={{ width: 320, opacity: 1 }}
+                            exit={{ width: 0, opacity: 0 }}
+                            className="hidden lg:flex flex-col border-l border-white/10 bg-white/[0.02] overflow-hidden"
+                          >
+                            <div className="p-4 border-b border-white/10">
+                              <div className="flex items-center justify-between mb-3">
+                                <div>
+                                  <h4 className="text-sm font-bold text-white">Group Members</h4>
+                                  <p className="text-[11px] text-slate-500">
+                                    {selectedChatMembers.length} people in this group
+                                  </p>
+                                </div>
                                 <button
-                                  onClick={() => handleCreateLeadFromMsg(msg)}
-                                  className="p-1 hover:bg-white/5 text-slate-400 hover:text-emerald-400 rounded"
+                                  onClick={() => setShowMembersPanel(false)}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:bg-white/5"
                                 >
-                                  <UserPlus className="w-3 h-3" />
+                                  <X className="w-4 h-4" />
                                 </button>
                               </div>
 
-                              <div className="flex items-center justify-end space-x-1 mt-1 opacity-60">
-                                <span className="text-[9px]">
-                                  {msg.createdAt?.toDate ? format(msg.createdAt.toDate(), 'HH:mm') : '...'}
-                                </span>
-                                {isMe &&
-                                  (msg.seenBy?.length > 1 ? (
-                                    <CheckCheck className="w-3 h-3 text-blue-300" />
-                                  ) : (
-                                    <Check className="w-3 h-3" />
-                                  ))}
+                              <div className="relative">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                                <input
+                                  type="text"
+                                  placeholder="Search members..."
+                                  value={memberSearchTerm}
+                                  onChange={(e) => setMemberSearchTerm(e.target.value)}
+                                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                                />
                               </div>
                             </div>
-                          </div>
-                        );
-                      })}
-                      <div ref={messagesEndRef} />
+
+                            <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
+                              {filteredVisibleMembers.map((member) => (
+                                <div
+                                  key={member.id}
+                                  className="rounded-xl border border-white/5 bg-black/20 p-3"
+                                >
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <div className="relative">
+                                        {member.avatar ? (
+                                          <img
+                                            src={member.avatar}
+                                            alt={member.name || member.email}
+                                            className="w-10 h-10 rounded-full object-cover border border-white/10"
+                                          />
+                                        ) : (
+                                          <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold">
+                                            {(member.name || member.email || '?').charAt(0).toUpperCase()}
+                                          </div>
+                                        )}
+                                        <span
+                                          className={cn(
+                                            "absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#0A0F1C]",
+                                            member.isOnline ? "bg-emerald-500" : "bg-slate-600"
+                                          )}
+                                        />
+                                      </div>
+
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-semibold text-white truncate">
+                                          {member.name || 'Unnamed User'}
+                                          {member.id === currentUserId ? ' (You)' : ''}
+                                        </p>
+                                        <p className="text-[11px] text-slate-500 truncate">
+                                          {member.email}
+                                        </p>
+                                        <p className="text-[10px] text-slate-600 truncate">
+                                          {member.role || 'Member'}
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    {member.id !== currentUserId && (
+                                      <button
+                                        onClick={() => handleStartDirectChat(member)}
+                                        className="p-2 rounded-lg bg-blue-600/10 text-blue-400 hover:bg-blue-600 hover:text-white transition-all"
+                                        title="Message user"
+                                      >
+                                        <MessageCircle className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+
+                              {filteredVisibleMembers.length === 0 && (
+                                <div className="text-center text-sm text-slate-500 py-8">
+                                  No members found.
+                                </div>
+                              )}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
 
                     {Object.entries(selectedChat.typing || {}).some(
@@ -914,19 +1113,72 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                   initial={{ opacity: 0, scale: 0.9 }}
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.9 }}
-                  className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-sm p-6 shadow-2xl"
+                  className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md p-6 shadow-2xl"
                 >
                   <h3 className="text-lg font-bold text-white mb-4">Add Member</h3>
+
                   <input
-                    type="email"
-                    placeholder="User Email"
-                    value={newMemberEmail}
-                    onChange={(e) => setNewMemberEmail(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 mb-4"
+                    type="text"
+                    placeholder="Search by name, email or role..."
+                    value={memberSearchTerm}
+                    onChange={(e) => {
+                      setMemberSearchTerm(e.target.value);
+                      setNewMemberEmail(e.target.value);
+                    }}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 mb-3"
                   />
+
+                  <div className="max-h-64 overflow-y-auto custom-scrollbar rounded-xl border border-white/5 bg-black/20 p-2 space-y-2 mb-4">
+                    {filteredMemberResults.length > 0 ? (
+                      filteredMemberResults.map((user) => (
+                        <button
+                          key={user.id}
+                          type="button"
+                          onClick={() => handleQuickAddMember(user)}
+                          className="w-full text-left rounded-lg p-3 hover:bg-white/5 transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              {user.avatar ? (
+                                <img
+                                  src={user.avatar}
+                                  alt={user.name || user.email}
+                                  className="w-9 h-9 rounded-full object-cover border border-white/10"
+                                />
+                              ) : (
+                                <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold">
+                                  {(user.name || user.email || '?').charAt(0).toUpperCase()}
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <p className="text-sm font-semibold text-white truncate">
+                                  {user.name || 'Unnamed User'}
+                                </p>
+                                <p className="text-[11px] text-slate-500 truncate">{user.email}</p>
+                                <p className="text-[10px] text-slate-600 truncate">{user.role || 'Member'}</p>
+                              </div>
+                            </div>
+
+                            <div className="text-blue-400">
+                              <UserPlus className="w-4 h-4" />
+                            </div>
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="text-center text-sm text-slate-500 py-6">
+                        No matching users found.
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex space-x-3">
                     <button
-                      onClick={() => setIsAddingMember(false)}
+                      onClick={() => {
+                        setIsAddingMember(false);
+                        setMemberSearchTerm('');
+                        setNewMemberEmail('');
+                      }}
                       className="flex-1 py-2 text-sm font-medium text-slate-400 hover:text-white transition-colors"
                     >
                       Cancel
@@ -935,7 +1187,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                       onClick={handleAddMember}
                       className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-all"
                     >
-                      Add
+                      Add by Email
                     </button>
                   </div>
                 </motion.div>
