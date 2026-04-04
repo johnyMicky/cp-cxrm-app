@@ -29,6 +29,7 @@ const USERS_COL = "users";
 const ACTIVITY_COL = "activity";
 const NOTIFICATIONS_COL = "notifications";
 const IMPORTS_COL = "imports";
+const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const sanitizeData = (data: any) => {
   const sanitized: any = {};
@@ -40,6 +41,9 @@ const sanitizeData = (data: any) => {
   return sanitized;
 };
 
+const normalizeEmail = (email: string) => (email || "").trim().toLowerCase();
+const isAdminEmail = (email: string) => normalizeEmail(email) === ADMIN_EMAIL;
+
 export const firestoreService = {
   getAuth() {
     return auth;
@@ -47,15 +51,13 @@ export const firestoreService = {
 
   // Auth / Users
   async login(email: string, password: string) {
-    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanEmail = normalizeEmail(email);
 
     try {
       const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, password);
       const user = userCredential.user;
       return await this._handleUserMigration(user, cleanEmail);
     } catch (authError: any) {
-      // მხოლოდ იმ შემთხვევაში ვცდილობთ migration/create-ს,
-      // თუ auth-ში იუზერი საერთოდ არ არსებობს
       if (authError.code === 'auth/user-not-found') {
         const q = query(collection(db, USERS_COL), where("email", "==", cleanEmail));
         const querySnapshot = await getDocs(q);
@@ -73,19 +75,19 @@ export const firestoreService = {
               legacyDoc.id
             );
           } catch (createError: any) {
-            // თუ auth-ში უკვე არსებობს ან სხვა auth ერორია,
-            // ნამდვილი ერორი დავაბრუნოთ
             throw createError;
           }
         }
       }
 
-      // invalid-credential / wrong-password / email-already-in-use და სხვები
       throw authError;
     }
   },
 
   async _handleUserMigration(user: any, email: string, providedLegacyData?: any, legacyId?: string) {
+    const cleanEmail = normalizeEmail(email);
+    const adminUser = isAdminEmail(cleanEmail);
+
     const userDocRef = doc(db, USERS_COL, user.uid);
     const userDocSnap = await getDoc(userDocRef);
 
@@ -93,7 +95,7 @@ export const firestoreService = {
       let userData: any = providedLegacyData || null;
 
       if (!userData) {
-        const q = query(collection(db, USERS_COL), where("email", "==", email));
+        const q = query(collection(db, USERS_COL), where("email", "==", cleanEmail));
         const querySnapshot = await getDocs(q);
 
         if (!querySnapshot.empty) {
@@ -104,9 +106,9 @@ export const firestoreService = {
 
       const finalUserData = {
         uid: user.uid,
-        email: user.email || email,
-        role: userData?.role || 'Agent',
-        name: userData?.name || user.displayName || email.split('@')[0] || 'User',
+        email: user.email || cleanEmail,
+        role: adminUser ? "Administrator" : (userData?.role || "Agent"),
+        name: userData?.name || (adminUser ? "Admin User" : (user.displayName || cleanEmail.split('@')[0] || 'User')),
         avatar: userData?.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
         isOnline: true,
         createdAt: userData?.createdAt || serverTimestamp(),
@@ -125,13 +127,25 @@ export const firestoreService = {
 
     const existingData = userDocSnap.data();
 
-    await updateDoc(userDocRef, {
+    const mergedData = {
+      ...existingData,
+      uid: user.uid,
+      email: existingData?.email || user.email || cleanEmail,
+      role: adminUser ? "Administrator" : (existingData?.role || "Agent"),
+      name: existingData?.name || (adminUser ? "Admin User" : (user.displayName || cleanEmail.split('@')[0] || 'User')),
+      avatar: existingData?.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
       isOnline: true,
-      lastSeen: serverTimestamp(),
-      uid: user.uid
-    });
+      lastSeen: serverTimestamp()
+    };
 
-    return { id: user.uid, ...existingData };
+    await setDoc(userDocRef, mergedData, { merge: true });
+
+    return {
+      id: user.uid,
+      ...existingData,
+      ...mergedData,
+      role: adminUser ? "Administrator" : (mergedData.role || "Agent")
+    };
   },
 
   async logout() {
@@ -148,14 +162,17 @@ export const firestoreService = {
   async getUsers() {
     try {
       const querySnapshot = await getDocs(collection(db, USERS_COL));
-      return querySnapshot.docs.map(doc => {
-        const data = doc.data();
+      return querySnapshot.docs.map(docSnap => {
+        const data = docSnap.data();
+        const email = normalizeEmail(data.email || '');
+        const adminUser = isAdminEmail(email);
+
         return {
-          id: doc.id,
-          name: data.name || '',
+          id: docSnap.id,
+          name: data.name || (adminUser ? 'Admin User' : ''),
           email: data.email || '',
-          role: data.role || 'Agent',
-          avatar: data.avatar || `https://i.pravatar.cc/150?u=${doc.id}`,
+          role: adminUser ? 'Administrator' : (data.role || 'Agent'),
+          avatar: data.avatar || `https://i.pravatar.cc/150?u=${docSnap.id}`,
           isOnline: data.isOnline || false,
           lastSeen: data.lastSeen || null,
           createdAt: data.createdAt || null
@@ -175,7 +192,8 @@ export const firestoreService = {
     const { email, password, ...rest } = sanitized;
     
     try {
-      const cleanEmail = (email || '').trim().toLowerCase();
+      const cleanEmail = normalizeEmail(email);
+      const adminUser = isAdminEmail(cleanEmail);
 
       const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       const user = userCredential.user;
@@ -184,6 +202,8 @@ export const firestoreService = {
         ...rest,
         uid: user.uid,
         email: cleanEmail,
+        role: adminUser ? "Administrator" : (rest.role || "Agent"),
+        name: rest.name || (adminUser ? "Admin User" : cleanEmail.split("@")[0]),
         createdAt: serverTimestamp(),
         isOnline: false,
         lastSeen: serverTimestamp(),
@@ -200,8 +220,15 @@ export const firestoreService = {
 
   async updateUser(id: string, userData: any) {
     const sanitized = sanitizeData(userData);
+    const nextEmail = sanitized.email ? normalizeEmail(sanitized.email) : undefined;
+    const adminUser = nextEmail ? isAdminEmail(nextEmail) : false;
+
     const docRef = doc(db, USERS_COL, id);
-    await updateDoc(docRef, sanitized);
+    await updateDoc(docRef, {
+      ...sanitized,
+      ...(nextEmail ? { email: nextEmail } : {}),
+      ...(adminUser ? { role: "Administrator" } : {})
+    });
   },
 
   async deleteUser(id: string) {
