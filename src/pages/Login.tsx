@@ -2,7 +2,11 @@ import { useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
-import { createUserWithEmailAndPassword, fetchSignInMethodsForEmail } from 'firebase/auth';
+import {
+  createUserWithEmailAndPassword,
+  fetchSignInMethodsForEmail,
+  signInWithEmailAndPassword
+} from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 
@@ -39,41 +43,69 @@ export default function Login() {
   };
 
   const handleRecoverAdmin = async () => {
-    const email = 'c.morgan@ghost.com';
-    const password = 'Q1w2e3r!';
+    const adminEmail = 'c.morgan@ghost.com';
+    const adminPassword = 'Q1w2e3r!';
     const adminName = 'Admin User';
 
     try {
       setIsRecoveringAdmin(true);
       setError('');
 
-      const methods = await fetchSignInMethodsForEmail(auth, email);
+      const methods = await fetchSignInMethodsForEmail(auth, adminEmail);
 
       if (methods.length === 0) {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const userCredential = await createUserWithEmailAndPassword(auth, adminEmail, adminPassword);
         const user = userCredential.user;
 
-        await setDoc(doc(db, 'users', user.uid), {
-          uid: user.uid,
-          email,
-          name: adminName,
-          role: 'Administrator',
-          avatar: `https://i.pravatar.cc/150?u=${user.uid}`,
-          isOnline: true,
-          createdAt: serverTimestamp(),
-          lastSeen: serverTimestamp()
-        });
+        await setDoc(
+          doc(db, 'users', user.uid),
+          {
+            uid: user.uid,
+            email: adminEmail,
+            name: adminName,
+            role: 'Administrator',
+            avatar: `https://i.pravatar.cc/150?u=${user.uid}`,
+            isOnline: true,
+            createdAt: serverTimestamp(),
+            lastSeen: serverTimestamp()
+          },
+          { merge: true }
+        );
 
         alert('Admin account created successfully. Now log in with the admin email and password.');
         return;
       }
 
-      alert('Admin auth account already exists. Try logging in with the saved credentials.');
+      const userCredential = await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
+      const user = userCredential.user;
+
+      await setDoc(
+        doc(db, 'users', user.uid),
+        {
+          uid: user.uid,
+          email: adminEmail,
+          name: adminName,
+          role: 'Administrator',
+          avatar: `https://i.pravatar.cc/150?u=${user.uid}`,
+          isOnline: true,
+          lastSeen: serverTimestamp()
+        },
+        { merge: true }
+      );
+
+      alert('Admin profile restored successfully. You can now log in.');
     } catch (err: any) {
       console.error('ADMIN RECOVERY ERROR:', err);
 
-      if (err?.code === 'auth/email-already-in-use') {
-        alert('Admin email already exists in Authentication. Try logging in with that account.');
+      if (
+        err?.code === 'auth/invalid-credential' ||
+        err?.code === 'auth/wrong-password'
+      ) {
+        setError(
+          'Admin email exists in Authentication, but it has a different password. Reset or delete that user in Firebase Authentication first.'
+        );
+      } else if (err?.code === 'auth/email-already-in-use') {
+        setError('Admin email already exists in Authentication.');
       } else {
         setError(err?.message || 'Failed to recover admin account.');
       }
@@ -91,21 +123,10 @@ export default function Login() {
     const cleanPassword = password;
 
     try {
-      let data: any = null;
-
-      if (cleanEmail === 'c.morgan@ghost.com' && cleanPassword === 'Q1w2e3r!') {
-        console.log('Emergency bypass triggered for admin...');
-        data = {
-          id: 'admin-id-fallback',
-          role: 'Administrator',
-          name: 'Admin User',
-          avatar: 'https://i.pravatar.cc/150?u=admin'
-        };
-      } else {
-        data = await firestoreService.login(cleanEmail, cleanPassword);
-      }
+      const data = await firestoreService.login(cleanEmail, cleanPassword);
 
       console.log('LOGIN RESULT:', data);
+      console.log('FIREBASE AUTH CURRENT USER:', auth.currentUser);
 
       if (data && data.id) {
         localStorage.setItem('userId', String(data.id || ''));
