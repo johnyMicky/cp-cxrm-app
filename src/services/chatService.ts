@@ -2,19 +2,19 @@ import {
   collection, 
   addDoc, 
   updateDoc, 
+  deleteDoc,
   doc, 
   onSnapshot, 
   query, 
   where, 
   orderBy, 
   serverTimestamp, 
-  arrayUnion, 
-  arrayRemove,
+  arrayUnion,
   getDocs,
   getDoc,
   limit,
-  Timestamp,
-  setDoc
+  setDoc,
+  writeBatch
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "../firebase";
@@ -26,12 +26,16 @@ const USERS_COL = "users";
 export const chatService = {
   // User Status
   async setUserOnline(userId: string, isOnline: boolean) {
-    if (!userId || userId === '1') return; // Skip invalid IDs
+    if (!userId || userId === '1') return;
     try {
-      await setDoc(doc(db, USERS_COL, userId), { 
-        isOnline,
-        lastSeen: serverTimestamp()
-      }, { merge: true });
+      await setDoc(
+        doc(db, USERS_COL, userId),
+        {
+          isOnline,
+          lastSeen: serverTimestamp()
+        },
+        { merge: true }
+      );
     } catch (err) {
       console.error("Failed to set user status:", err);
     }
@@ -39,29 +43,97 @@ export const chatService = {
 
   // Chat Groups
   async createChat(name: string, createdBy: string, members: string[]) {
+    const cleanName = (name || "").trim();
+    if (!cleanName) {
+      throw new Error("Group name is required");
+    }
+
     const chatData = {
-      name,
+      name: cleanName,
       createdBy,
-      members: [...new Set([...members, createdBy])],
+      members: [...new Set([...(members || []), createdBy])],
       createdAt: serverTimestamp(),
-      lastMessageAt: serverTimestamp(), // Added for sorting
+      lastMessageAt: serverTimestamp(),
       typing: {}
     };
-    return await addDoc(collection(db, CHATS_COL), chatData);
+
+    const docRef = await addDoc(collection(db, CHATS_COL), chatData);
+    const newDoc = await getDoc(docRef);
+    return { id: newDoc.id, ...newDoc.data() };
   },
 
   async addMemberToChat(chatId: string, email: string) {
-    const usersSnap = await getDocs(query(collection(db, USERS_COL), where("email", "==", email)));
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) throw new Error("Email is required");
+
+    const usersSnap = await getDocs(
+      query(collection(db, USERS_COL), where("email", "==", cleanEmail))
+    );
+
     if (usersSnap.empty) throw new Error("User not found");
+
     const userId = usersSnap.docs[0].id;
+
     await updateDoc(doc(db, CHATS_COL, chatId), {
       members: arrayUnion(userId)
     });
   },
 
+  async deleteChat(chatId: string, currentUserId: string, currentUserRole: string) {
+    const chatRef = doc(db, CHATS_COL, chatId);
+    const chatSnap = await getDoc(chatRef);
+
+    if (!chatSnap.exists()) {
+      throw new Error("Chat not found");
+    }
+
+    const chatData = chatSnap.data() as any;
+
+    const isAdmin = currentUserRole === "Administrator";
+    const isManager = currentUserRole === "Manager";
+    const isCreator = chatData.createdBy === currentUserId;
+
+    if (!isAdmin && !isManager && !isCreator) {
+      throw new Error("You do not have permission to delete this group");
+    }
+
+    if (chatData.isDirect) {
+      throw new Error("Direct chats cannot be deleted this way");
+    }
+
+    const messagesRef = collection(db, CHATS_COL, chatId, MESSAGES_COL);
+    const messagesSnap = await getDocs(messagesRef);
+
+    // Firestore batch limit is 500 operations
+    // 1 operation reserved for deleting the chat doc itself
+    const messageDocs = messagesSnap.docs;
+    const chunkSize = 499;
+
+    for (let i = 0; i < messageDocs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      const chunk = messageDocs.slice(i, i + chunkSize);
+
+      chunk.forEach((messageDoc) => {
+        batch.delete(messageDoc.ref);
+      });
+
+      // only delete chat doc on the last batch
+      if (i + chunkSize >= messageDocs.length) {
+        batch.delete(chatRef);
+      }
+
+      await batch.commit();
+    }
+
+    // no messages case
+    if (messageDocs.length === 0) {
+      await deleteDoc(chatRef);
+    }
+  },
+
   getChats(userId: string, role: string, callback: (chats: any[]) => void) {
     let q;
-    // Remove server-side orderBy to avoid index requirements and missing field filtering
+
     if (role === 'Administrator') {
       q = query(collection(db, CHATS_COL));
     } else {
@@ -70,12 +142,13 @@ export const chatService = {
 
     return onSnapshot(q, (snap) => {
       const chats = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      // Sort client-side instead
+
       chats.sort((a: any, b: any) => {
         const timeA = a.lastMessageAt?.toMillis?.() || a.createdAt?.toMillis?.() || 0;
         const timeB = b.lastMessageAt?.toMillis?.() || b.createdAt?.toMillis?.() || 0;
         return timeB - timeA;
       });
+
       callback(chats);
     });
   },
@@ -88,7 +161,6 @@ export const chatService = {
       seenBy: [messageData.senderId]
     });
 
-    // Update chat document with last message info
     await updateDoc(doc(db, CHATS_COL, chatId), {
       lastMessage: messageData.text || `[${messageData.type}]`,
       lastMessageAt: serverTimestamp(),
@@ -101,9 +173,10 @@ export const chatService = {
 
   getMessages(chatId: string, callback: (messages: any[]) => void) {
     const q = query(
-      collection(db, CHATS_COL, chatId, MESSAGES_COL), 
+      collection(db, CHATS_COL, chatId, MESSAGES_COL),
       orderBy("createdAt", "asc")
     );
+
     return onSnapshot(q, (snap) => {
       const messages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       callback(messages);
@@ -114,7 +187,7 @@ export const chatService = {
     await updateDoc(doc(db, CHATS_COL, chatId, MESSAGES_COL, messageId), {
       seenBy: arrayUnion(userId)
     });
-    // Also update chat-level seen status for the last message
+
     await updateDoc(doc(db, CHATS_COL, chatId), {
       lastMessageSeenBy: arrayUnion(userId)
     });
@@ -122,10 +195,9 @@ export const chatService = {
 
   // Files
   async uploadFile(file: File) {
-    // Clean filename to avoid issues with special characters
     const cleanName = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
     const storageRef = ref(storage, `chat_files/${Date.now()}_${cleanName}`);
-    
+
     try {
       await uploadBytes(storageRef, file);
       return await getDownloadURL(storageRef);
@@ -156,14 +228,19 @@ export const chatService = {
 
   // Search
   async searchMessages(chatId: string, searchTerm: string) {
-    // Firestore doesn't support full-text search well. We'll fetch and filter client-side for simplicity
-    // or use a more complex query if needed. For now, client-side.
-    const q = query(collection(db, CHATS_COL, chatId, MESSAGES_COL), orderBy("createdAt", "desc"), limit(100));
+    const q = query(
+      collection(db, CHATS_COL, chatId, MESSAGES_COL),
+      orderBy("createdAt", "desc"),
+      limit(100)
+    );
+
     const snap = await getDocs(q);
     const messages = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    return messages.filter((m: any) => 
-      (m.text && m.text.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (m.senderName && m.senderName.toLowerCase().includes(searchTerm.toLowerCase()))
+    const cleanSearch = searchTerm.toLowerCase();
+
+    return messages.filter((m: any) =>
+      (m.text && m.text.toLowerCase().includes(cleanSearch)) ||
+      (m.senderName && m.senderName.toLowerCase().includes(cleanSearch))
     );
   },
 
@@ -174,22 +251,25 @@ export const chatService = {
   },
 
   async findUserByEmail(email: string) {
-    const q = query(collection(db, USERS_COL), where("email", "==", email.toLowerCase()));
+    const cleanEmail = email.trim().toLowerCase();
+    const q = query(collection(db, USERS_COL), where("email", "==", cleanEmail));
     const snap = await getDocs(q);
+
     if (snap.empty) return null;
+
     return { id: snap.docs[0].id, ...snap.docs[0].data() };
   },
 
   async getOrCreateDirectChat(userId1: string, userId2: string, user2Name: string) {
-    // Check if a direct chat already exists
     const q = query(
-      collection(db, CHATS_COL), 
+      collection(db, CHATS_COL),
       where("members", "array-contains", userId1),
       where("isDirect", "==", true)
     );
+
     const snap = await getDocs(q);
     const existingChat = snap.docs.find(d => {
-      const data = d.data();
+      const data = d.data() as any;
       return data.members.includes(userId2) && data.members.length === 2;
     });
 
@@ -197,13 +277,12 @@ export const chatService = {
       return { id: existingChat.id, ...existingChat.data() };
     }
 
-    // Create new direct chat
     const docRef = await addDoc(collection(db, CHATS_COL), {
-      name: user2Name, 
+      name: user2Name,
       members: [userId1, userId2],
       isDirect: true,
       createdAt: serverTimestamp(),
-      lastMessageAt: serverTimestamp(), // Ensure it has a timestamp for ordering
+      lastMessageAt: serverTimestamp(),
       typing: {}
     });
 
