@@ -2,7 +2,6 @@ import { useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
-import { signInAnonymously } from 'firebase/auth';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -11,38 +10,75 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
+  const getFriendlyError = (err: any) => {
+    const code = err?.code || '';
+    const message = err?.message || '';
+
+    switch (code) {
+      case 'auth/invalid-credential':
+        return 'Incorrect email or password.';
+      case 'auth/user-not-found':
+        return 'User not found.';
+      case 'auth/wrong-password':
+        return 'Incorrect password.';
+      case 'auth/invalid-email':
+        return 'Invalid email format.';
+      case 'auth/too-many-requests':
+        return 'Too many failed attempts. Please try again later.';
+      case 'auth/network-request-failed':
+        return 'Network error. Check your internet connection.';
+      case 'permission-denied':
+        return 'Permission denied. Check Firestore rules.';
+      default:
+        return message || 'Failed to sign in.';
+    }
+  };
+
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password;
+
     try {
-      let data: any;
-      
-      // Emergency bypass for admin email - NO FIREBASE AUTH REQUIRED
-      if (email.toLowerCase() === 'c.morgan@ghost.com' && password === 'Q1w2e3r!') {
+      let data: any = null;
+
+      // Emergency bypass for admin email
+      if (cleanEmail === 'c.morgan@ghost.com' && cleanPassword === 'Q1w2e3r!') {
         console.log('Emergency bypass triggered for admin...');
         data = {
-          id: 'admin-id-fallback', // Hardcoded fallback ID
+          id: 'admin-id-fallback',
           role: 'Administrator',
           name: 'Admin User',
           avatar: 'https://i.pravatar.cc/150?u=admin'
         };
       } else {
-        data = await firestoreService.login(email, password);
+        data = await firestoreService.login(cleanEmail, cleanPassword);
       }
 
-      if (data) {
-        localStorage.setItem('userId', (data.id || '').toString());
+      console.log('LOGIN RESULT:', data);
+
+      if (data && data.id) {
+        localStorage.setItem('userId', String(data.id || ''));
         localStorage.setItem('userRole', data.role || 'Agent');
         localStorage.setItem('userName', data.name || 'User');
-        localStorage.setItem('userAvatar', data.avatar || `https://i.pravatar.cc/150?u=${data.id}`);
-        window.location.href = '/';
+        localStorage.setItem(
+          'userAvatar',
+          data.avatar || `https://i.pravatar.cc/150?u=${data.id}`
+        );
+
+        navigate('/');
       } else {
-        setError('Invalid credentials');
+        setError('Invalid credentials.');
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to connect to Firestore');
+      console.error('LOGIN PAGE ERROR CODE:', err?.code);
+      console.error('LOGIN PAGE ERROR MESSAGE:', err?.message);
+      console.error('LOGIN PAGE FULL ERROR:', err);
+
+      setError(getFriendlyError(err));
     } finally {
       setLoading(false);
     }
@@ -69,12 +105,15 @@ export default function Login() {
             )}
 
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider ml-1">Email Address</label>
+              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider ml-1">
+                Email Address
+              </label>
               <div className="relative">
                 <Mail className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
                 <input
                   type="email"
                   required
+                  autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full bg-white/5 border border-white/10 rounded-xl pl-11 pr-4 py-3 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all"
@@ -85,14 +124,23 @@ export default function Login() {
 
             <div className="space-y-2">
               <div className="flex items-center justify-between ml-1">
-                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Password</label>
-                <a href="#" className="text-xs text-blue-500 hover:text-blue-400 transition-colors">Forgot Password?</a>
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  Password
+                </label>
+                <a
+                  href="#"
+                  onClick={(e) => e.preventDefault()}
+                  className="text-xs text-blue-500 hover:text-blue-400 transition-colors"
+                >
+                  Forgot Password?
+                </a>
               </div>
               <div className="relative">
                 <Lock className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
                 <input
                   type="password"
                   required
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full bg-white/5 border border-white/10 rounded-xl pl-11 pr-4 py-3 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all"
@@ -119,7 +167,14 @@ export default function Login() {
 
           <div className="mt-8 pt-8 border-t border-white/5 text-center">
             <p className="text-sm text-slate-500">
-              Don't have an account? <a href="#" className="text-blue-500 hover:text-blue-400 font-medium transition-colors">Contact Administrator</a>
+              Don't have an account?{' '}
+              <a
+                href="#"
+                onClick={(e) => e.preventDefault()}
+                className="text-blue-500 hover:text-blue-400 font-medium transition-colors"
+              >
+                Contact Administrator
+              </a>
             </p>
           </div>
         </div>
