@@ -21,7 +21,7 @@ import {
   uploadBytesResumable,
   getDownloadURL
 } from "firebase/storage";
-import { db, storage } from "../firebase";
+import { db, storage, auth } from "../firebase";
 
 const CHATS_COL = "chats";
 const MESSAGES_COL = "messages";
