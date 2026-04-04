@@ -2,12 +2,16 @@ import { useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
+import { createUserWithEmailAndPassword, fetchSignInMethodsForEmail } from 'firebase/auth';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, db } from '../firebase';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isRecoveringAdmin, setIsRecoveringAdmin] = useState(false);
   const navigate = useNavigate();
 
   const getFriendlyError = (err: any) => {
@@ -34,6 +38,50 @@ export default function Login() {
     }
   };
 
+  const handleRecoverAdmin = async () => {
+    const email = 'c.morgan@ghost.com';
+    const password = 'Q1w2e3r!';
+    const adminName = 'Admin User';
+
+    try {
+      setIsRecoveringAdmin(true);
+      setError('');
+
+      const methods = await fetchSignInMethodsForEmail(auth, email);
+
+      if (methods.length === 0) {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+
+        await setDoc(doc(db, 'users', user.uid), {
+          uid: user.uid,
+          email,
+          name: adminName,
+          role: 'Administrator',
+          avatar: `https://i.pravatar.cc/150?u=${user.uid}`,
+          isOnline: true,
+          createdAt: serverTimestamp(),
+          lastSeen: serverTimestamp()
+        });
+
+        alert('Admin account created successfully. Now log in with the admin email and password.');
+        return;
+      }
+
+      alert('Admin auth account already exists. Try logging in with the saved credentials.');
+    } catch (err: any) {
+      console.error('ADMIN RECOVERY ERROR:', err);
+
+      if (err?.code === 'auth/email-already-in-use') {
+        alert('Admin email already exists in Authentication. Try logging in with that account.');
+      } else {
+        setError(err?.message || 'Failed to recover admin account.');
+      }
+    } finally {
+      setIsRecoveringAdmin(false);
+    }
+  };
+
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
@@ -45,7 +93,6 @@ export default function Login() {
     try {
       let data: any = null;
 
-      // Emergency bypass for admin email
       if (cleanEmail === 'c.morgan@ghost.com' && cleanPassword === 'Q1w2e3r!') {
         console.log('Emergency bypass triggered for admin...');
         data = {
@@ -176,6 +223,17 @@ export default function Login() {
                 Contact Administrator
               </a>
             </p>
+
+            <div className="mt-4 text-center">
+              <button
+                type="button"
+                onClick={handleRecoverAdmin}
+                disabled={isRecoveringAdmin}
+                className="text-xs text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-50"
+              >
+                {isRecoveringAdmin ? 'Recovering admin...' : 'Recovery Access'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
