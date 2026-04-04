@@ -1,14 +1,14 @@
-import { 
-  collection, 
-  addDoc, 
-  updateDoc, 
+import {
+  collection,
+  addDoc,
+  updateDoc,
   deleteDoc,
-  doc, 
-  onSnapshot, 
-  query, 
-  where, 
-  orderBy, 
-  serverTimestamp, 
+  doc,
+  onSnapshot,
+  query,
+  where,
+  orderBy,
+  serverTimestamp,
   arrayUnion,
   getDocs,
   getDoc,
@@ -16,7 +16,11 @@ import {
   setDoc,
   writeBatch
 } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import {
+  ref,
+  uploadBytesResumable,
+  getDownloadURL
+} from "firebase/storage";
 import { db, storage } from "../firebase";
 
 const CHATS_COL = "chats";
@@ -104,8 +108,6 @@ export const chatService = {
     const messagesRef = collection(db, CHATS_COL, chatId, MESSAGES_COL);
     const messagesSnap = await getDocs(messagesRef);
 
-    // Firestore batch limit is 500 operations
-    // 1 operation reserved for deleting the chat doc itself
     const messageDocs = messagesSnap.docs;
     const chunkSize = 499;
 
@@ -117,7 +119,6 @@ export const chatService = {
         batch.delete(messageDoc.ref);
       });
 
-      // only delete chat doc on the last batch
       if (i + chunkSize >= messageDocs.length) {
         batch.delete(chatRef);
       }
@@ -125,7 +126,6 @@ export const chatService = {
       await batch.commit();
     }
 
-    // no messages case
     if (messageDocs.length === 0) {
       await deleteDoc(chatRef);
     }
@@ -195,15 +195,53 @@ export const chatService = {
 
   // Files
   async uploadFile(file: File) {
-    const cleanName = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
-    const storageRef = ref(storage, `chat_files/${Date.now()}_${cleanName}`);
+    if (!file) {
+      throw new Error("No file selected");
+    }
+
+    const maxSizeMb = 50;
+    const maxSizeBytes = maxSizeMb * 1024 * 1024;
+
+    if (file.size > maxSizeBytes) {
+      throw new Error(`File is too large. Maximum allowed size is ${maxSizeMb} MB.`);
+    }
+
+    const cleanName = file.name
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .replace(/_+/g, '_');
+
+    const extension = cleanName.includes('.') ? cleanName.split('.').pop() : '';
+    const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${extension ? `.${extension}` : ''}`;
+
+    const folder = file.type.startsWith('image/') ? 'chat_images' : 'chat_files';
+    const storageRef = ref(storage, `${folder}/${uniqueName}`);
 
     try {
-      await uploadBytes(storageRef, file);
-      return await getDownloadURL(storageRef);
-    } catch (error) {
+      const uploadTask = uploadBytesResumable(storageRef, file, {
+        contentType: file.type || 'application/octet-stream',
+        customMetadata: {
+          originalName: cleanName
+        }
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        uploadTask.on(
+          'state_changed',
+          () => {
+            // optional: progress handling later
+          },
+          (error) => {
+            console.error("Firebase resumable upload error:", error);
+            reject(error);
+          },
+          () => resolve()
+        );
+      });
+
+      return await getDownloadURL(uploadTask.snapshot.ref);
+    } catch (error: any) {
       console.error("Firebase upload error:", error);
-      throw error;
+      throw new Error(error?.message || "Failed to upload file");
     }
   },
 
