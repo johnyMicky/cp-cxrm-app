@@ -28,9 +28,8 @@ const MESSAGES_COL = "messages";
 const USERS_COL = "users";
 
 export const chatService = {
-  // User Status
   async setUserOnline(userId: string, isOnline: boolean) {
-    if (!userId || userId === '1') return;
+    if (!userId || userId === "1") return;
     try {
       await setDoc(
         doc(db, USERS_COL, userId),
@@ -45,7 +44,6 @@ export const chatService = {
     }
   },
 
-  // Chat Groups
   async createChat(name: string, createdBy: string, members: string[]) {
     const cleanName = (name || "").trim();
     if (!cleanName) {
@@ -134,14 +132,14 @@ export const chatService = {
   getChats(userId: string, role: string, callback: (chats: any[]) => void) {
     let q;
 
-    if (role === 'Administrator') {
+    if (role === "Administrator") {
       q = query(collection(db, CHATS_COL));
     } else {
       q = query(collection(db, CHATS_COL), where("members", "array-contains", userId));
     }
 
     return onSnapshot(q, (snap) => {
-      const chats = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const chats = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
       chats.sort((a: any, b: any) => {
         const timeA = a.lastMessageAt?.toMillis?.() || a.createdAt?.toMillis?.() || 0;
@@ -153,7 +151,6 @@ export const chatService = {
     });
   },
 
-  // Messages
   async sendMessage(chatId: string, messageData: any) {
     const msgRef = await addDoc(collection(db, CHATS_COL, chatId, MESSAGES_COL), {
       ...messageData,
@@ -178,7 +175,7 @@ export const chatService = {
     );
 
     return onSnapshot(q, (snap) => {
-      const messages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const messages = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       callback(messages);
     });
   },
@@ -193,10 +190,22 @@ export const chatService = {
     });
   },
 
-  // Files
   async uploadFile(file: File) {
     if (!file) {
       throw new Error("No file selected");
+    }
+
+    console.log("UPLOAD START");
+    console.log("AUTH CURRENT USER:", auth.currentUser);
+    console.log("AUTH UID:", auth.currentUser?.uid || null);
+    console.log("FILE:", {
+      name: file.name,
+      size: file.size,
+      type: file.type
+    });
+
+    if (!auth.currentUser) {
+      throw new Error("No authenticated Firebase user found. Please log out and sign in again.");
     }
 
     const maxSizeMb = 50;
@@ -207,52 +216,75 @@ export const chatService = {
     }
 
     const cleanName = file.name
-      .replace(/[^a-zA-Z0-9._-]/g, '_')
-      .replace(/_+/g, '_');
+      .replace(/[^a-zA-Z0-9._-]/g, "_")
+      .replace(/_+/g, "_");
 
-    const extension = cleanName.includes('.') ? cleanName.split('.').pop() : '';
-    const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${extension ? `.${extension}` : ''}`;
+    const extension = cleanName.includes(".") ? cleanName.split(".").pop() : "";
+    const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${
+      extension ? `.${extension}` : ""
+    }`;
 
-    const folder = file.type.startsWith('image/') ? 'chat_images' : 'chat_files';
-    const storageRef = ref(storage, `${folder}/${uniqueName}`);
+    const folder = file.type.startsWith("image/") ? "chat_images" : "chat_files";
+    const fullPath = `${folder}/${uniqueName}`;
+    const storageRef = ref(storage, fullPath);
+
+    console.log("STORAGE PATH:", fullPath);
+    console.log("STORAGE BUCKET:", storage.app.options.storageBucket);
 
     try {
       const uploadTask = uploadBytesResumable(storageRef, file, {
-        contentType: file.type || 'application/octet-stream',
+        contentType: file.type || "application/octet-stream",
         customMetadata: {
-          originalName: cleanName
+          originalName: cleanName,
+          uploadedBy: auth.currentUser.uid
         }
       });
 
       await new Promise<void>((resolve, reject) => {
         uploadTask.on(
-          'state_changed',
-          () => {
-            // optional: progress handling later
+          "state_changed",
+          (snapshot) => {
+            const progress =
+              (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            console.log("UPLOAD PROGRESS:", progress.toFixed(2) + "%");
+            console.log("UPLOAD STATE:", snapshot.state);
           },
           (error) => {
-            console.error("Firebase resumable upload error:", error);
-            reject(error);
+            console.error("FIREBASE STORAGE ERROR CODE:", error?.code);
+            console.error("FIREBASE STORAGE ERROR MESSAGE:", error?.message);
+            console.error("FIREBASE STORAGE FULL ERROR:", error);
+            reject(
+              new Error(
+                `${error?.code || "upload-error"}: ${error?.message || "Upload failed"}`
+              )
+            );
           },
-          () => resolve()
+          async () => {
+            try {
+              const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+              console.log("UPLOAD SUCCESS URL:", downloadUrl);
+              resolve();
+            } catch (urlError: any) {
+              console.error("DOWNLOAD URL ERROR:", urlError?.code, urlError?.message, urlError);
+              reject(new Error(urlError?.message || "Failed to get download URL"));
+            }
+          }
         );
       });
 
       return await getDownloadURL(uploadTask.snapshot.ref);
     } catch (error: any) {
-      console.error("Firebase upload error:", error);
+      console.error("FINAL UPLOAD ERROR:", error);
       throw new Error(error?.message || "Failed to upload file");
     }
   },
 
-  // Typing Indicator
   async setTyping(chatId: string, userId: string, isTyping: boolean) {
     await updateDoc(doc(db, CHATS_COL, chatId), {
       [`typing.${userId}`]: isTyping
     });
   },
 
-  // Pinning
   async pinMessage(chatId: string, messageId: string | null) {
     await updateDoc(doc(db, CHATS_COL, chatId), {
       pinnedMessageId: messageId
@@ -264,7 +296,6 @@ export const chatService = {
     return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } : null;
   },
 
-  // Search
   async searchMessages(chatId: string, searchTerm: string) {
     const q = query(
       collection(db, CHATS_COL, chatId, MESSAGES_COL),
@@ -273,7 +304,7 @@ export const chatService = {
     );
 
     const snap = await getDocs(q);
-    const messages = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    const messages = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
     const cleanSearch = searchTerm.toLowerCase();
 
     return messages.filter((m: any) =>
@@ -282,10 +313,9 @@ export const chatService = {
     );
   },
 
-  // Users
   async getAllUsers() {
     const snap = await getDocs(collection(db, USERS_COL));
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   },
 
   async findUserByEmail(email: string) {
@@ -306,7 +336,7 @@ export const chatService = {
     );
 
     const snap = await getDocs(q);
-    const existingChat = snap.docs.find(d => {
+    const existingChat = snap.docs.find((d) => {
       const data = d.data() as any;
       return data.members.includes(userId2) && data.members.length === 2;
     });
