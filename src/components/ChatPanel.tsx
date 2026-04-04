@@ -384,11 +384,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
         });
       });
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Upload timed out. Please try again.")), 20000)
-      );
-
-      await Promise.race([Promise.all(uploadPromises), timeoutPromise]);
+      await Promise.all(uploadPromises);
 
       if (text.trim()) {
         const { mentions, mentionAll } = extractMentionsFromText(text);
