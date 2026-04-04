@@ -4,7 +4,6 @@ import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
 import {
   createUserWithEmailAndPassword,
-  fetchSignInMethodsForEmail,
   signInWithEmailAndPassword
 } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
@@ -42,73 +41,62 @@ export default function Login() {
     }
   };
 
+  const restoreAdminFirestoreDoc = async (uid: string) => {
+    await setDoc(
+      doc(db, 'users', uid),
+      {
+        uid,
+        email: 'c.morgan@ghost.com',
+        name: 'Admin User',
+        role: 'Administrator',
+        avatar: `https://i.pravatar.cc/150?u=${uid}`,
+        isOnline: true,
+        createdAt: serverTimestamp(),
+        lastSeen: serverTimestamp()
+      },
+      { merge: true }
+    );
+  };
+
   const handleRecoverAdmin = async () => {
     const adminEmail = 'c.morgan@ghost.com';
     const adminPassword = 'Q1w2e3r!';
-    const adminName = 'Admin User';
 
     try {
       setIsRecoveringAdmin(true);
       setError('');
 
-      const methods = await fetchSignInMethodsForEmail(auth, adminEmail);
-
-      if (methods.length === 0) {
-        const userCredential = await createUserWithEmailAndPassword(auth, adminEmail, adminPassword);
-        const user = userCredential.user;
-
-        await setDoc(
-          doc(db, 'users', user.uid),
-          {
-            uid: user.uid,
-            email: adminEmail,
-            name: adminName,
-            role: 'Administrator',
-            avatar: `https://i.pravatar.cc/150?u=${user.uid}`,
-            isOnline: true,
-            createdAt: serverTimestamp(),
-            lastSeen: serverTimestamp()
-          },
-          { merge: true }
-        );
-
-        alert('Admin account created successfully. Now log in with the admin email and password.');
+      // 1) ჯერ ვცდილობთ login-ს
+      try {
+        const cred = await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
+        await restoreAdminFirestoreDoc(cred.user.uid);
+        alert('Admin account restored successfully. ახლა შედი ჩვეულებრივად.');
         return;
+      } catch (signInErr: any) {
+        // თუ user საერთოდ არ არსებობს, შევქმნათ
+        if (
+          signInErr?.code === 'auth/user-not-found' ||
+          signInErr?.code === 'auth/invalid-credential'
+        ) {
+          try {
+            const created = await createUserWithEmailAndPassword(auth, adminEmail, adminPassword);
+            await restoreAdminFirestoreDoc(created.user.uid);
+            alert('Admin account created successfully. ახლა შედი ჩვეულებრივად.');
+            return;
+          } catch (createErr: any) {
+            if (createErr?.code === 'auth/email-already-in-use') {
+              setError('Admin email exists in Authentication, but the password is different.');
+              return;
+            }
+            throw createErr;
+          }
+        }
+
+        throw signInErr;
       }
-
-      const userCredential = await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
-      const user = userCredential.user;
-
-      await setDoc(
-        doc(db, 'users', user.uid),
-        {
-          uid: user.uid,
-          email: adminEmail,
-          name: adminName,
-          role: 'Administrator',
-          avatar: `https://i.pravatar.cc/150?u=${user.uid}`,
-          isOnline: true,
-          lastSeen: serverTimestamp()
-        },
-        { merge: true }
-      );
-
-      alert('Admin profile restored successfully. You can now log in.');
     } catch (err: any) {
       console.error('ADMIN RECOVERY ERROR:', err);
-
-      if (
-        err?.code === 'auth/invalid-credential' ||
-        err?.code === 'auth/wrong-password'
-      ) {
-        setError(
-          'Admin email exists in Authentication, but it has a different password. Reset or delete that user in Firebase Authentication first.'
-        );
-      } else if (err?.code === 'auth/email-already-in-use') {
-        setError('Admin email already exists in Authentication.');
-      } else {
-        setError(err?.message || 'Failed to recover admin account.');
-      }
+      setError(err?.message || 'Failed to recover admin account.');
     } finally {
       setIsRecoveringAdmin(false);
     }
@@ -125,9 +113,6 @@ export default function Login() {
     try {
       const data = await firestoreService.login(cleanEmail, cleanPassword);
 
-      console.log('LOGIN RESULT:', data);
-      console.log('FIREBASE AUTH CURRENT USER:', auth.currentUser);
-
       if (data && data.id) {
         localStorage.setItem('userId', String(data.id || ''));
         localStorage.setItem('userRole', data.role || 'Agent');
@@ -142,10 +127,7 @@ export default function Login() {
         setError('Invalid credentials.');
       }
     } catch (err: any) {
-      console.error('LOGIN PAGE ERROR CODE:', err?.code);
-      console.error('LOGIN PAGE ERROR MESSAGE:', err?.message);
-      console.error('LOGIN PAGE FULL ERROR:', err);
-
+      console.error('LOGIN PAGE ERROR:', err);
       setError(getFriendlyError(err));
     } finally {
       setLoading(false);
@@ -166,7 +148,7 @@ export default function Login() {
         <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-8 shadow-2xl">
           <form onSubmit={handleLogin} className="space-y-6">
             {error && (
-              <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-4 flex items-start space-x-3 animate-in fade-in slide-in-from-top-2">
+              <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-4 flex items-start space-x-3">
                 <AlertCircle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
                 <p className="text-sm text-rose-200">{error}</p>
               </div>
