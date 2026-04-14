@@ -457,7 +457,7 @@ export default function App() {
                   <Sidebar onOpenChat={() => setIsChatOpen(true)} unreadChatCount={unreadChatCount} />
 
                   {showLeadToast && (
-                    <div className="fixed bottom-8 right-8 z-[150] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300 max-w-md">
+                    <div className="fixed top-8 right-8 z-[150] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300 max-w-md">
                       <CheckCircle2 className="w-5 h-5 shrink-0" />
                       <span className="font-medium text-sm leading-tight">{leadToastMessage}</span>
                     </div>
