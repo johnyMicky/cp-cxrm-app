@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 
 import Dashboard from './pages/Dashboard';
 import Leads from './pages/Leads';
@@ -16,7 +17,7 @@ import Imports from './pages/Imports';
 import SettingsPage from './pages/Settings';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
-import { auth } from './firebase';
+import { auth, db } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { firestoreService } from './services/firestoreService';
 import { chatService } from './services/chatService';
@@ -49,11 +50,10 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
 
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 30000); // Refresh every 30s
+    const interval = setInterval(fetchNotifications, 30000);
     return () => clearInterval(interval);
   }, [currentUserId]);
 
-  // Callback reminder logic
   useEffect(() => {
     const checkCallbacks = async () => {
       try {
@@ -65,11 +65,7 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
           if (lead.callbackAt) {
             const callbackDate = lead.callbackAt.toDate ? lead.callbackAt.toDate() : new Date(lead.callbackAt);
             
-            // If callback is within next 30 mins and we haven't notified yet
             if (callbackDate > now && callbackDate <= thirtyMinsLater) {
-              const notificationId = `callback_${lead.id}_${callbackDate.getTime()}`;
-              // We'd need a way to check if this specific notification was already created
-              // For simplicity, let's just create it if it's not in the current unread list
               const alreadyNotified = notifications.some(n => n.type === 'callback' && n.lead_id === lead.id);
               
               if (!alreadyNotified) {
@@ -90,7 +86,7 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
       }
     };
 
-    const interval = setInterval(checkCallbacks, 60000); // Check every minute
+    const interval = setInterval(checkCallbacks, 60000);
     checkCallbacks();
     return () => clearInterval(interval);
   }, [currentUserId, currentUserRole, notifications]);
@@ -294,6 +290,25 @@ export default function App() {
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  const [showLeadToast, setShowLeadToast] = useState(false);
+  const [leadToastMessage, setLeadToastMessage] = useState('');
+  const leadToastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialLeadLoadRef = useRef(true);
+  const previousLeadIdsRef = useRef<Set<string>>(new Set());
+
+  const showLeadAssignmentToast = (message: string) => {
+    setLeadToastMessage(message);
+    setShowLeadToast(true);
+
+    if (leadToastTimeoutRef.current) {
+      clearTimeout(leadToastTimeoutRef.current);
+    }
+
+    leadToastTimeoutRef.current = setTimeout(() => {
+      setShowLeadToast(false);
+    }, 4000);
+  };
+
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       if (user) {
@@ -301,7 +316,6 @@ export default function App() {
         setCurrentUserId(user.uid);
         localStorage.setItem('userId', user.uid);
       } else {
-        // Only reset if we don't have an emergency bypass session
         const localUserId = localStorage.getItem('userId');
         if (localUserId === 'admin-id-fallback' || localUserId === 'emergency-admin') {
           setIsAuthenticated(true);
@@ -327,14 +341,11 @@ export default function App() {
       
       window.addEventListener('beforeunload', handleBeforeUnload);
 
-      // Initialize audio
       audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
 
-      // Track last message timestamps to detect every new message
       const lastMessageTimestamps: Record<string, number> = {};
       let isInitialLoad = true;
 
-      // Subscribe to chats for unread count and sound notifications
       const unsubscribe = chatService.getChats(currentUserId, currentUserRole, (chats) => {
         let hasNewIncomingMessage = false;
 
@@ -343,7 +354,6 @@ export default function App() {
             const currentTime = chat.lastMessageAt.toMillis?.() || 0;
             const previousTime = lastMessageTimestamps[chat.id] || 0;
 
-            // If we have a newer message than what we last saw in this session
             if (currentTime > previousTime) {
               if (!isInitialLoad) {
                 hasNewIncomingMessage = true;
@@ -355,7 +365,7 @@ export default function App() {
 
         if (hasNewIncomingMessage) {
           if (audioRef.current) {
-            audioRef.current.currentTime = 0; // Reset to start
+            audioRef.current.currentTime = 0;
             audioRef.current.play().catch(e => console.log("Audio play blocked:", e));
           }
         }
@@ -374,6 +384,66 @@ export default function App() {
     }
   }, [isAuthenticated, currentUserId, currentUserRole]);
 
+  useEffect(() => {
+    if (!isAuthenticated || !currentUserId || currentUserId === '1') {
+      return;
+    }
+
+    const normalizedRole = String(currentUserRole || '').trim().toLowerCase();
+    if (normalizedRole !== 'agent') {
+      return;
+    }
+
+    const leadsQuery = query(
+      collection(db, 'leads'),
+      where('assigned_to', '==', currentUserId)
+    );
+
+    const unsubscribe = onSnapshot(
+      leadsQuery,
+      (snapshot) => {
+        const currentIds = new Set(snapshot.docs.map((doc) => doc.id));
+
+        if (initialLeadLoadRef.current) {
+          previousLeadIdsRef.current = currentIds;
+          initialLeadLoadRef.current = false;
+          return;
+        }
+
+        let newLeadsCount = 0;
+
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added' && !previousLeadIdsRef.current.has(change.doc.id)) {
+            newLeadsCount += 1;
+          }
+        });
+
+        if (newLeadsCount > 0) {
+          showLeadAssignmentToast(
+            newLeadsCount === 1
+              ? 'You received 1 new lead'
+              : `You received ${newLeadsCount} new leads`
+          );
+        }
+
+        previousLeadIdsRef.current = currentIds;
+      },
+      (error) => {
+        console.error('Global lead assignment listener failed:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [isAuthenticated, currentUserId, currentUserRole]);
+
+  useEffect(() => {
+    return () => {
+      if (leadToastTimeoutRef.current) {
+        clearTimeout(leadToastTimeoutRef.current);
+      }
+    };
+  }, []);
+
   return (
     <ErrorBoundary>
       <Router>
@@ -383,8 +453,16 @@ export default function App() {
             path="/*"
             element={
               isAuthenticated ? (
-                <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30">
+                <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30 relative">
                   <Sidebar onOpenChat={() => setIsChatOpen(true)} unreadChatCount={unreadChatCount} />
+
+                  {showLeadToast && (
+                    <div className="fixed bottom-8 right-8 z-[150] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300 max-w-md">
+                      <CheckCircle2 className="w-5 h-5 shrink-0" />
+                      <span className="font-medium text-sm leading-tight">{leadToastMessage}</span>
+                    </div>
+                  )}
+
                   <main className="flex-1 overflow-auto">
                     <Routes>
                       <Route path="/" element={<Dashboard />} />
