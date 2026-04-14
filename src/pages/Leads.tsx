@@ -7,7 +7,20 @@ import LeadImport from '../components/LeadImport';
 import { firestoreService } from '../services/firestoreService';
 import { safeLower } from '../utils/stringUtils';
 
-const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'No Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience'];
+const STATUSES = [
+  'New',
+  'VM',
+  'No answer',
+  'Deposit',
+  'Callback',
+  'Low Potential',
+  'No Potential',
+  'Language Barrier',
+  'Wrong Person',
+  'Underage',
+  'No Experience',
+  'Not Interested',
+];
 
 const getStatusStyles = (status: string) => {
   switch (status) {
@@ -22,6 +35,7 @@ const getStatusStyles = (status: string) => {
     case 'Wrong Person': return 'text-pink-400 border-pink-500/20 bg-pink-500/5';
     case 'Underage': return 'text-red-400 border-red-500/20 bg-red-500/5';
     case 'No Experience': return 'text-red-500 border-red-600/20 bg-red-600/5';
+    case 'Not Interested': return 'text-red-500 border-red-600/20 bg-red-600/5';
     default: return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
   }
 };
@@ -208,14 +222,12 @@ export default function Leads() {
     if (selectedBulkAgents.length === 0) return;
     setIsAssigning(true);
     
-    // Create a map of agent names for the summary
     const agentNamesMap: Record<string, string> = {};
     agents.forEach(a => {
       agentNamesMap[a.id] = a.name;
     });
 
     try {
-      // 1. Calculate distribution locally for "Instant" feel
       const localSummary: Record<string, number> = {};
       selectedBulkAgents.forEach(id => {
         localSummary[agentNamesMap[id] || id] = 0;
@@ -232,7 +244,6 @@ export default function Leads() {
         return lead;
       });
 
-      // 2. Update UI immediately (Optimistic)
       setLeads(updatedLeads);
       setActiveDropdown(null);
       const count = selectedLeads.length;
@@ -241,19 +252,16 @@ export default function Leads() {
       
       setSelectedLeads([]);
       setSelectedBulkAgents([]);
-      setIsAssigning(false); // Stop loading state immediately
+      setIsAssigning(false);
       
-      // 3. Show the result modal immediately
       setDistributionResult(localSummary);
       setToastMessage(`Distributed ${count} leads successfully!`);
       setShowToast(true);
       setTimeout(() => setShowToast(false), 3000);
 
-      // 4. Perform actual Firestore distribution in background (don't await)
       firestoreService.distributeLeads(leadsToDistribute, agentsToUse, currentUser.id, agentNamesMap)
         .catch(err => {
           console.error('Background distribution failed:', err);
-          // If it fails, we might want to refresh the data to show the real state
           fetchLeads();
         });
 
@@ -284,7 +292,6 @@ export default function Leads() {
         const count = selectedLeads.length;
         const idsToDelete = [...selectedLeads];
         
-        // Optimistic UI: Hide leads immediately
         setLeads(prev => prev.filter(l => !idsToDelete.includes(l.id)));
         setSelectedLeads([]);
         setIsDeleteAllModalOpen(false);
@@ -301,7 +308,6 @@ export default function Leads() {
       } else {
         const totalCount = leads.length;
         
-        // Optimistic UI: Clear list immediately
         setLeads([]);
         setIsDeleteAllModalOpen(false);
         
@@ -319,7 +325,7 @@ export default function Leads() {
       console.error('Delete leads failed:', err);
       const errorMessage = err.message || 'Failed to delete leads. Please try again.';
       alert(`Error: ${errorMessage}`);
-      fetchLeads(); // Restore state on error
+      fetchLeads();
     } finally {
       setIsDeletingAll(false);
     }
@@ -336,7 +342,8 @@ export default function Leads() {
       case 'Wrong Person': return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
       case 'Deposit': return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
       case 'Underage':
-      case 'No Experience': return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
+      case 'No Experience':
+      case 'Not Interested': return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
       default: return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
     }
   };
@@ -354,7 +361,6 @@ export default function Leads() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6 relative">
-      {/* Success Toast */}
       {showToast && (
         <div className="fixed bottom-8 right-8 z-[100] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300 max-w-md">
           <CheckCircle2 className="w-5 h-5 shrink-0" />
@@ -946,7 +952,6 @@ export default function Leads() {
         />
       )}
 
-      {/* Delete All Leads Confirmation Modal */}
       {isDeleteAllModalOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
@@ -1007,7 +1012,6 @@ export default function Leads() {
         </div>
       )}
 
-      {/* Delete Summary Modal */}
       {deleteSummary && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
           <div className="bg-[#0A0F1C] border border-white/10 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in duration-300">
@@ -1060,7 +1064,6 @@ export default function Leads() {
         </div>
       )}
 
-      {/* Distribution Summary Modal */}
       {distributionResult && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
           <div className="bg-[#0A0F1C] border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in duration-300">
