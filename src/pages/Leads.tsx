@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, Clock, AlertTriangle } from 'lucide-react';
+import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle } from 'lucide-react';
 import { format } from 'date-fns';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
 import { firestoreService } from '../services/firestoreService';
 import { safeLower } from '../utils/stringUtils';
+import { db } from '../firebase';
 
 const STATUSES = [
   'New',
@@ -80,6 +82,28 @@ export default function Leads() {
     duration: number;
   } | null>(null);
 
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialAgentLeadLoadRef = useRef(true);
+  const previousLeadIdsRef = useRef<Set<string>>(new Set());
+
+  const currentUser = { 
+    id: localStorage.getItem('userId'),
+    role: localStorage.getItem('userRole') || 'Agent' 
+  };
+
+  const showToastMessage = (message: string) => {
+    setToastMessage(message);
+    setShowToast(true);
+
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+
+    toastTimeoutRef.current = setTimeout(() => {
+      setShowToast(false);
+    }, 3000);
+  };
+
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -113,11 +137,6 @@ export default function Leads() {
     }
   };
 
-  const currentUser = { 
-    id: localStorage.getItem('userId'),
-    role: localStorage.getItem('userRole') || 'Agent' 
-  };
-
   const fetchLeads = async () => {
     try {
       const data = await firestoreService.getLeads(currentUser.role === 'Agent' ? currentUser.id : undefined);
@@ -145,9 +164,64 @@ export default function Leads() {
         setActiveDropdown(null);
       }
     };
+
     document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
+
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+    };
   }, []);
+
+  useEffect(() => {
+    if (currentUser.role !== 'Agent' || !currentUser.id) {
+      return;
+    }
+
+    const leadsQuery = query(
+      collection(db, 'leads'),
+      where('assigned_to', '==', currentUser.id)
+    );
+
+    const unsubscribe = onSnapshot(
+      leadsQuery,
+      (snapshot) => {
+        const currentIds = new Set(snapshot.docs.map((doc) => doc.id));
+
+        if (initialAgentLeadLoadRef.current) {
+          previousLeadIdsRef.current = currentIds;
+          initialAgentLeadLoadRef.current = false;
+          return;
+        }
+
+        let newLeadsCount = 0;
+
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added' && !previousLeadIdsRef.current.has(change.doc.id)) {
+            newLeadsCount += 1;
+          }
+        });
+
+        if (newLeadsCount > 0) {
+          showToastMessage(
+            newLeadsCount === 1
+              ? 'You received 1 new lead'
+              : `You received ${newLeadsCount} new leads`
+          );
+          fetchLeads();
+        }
+
+        previousLeadIdsRef.current = currentIds;
+      },
+      (error) => {
+        console.error('Realtime lead listener failed:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [currentUser.id, currentUser.role]);
 
   const handleSuccess = (message?: string, skipFetch = false) => {
     if (!skipFetch) fetchLeads();
@@ -155,9 +229,7 @@ export default function Leads() {
     setBulkAction({ type: null, value: null });
     setIsReshuffleModalOpen(false);
     setActiveDropdown(null);
-    if (message) setToastMessage(message);
-    setShowToast(true);
-    setTimeout(() => setShowToast(false), 3000);
+    if (message) showToastMessage(message);
   };
 
   const filteredLeads = leads.filter(lead => {
@@ -255,9 +327,7 @@ export default function Leads() {
       setIsAssigning(false);
       
       setDistributionResult(localSummary);
-      setToastMessage(`Distributed ${count} leads successfully!`);
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
+      showToastMessage(`Distributed ${count} leads successfully!`);
 
       firestoreService.distributeLeads(leadsToDistribute, agentsToUse, currentUser.id, agentNamesMap)
         .catch(err => {
