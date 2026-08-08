@@ -17,7 +17,7 @@ import Imports from './pages/Imports';
 import SettingsPage from './pages/Settings';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
-import { auth, db } from './firebase';
+import { auth, db, authPersistenceReady } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { firestoreService } from './services/firestoreService';
 import { chatService } from './services/chatService';
@@ -27,60 +27,26 @@ export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
 }
 
-function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unreadChatCount: number }) {
+function Sidebar({
+  onOpenChat,
+  unreadChatCount,
+  sessionUser
+}: {
+  onOpenChat: () => void;
+  unreadChatCount: number;
+  sessionUser: any;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   
-  const currentUserId = localStorage.getItem('userId') === 'undefined' ? null : localStorage.getItem('userId');
-  const [currentUserRole, setCurrentUserRole] = useState(
-    (localStorage.getItem('userRole') === 'undefined' ? null : localStorage.getItem('userRole')) || 'Agent'
-  );
-  const [userName, setUserName] = useState(
-    (localStorage.getItem('userName') === 'undefined' ? null : localStorage.getItem('userName')) || 'User'
-  );
-  const [userAvatar, setUserAvatar] = useState(
-    (localStorage.getItem('userAvatar') === 'undefined' ? null : localStorage.getItem('userAvatar')) || `https://i.pravatar.cc/150?u=${currentUserId}`
-  );
-
-  // Keep the sidebar identity/role synced with the real Firestore user document.
-  useEffect(() => {
-    if (!currentUserId || currentUserId === '1') return;
-
-    let cancelled = false;
-
-    const syncProfile = async () => {
-      try {
-        const freshUser = await firestoreService.getUser(currentUserId);
-        if (!freshUser || cancelled) return;
-
-        const freshRole = freshUser.role || 'Agent';
-        const freshName = freshUser.name || 'User';
-        const freshAvatar = freshUser.avatar || `https://i.pravatar.cc/150?u=${currentUserId}`;
-
-        setCurrentUserRole(freshRole);
-        setUserName(freshName);
-        setUserAvatar(freshAvatar);
-
-        localStorage.setItem('userRole', freshRole);
-        localStorage.setItem('userName', freshName);
-        localStorage.setItem('userAvatar', freshAvatar);
-        localStorage.setItem('userTeamId', freshUser.teamId || '');
-        localStorage.setItem('userTeamName', freshUser.teamName || '');
-      } catch (err) {
-        console.error('Failed to sync sidebar user profile:', err);
-      }
-    };
-
-    syncProfile();
-
-    const interval = setInterval(syncProfile, 30000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [currentUserId]);
+  const currentUserId = sessionUser?.id || null;
+  const currentUserRole = sessionUser?.role || 'Agent';
+  const userName = sessionUser?.name || 'User';
+  const userAvatar =
+    sessionUser?.avatar ||
+    `https://i.pravatar.cc/150?u=${currentUserId || 'user'}`;
 
   const fetchNotifications = async () => {
     if (!currentUserId || currentUserId === '1') return;
@@ -329,9 +295,11 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
 }
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('userId'));
-  const [currentUserId, setCurrentUserId] = useState(localStorage.getItem('userId'));
-  const [currentUserRole, setCurrentUserRole] = useState(localStorage.getItem('userRole') || 'Agent');
+  const [authReady, setAuthReady] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [sessionUser, setSessionUser] = useState<any>(null);
+  const currentUserId = sessionUser?.id || null;
+  const currentUserRole = sessionUser?.role || 'Agent';
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -356,63 +324,85 @@ export default function App() {
   };
 
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setIsAuthenticated(true);
-        setCurrentUserId(user.uid);
-        localStorage.setItem('userId', user.uid);
-      } else {
-        const localUserId = localStorage.getItem('userId');
-        if (localUserId === 'admin-id-fallback' || localUserId === 'emergency-admin') {
-          setIsAuthenticated(true);
-          setCurrentUserId(localUserId);
-        } else {
-          setIsAuthenticated(false);
-          setCurrentUserId(null);
-          localStorage.removeItem('userId');
-        }
-      }
-    });
-
-    return () => unsubscribeAuth();
-  }, []);
-
-  // Keep the App-level role fresh so chat permissions, lead listeners and
-  // navigation logic do not continue using an old localStorage role.
-  useEffect(() => {
-    if (!isAuthenticated || !currentUserId || currentUserId === '1') return;
-
     let cancelled = false;
+    let unsubscribeAuth: (() => void) | null = null;
 
-    const syncCurrentUser = async () => {
-      try {
-        const freshUser = await firestoreService.getUser(currentUserId);
-        if (!freshUser || cancelled) return;
+    const startAuthObserver = async () => {
+      // Convert any previously persisted LOCAL Firebase session to SESSION
+      // persistence before the app decides who is signed in.
+      await authPersistenceReady;
 
-        const freshRole = freshUser.role || 'Agent';
-        setCurrentUserRole(freshRole);
+      if (cancelled) return;
 
-        localStorage.setItem('userRole', freshRole);
-        localStorage.setItem('userName', freshUser.name || 'User');
-        localStorage.setItem(
-          'userAvatar',
-          freshUser.avatar || `https://i.pravatar.cc/150?u=${currentUserId}`
-        );
-        localStorage.setItem('userTeamId', freshUser.teamId || '');
-        localStorage.setItem('userTeamName', freshUser.teamName || '');
-      } catch (err) {
-        console.error('Failed to sync current user role:', err);
-      }
+      unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+        try {
+          if (firebaseUser) {
+            const resolvedUser = await firestoreService.resolveSessionUser(
+              firebaseUser.uid,
+              firebaseUser.email || ''
+            );
+
+            if (cancelled) return;
+
+            const canonicalUser = resolvedUser || {
+              id: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              role: 'Agent',
+              name: firebaseUser.displayName || 'User',
+              avatar: `https://i.pravatar.cc/150?u=${firebaseUser.uid}`,
+              teamId: '',
+              teamName: ''
+            };
+
+            setSessionUser(canonicalUser);
+            setIsAuthenticated(true);
+
+            // localStorage is only a compatibility cache for existing pages.
+            // Firebase Auth UID + resolved Firestore user are the authority.
+            localStorage.setItem('userId', String(canonicalUser.id || firebaseUser.uid));
+            localStorage.setItem('userRole', canonicalUser.role || 'Agent');
+            localStorage.setItem('userName', canonicalUser.name || 'User');
+            localStorage.setItem(
+              'userAvatar',
+              canonicalUser.avatar || `https://i.pravatar.cc/150?u=${firebaseUser.uid}`
+            );
+            localStorage.setItem('userTeamId', canonicalUser.teamId || '');
+            localStorage.setItem('userTeamName', canonicalUser.teamName || '');
+          } else {
+            if (cancelled) return;
+
+            setSessionUser(null);
+            setIsAuthenticated(false);
+
+            localStorage.removeItem('userId');
+            localStorage.removeItem('userRole');
+            localStorage.removeItem('userName');
+            localStorage.removeItem('userAvatar');
+            localStorage.removeItem('userTeamId');
+            localStorage.removeItem('userTeamName');
+          }
+        } catch (err) {
+          console.error('Failed to resolve authenticated CRM user:', err);
+
+          if (!cancelled) {
+            setSessionUser(null);
+            setIsAuthenticated(false);
+          }
+        } finally {
+          if (!cancelled) {
+            setAuthReady(true);
+          }
+        }
+      });
     };
 
-    syncCurrentUser();
-    const interval = setInterval(syncCurrentUser, 30000);
+    startAuthObserver();
 
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (unsubscribeAuth) unsubscribeAuth();
     };
-  }, [isAuthenticated, currentUserId]);
+  }, []);
 
   // Dashboard "Message" buttons use this event to open the existing ChatPanel.
   useEffect(() => {
@@ -537,6 +527,14 @@ export default function App() {
     };
   }, []);
 
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-[#050811] flex items-center justify-center text-slate-400">
+        Loading CRM session...
+      </div>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <Router>
@@ -547,7 +545,11 @@ export default function App() {
             element={
               isAuthenticated ? (
                 <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30 relative">
-                  <Sidebar onOpenChat={() => setIsChatOpen(true)} unreadChatCount={unreadChatCount} />
+                  <Sidebar
+                    onOpenChat={() => setIsChatOpen(true)}
+                    unreadChatCount={unreadChatCount}
+                    sessionUser={sessionUser}
+                  />
 
                   {showLeadToast && (
                     <div className="fixed top-8 right-8 z-[150] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300 max-w-md">
