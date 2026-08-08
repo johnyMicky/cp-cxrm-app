@@ -21,7 +21,7 @@ import {
   signOut
 } from "firebase/auth";
 import { format } from 'date-fns';
-import { db, auth } from "../firebase";
+import { db, auth, secondaryAuth } from "../firebase";
 
 // Collections
 const LEADS_COL = "leads";
@@ -49,6 +49,56 @@ const safeTeamName = (name: string) => (name || "").trim().toLowerCase();
 export const firestoreService = {
   getAuth() {
     return auth;
+  },
+
+  // Move references that still point to an old/legacy user document ID
+  // onto the real Firebase Authentication UID.
+  async _migrateUserReferences(oldUserId: string, newUserId: string, userName: string) {
+    if (!oldUserId || !newUserId || oldUserId === newUserId) return;
+
+    const teamLeaderships = await getDocs(
+      query(collection(db, TEAMS_COL), where("teamLeaderId", "==", oldUserId))
+    );
+
+    await Promise.all(
+      teamLeaderships.docs.map(teamDoc =>
+        updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+          teamLeaderId: newUserId,
+          teamLeaderName: userName || '',
+          updatedAt: serverTimestamp()
+        })
+      )
+    );
+
+    const assignedLeads = await getDocs(
+      query(collection(db, LEADS_COL), where("assigned_to", "==", oldUserId))
+    );
+
+    if (!assignedLeads.empty) {
+      const commits = [];
+      let batch = writeBatch(db);
+      let count = 0;
+
+      for (const leadDoc of assignedLeads.docs) {
+        batch.update(doc(db, LEADS_COL, leadDoc.id), {
+          assigned_to: newUserId,
+          updatedAt: serverTimestamp()
+        });
+        count++;
+
+        if (count === 500) {
+          commits.push(batch.commit());
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+
+      if (count > 0) {
+        commits.push(batch.commit());
+      }
+
+      await Promise.all(commits);
+    }
   },
 
   // Auth / Users
@@ -123,6 +173,11 @@ export const firestoreService = {
       await setDoc(userDocRef, finalUserData);
 
       if (legacyId && legacyId !== user.uid) {
+        await this._migrateUserReferences(
+          legacyId,
+          user.uid,
+          finalUserData.name || ''
+        );
         await deleteDoc(doc(db, USERS_COL, legacyId)).catch(console.error);
       }
 
@@ -202,46 +257,11 @@ export const firestoreService = {
     for (const duplicate of duplicateDocs) {
       const duplicateId = duplicate.id;
 
-      const teamLeaderships = await getDocs(
-        query(collection(db, TEAMS_COL), where("teamLeaderId", "==", duplicateId))
+      await this._migrateUserReferences(
+        duplicateId,
+        user.uid,
+        mergedData.name || ''
       );
-
-      await Promise.all(
-        teamLeaderships.docs.map(teamDoc =>
-          updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
-            teamLeaderId: user.uid,
-            teamLeaderName: mergedData.name || '',
-            updatedAt: serverTimestamp()
-          })
-        )
-      );
-
-      const assignedLeads = await getDocs(
-        query(collection(db, LEADS_COL), where("assigned_to", "==", duplicateId))
-      );
-
-      if (!assignedLeads.empty) {
-        const chunks = [];
-        let batch = writeBatch(db);
-        let count = 0;
-
-        for (const leadDoc of assignedLeads.docs) {
-          batch.update(doc(db, LEADS_COL, leadDoc.id), {
-            assigned_to: user.uid,
-            updatedAt: serverTimestamp()
-          });
-          count++;
-
-          if (count === 500) {
-            chunks.push(batch.commit());
-            batch = writeBatch(db);
-            count = 0;
-          }
-        }
-
-        if (count > 0) chunks.push(batch.commit());
-        await Promise.all(chunks);
-      }
 
       await deleteDoc(doc(db, USERS_COL, duplicateId)).catch(console.error);
     }
@@ -355,32 +375,48 @@ export const firestoreService = {
       const adminUser = isAdminEmail(cleanEmail);
       const finalRole = adminUser ? "Administrator" : (rest.role || "Agent");
 
-      const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+      // CRITICAL:
+      // Use the secondary Auth instance here so creating a CRM user does NOT
+      // replace the currently logged-in Administrator session.
+      const userCredential = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        cleanEmail,
+        password
+      );
       const user = userCredential.user;
 
-      const userDocData = {
-        ...rest,
-        uid: user.uid,
-        email: cleanEmail,
-        role: finalRole,
-        name: rest.name || (adminUser ? "Admin User" : cleanEmail.split("@")[0]),
-        createdAt: serverTimestamp(),
-        isOnline: false,
-        lastSeen: serverTimestamp(),
-        avatar: rest.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
-        teamId: rest.teamId || '',
-        teamName: rest.teamName || ''
-      };
+      try {
+        const userDocData = {
+          ...rest,
+          uid: user.uid,
+          email: cleanEmail,
+          role: finalRole,
+          name: rest.name || (adminUser ? "Admin User" : cleanEmail.split("@")[0]),
+          createdAt: serverTimestamp(),
+          isOnline: false,
+          lastSeen: serverTimestamp(),
+          avatar: rest.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
+          teamId: rest.teamId || '',
+          teamName: rest.teamName || ''
+        };
 
-      await setDoc(doc(db, USERS_COL, user.uid), userDocData);
+        await setDoc(doc(db, USERS_COL, user.uid), userDocData);
 
-      if (finalRole === 'Team Leader' && rest.teamId) {
-        await this.setTeamLeader(rest.teamId, user.uid);
+        if (finalRole === 'Team Leader' && rest.teamId) {
+          await this.setTeamLeader(rest.teamId, user.uid);
+        }
+
+        return { id: user.uid, ...userDocData };
+      } finally {
+        // Keep the secondary Auth clean between user-creation operations.
+        await signOut(secondaryAuth).catch(console.error);
       }
-
-      return { id: user.uid, ...userDocData };
     } catch (error: any) {
       console.error("Error creating user:", error);
+
+      // Extra safety: never leave a newly created secondary session active.
+      await signOut(secondaryAuth).catch(() => {});
+
       throw error;
     }
   },
