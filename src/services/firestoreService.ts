@@ -29,6 +29,7 @@ const USERS_COL = "users";
 const ACTIVITY_COL = "activity";
 const NOTIFICATIONS_COL = "notifications";
 const IMPORTS_COL = "imports";
+const TEAMS_COL = "teams";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const sanitizeData = (data: any) => {
@@ -43,6 +44,7 @@ const sanitizeData = (data: any) => {
 
 const normalizeEmail = (email: string) => (email || "").trim().toLowerCase();
 const isAdminEmail = (email: string) => normalizeEmail(email) === ADMIN_EMAIL;
+const safeTeamName = (name: string) => (name || "").trim().toLowerCase();
 
 export const firestoreService = {
   getAuth() {
@@ -113,7 +115,9 @@ export const firestoreService = {
         isOnline: true,
         createdAt: userData?.createdAt || serverTimestamp(),
         lastSeen: serverTimestamp(),
-        password: userData?.password || ''
+        password: userData?.password || '',
+        teamId: userData?.teamId || '',
+        teamName: userData?.teamName || ''
       };
 
       await setDoc(userDocRef, finalUserData);
@@ -175,7 +179,9 @@ export const firestoreService = {
           avatar: data.avatar || `https://i.pravatar.cc/150?u=${docSnap.id}`,
           isOnline: data.isOnline || false,
           lastSeen: data.lastSeen || null,
-          createdAt: data.createdAt || null
+          createdAt: data.createdAt || null,
+          teamId: data.teamId || '',
+          teamName: data.teamName || ''
         };
       });
     } catch (err: any) {
@@ -187,30 +193,88 @@ export const firestoreService = {
     }
   },
 
+  async getUser(id: string) {
+    if (!id) return null;
+
+    const userDoc = await getDoc(doc(db, USERS_COL, id));
+    if (!userDoc.exists()) return null;
+
+    const data = userDoc.data();
+    const email = normalizeEmail(data.email || '');
+    const adminUser = isAdminEmail(email);
+
+    return {
+      id: userDoc.id,
+      name: data.name || (adminUser ? 'Admin User' : ''),
+      email: data.email || '',
+      role: adminUser ? 'Administrator' : (data.role || 'Agent'),
+      avatar: data.avatar || `https://i.pravatar.cc/150?u=${userDoc.id}`,
+      isOnline: data.isOnline || false,
+      lastSeen: data.lastSeen || null,
+      createdAt: data.createdAt || null,
+      teamId: data.teamId || '',
+      teamName: data.teamName || ''
+    };
+  },
+
+  async getUsersByTeam(teamId: string) {
+    if (!teamId) return [];
+
+    const q = query(collection(db, USERS_COL), where("teamId", "==", teamId));
+    const querySnapshot = await getDocs(q);
+
+    return querySnapshot.docs.map(docSnap => {
+      const data = docSnap.data();
+      const email = normalizeEmail(data.email || '');
+      const adminUser = isAdminEmail(email);
+
+      return {
+        id: docSnap.id,
+        name: data.name || (adminUser ? 'Admin User' : ''),
+        email: data.email || '',
+        role: adminUser ? 'Administrator' : (data.role || 'Agent'),
+        avatar: data.avatar || `https://i.pravatar.cc/150?u=${docSnap.id}`,
+        isOnline: data.isOnline || false,
+        lastSeen: data.lastSeen || null,
+        createdAt: data.createdAt || null,
+        teamId: data.teamId || '',
+        teamName: data.teamName || ''
+      };
+    });
+  },
+
   async createUser(userData: any) {
     const sanitized = sanitizeData(userData);
     const { email, password, ...rest } = sanitized;
-    
+
     try {
       const cleanEmail = normalizeEmail(email);
       const adminUser = isAdminEmail(cleanEmail);
+      const finalRole = adminUser ? "Administrator" : (rest.role || "Agent");
 
       const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       const user = userCredential.user;
-      
+
       const userDocData = {
         ...rest,
         uid: user.uid,
         email: cleanEmail,
-        role: adminUser ? "Administrator" : (rest.role || "Agent"),
+        role: finalRole,
         name: rest.name || (adminUser ? "Admin User" : cleanEmail.split("@")[0]),
         createdAt: serverTimestamp(),
         isOnline: false,
         lastSeen: serverTimestamp(),
-        avatar: rest.avatar || `https://i.pravatar.cc/150?u=${user.uid}`
+        avatar: rest.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
+        teamId: rest.teamId || '',
+        teamName: rest.teamName || ''
       };
-      
+
       await setDoc(doc(db, USERS_COL, user.uid), userDocData);
+
+      if (finalRole === 'Team Leader' && rest.teamId) {
+        await this.setTeamLeader(rest.teamId, user.uid);
+      }
+
       return { id: user.uid, ...userDocData };
     } catch (error: any) {
       console.error("Error creating user:", error);
@@ -223,16 +287,354 @@ export const firestoreService = {
     const nextEmail = sanitized.email ? normalizeEmail(sanitized.email) : undefined;
     const adminUser = nextEmail ? isAdminEmail(nextEmail) : false;
 
+    const currentUserSnap = await getDoc(doc(db, USERS_COL, id));
+    const currentUserData = currentUserSnap.exists() ? currentUserSnap.data() : {};
+    const finalRole = adminUser
+      ? "Administrator"
+      : (sanitized.role || currentUserData.role || "Agent");
+
+    const nextTeamId =
+      sanitized.teamId !== undefined
+        ? sanitized.teamId
+        : (currentUserData.teamId || '');
+
+    const nextTeamName =
+      sanitized.teamName !== undefined
+        ? sanitized.teamName
+        : (currentUserData.teamName || '');
+
+    const currentLeadershipQuery = query(
+      collection(db, TEAMS_COL),
+      where("teamLeaderId", "==", id)
+    );
+    const currentLeadershipSnap = await getDocs(currentLeadershipQuery);
+
+    if (finalRole !== 'Team Leader' || !nextTeamId) {
+      const clearPromises = currentLeadershipSnap.docs.map(teamDoc =>
+        updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+          teamLeaderId: '',
+          teamLeaderName: '',
+          updatedAt: serverTimestamp()
+        })
+      );
+      await Promise.all(clearPromises);
+    } else {
+      const clearOtherLeaderships = currentLeadershipSnap.docs
+        .filter(teamDoc => teamDoc.id !== nextTeamId)
+        .map(teamDoc =>
+          updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+            teamLeaderId: '',
+            teamLeaderName: '',
+            updatedAt: serverTimestamp()
+          })
+        );
+      await Promise.all(clearOtherLeaderships);
+    }
+
     const docRef = doc(db, USERS_COL, id);
     await updateDoc(docRef, {
       ...sanitized,
       ...(nextEmail ? { email: nextEmail } : {}),
-      ...(adminUser ? { role: "Administrator" } : {})
+      role: finalRole,
+      teamId: nextTeamId || '',
+      teamName: nextTeamName || ''
     });
+
+    if (finalRole === 'Team Leader' && nextTeamId) {
+      await this.setTeamLeader(nextTeamId, id);
+    }
   },
 
   async deleteUser(id: string) {
+    const leadershipQuery = query(
+      collection(db, TEAMS_COL),
+      where("teamLeaderId", "==", id)
+    );
+    const leadershipSnap = await getDocs(leadershipQuery);
+
+    await Promise.all(
+      leadershipSnap.docs.map(teamDoc =>
+        updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+          teamLeaderId: '',
+          teamLeaderName: '',
+          updatedAt: serverTimestamp()
+        })
+      )
+    );
+
     await deleteDoc(doc(db, USERS_COL, id));
+  },
+
+  // Teams
+  async getTeams() {
+    const snapshot = await getDocs(collection(db, TEAMS_COL));
+
+    return snapshot.docs
+      .map(teamDoc => {
+        const data = teamDoc.data();
+        return {
+          id: teamDoc.id,
+          name: data.name || '',
+          teamLeaderId: data.teamLeaderId || '',
+          teamLeaderName: data.teamLeaderName || '',
+          createdAt: data.createdAt || null,
+          updatedAt: data.updatedAt || null
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  },
+
+  async getTeam(id: string) {
+    if (!id) return null;
+
+    const teamDoc = await getDoc(doc(db, TEAMS_COL, id));
+    if (!teamDoc.exists()) return null;
+
+    const data = teamDoc.data();
+
+    return {
+      id: teamDoc.id,
+      name: data.name || '',
+      teamLeaderId: data.teamLeaderId || '',
+      teamLeaderName: data.teamLeaderName || '',
+      createdAt: data.createdAt || null,
+      updatedAt: data.updatedAt || null
+    };
+  },
+
+  async createTeam(teamData: any) {
+    const cleanName = String(teamData?.name || '').trim();
+
+    if (!cleanName) {
+      throw new Error('Team name is required.');
+    }
+
+    const existingTeams = await this.getTeams();
+    const duplicate = existingTeams.some(
+      (team: any) => safeTeamName(team.name) === safeTeamName(cleanName)
+    );
+
+    if (duplicate) {
+      throw new Error('A team with this name already exists.');
+    }
+
+    const teamRef = await addDoc(collection(db, TEAMS_COL), {
+      name: cleanName,
+      teamLeaderId: '',
+      teamLeaderName: '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    return {
+      id: teamRef.id,
+      name: cleanName,
+      teamLeaderId: '',
+      teamLeaderName: ''
+    };
+  },
+
+  async updateTeam(id: string, teamData: any) {
+    const currentTeam = await this.getTeam(id);
+    if (!currentTeam) {
+      throw new Error('Team not found.');
+    }
+
+    const cleanName =
+      teamData?.name !== undefined
+        ? String(teamData.name || '').trim()
+        : currentTeam.name;
+
+    if (!cleanName) {
+      throw new Error('Team name is required.');
+    }
+
+    if (safeTeamName(cleanName) !== safeTeamName(currentTeam.name)) {
+      const existingTeams = await this.getTeams();
+      const duplicate = existingTeams.some(
+        (team: any) =>
+          team.id !== id &&
+          safeTeamName(team.name) === safeTeamName(cleanName)
+      );
+
+      if (duplicate) {
+        throw new Error('A team with this name already exists.');
+      }
+    }
+
+    await updateDoc(doc(db, TEAMS_COL, id), {
+      ...sanitizeData(teamData),
+      name: cleanName,
+      updatedAt: serverTimestamp()
+    });
+
+    if (cleanName !== currentTeam.name) {
+      const membersSnapshot = await getDocs(
+        query(collection(db, USERS_COL), where("teamId", "==", id))
+      );
+
+      const batches = [];
+      let batch = writeBatch(db);
+      let count = 0;
+
+      for (const memberDoc of membersSnapshot.docs) {
+        batch.update(doc(db, USERS_COL, memberDoc.id), {
+          teamName: cleanName
+        });
+        count++;
+
+        if (count === 500) {
+          batches.push(batch.commit());
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+
+      if (count > 0) {
+        batches.push(batch.commit());
+      }
+
+      await Promise.all(batches);
+    }
+
+    return {
+      ...currentTeam,
+      ...teamData,
+      id,
+      name: cleanName
+    };
+  },
+
+  async deleteTeam(id: string) {
+    const team = await this.getTeam(id);
+    if (!team) return;
+
+    const membersSnapshot = await getDocs(
+      query(collection(db, USERS_COL), where("teamId", "==", id))
+    );
+
+    const batches = [];
+    let batch = writeBatch(db);
+    let count = 0;
+
+    for (const memberDoc of membersSnapshot.docs) {
+      const memberData = memberDoc.data();
+      batch.update(doc(db, USERS_COL, memberDoc.id), {
+        teamId: '',
+        teamName: '',
+        ...(memberData.role === 'Team Leader' ? { role: 'Agent' } : {})
+      });
+      count++;
+
+      if (count === 500) {
+        batches.push(batch.commit());
+        batch = writeBatch(db);
+        count = 0;
+      }
+    }
+
+    if (count > 0) {
+      batches.push(batch.commit());
+    }
+
+    await Promise.all(batches);
+    await deleteDoc(doc(db, TEAMS_COL, id));
+  },
+
+  async setTeamLeader(teamId: string, leaderId: string) {
+    if (!teamId || !leaderId) {
+      throw new Error('Team and Team Leader are required.');
+    }
+
+    const [team, leader] = await Promise.all([
+      this.getTeam(teamId),
+      this.getUser(leaderId)
+    ]);
+
+    if (!team) {
+      throw new Error('Team not found.');
+    }
+
+    if (!leader) {
+      throw new Error('Team Leader user not found.');
+    }
+
+    if (['Administrator', 'Manager'].includes(leader.role)) {
+      throw new Error('Administrator or Manager cannot be assigned as a Team Leader.');
+    }
+
+    const otherLeaderships = await getDocs(
+      query(collection(db, TEAMS_COL), where("teamLeaderId", "==", leaderId))
+    );
+
+    await Promise.all(
+      otherLeaderships.docs
+        .filter(teamDoc => teamDoc.id !== teamId)
+        .map(teamDoc =>
+          updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+            teamLeaderId: '',
+            teamLeaderName: '',
+            updatedAt: serverTimestamp()
+          })
+        )
+    );
+
+    if (team.teamLeaderId && team.teamLeaderId !== leaderId) {
+      const oldLeaderSnap = await getDoc(doc(db, USERS_COL, team.teamLeaderId));
+
+      if (oldLeaderSnap.exists()) {
+        const oldLeaderData = oldLeaderSnap.data();
+
+        await updateDoc(doc(db, USERS_COL, team.teamLeaderId), {
+          ...(oldLeaderData.role === 'Team Leader' ? { role: 'Agent' } : {}),
+          teamId,
+          teamName: team.name
+        });
+      }
+    }
+
+    await updateDoc(doc(db, USERS_COL, leaderId), {
+      role: 'Team Leader',
+      teamId,
+      teamName: team.name
+    });
+
+    await updateDoc(doc(db, TEAMS_COL, teamId), {
+      teamLeaderId: leaderId,
+      teamLeaderName: leader.name,
+      updatedAt: serverTimestamp()
+    });
+
+    return {
+      teamId,
+      leaderId,
+      leaderName: leader.name
+    };
+  },
+
+  async clearTeamLeader(teamId: string) {
+    const team = await this.getTeam(teamId);
+    if (!team) return;
+
+    if (team.teamLeaderId) {
+      const leaderSnap = await getDoc(doc(db, USERS_COL, team.teamLeaderId));
+
+      if (leaderSnap.exists()) {
+        const leaderData = leaderSnap.data();
+
+        await updateDoc(doc(db, USERS_COL, team.teamLeaderId), {
+          ...(leaderData.role === 'Team Leader' ? { role: 'Agent' } : {}),
+          teamId,
+          teamName: team.name
+        });
+      }
+    }
+
+    await updateDoc(doc(db, TEAMS_COL, teamId), {
+      teamLeaderId: '',
+      teamLeaderName: '',
+      updatedAt: serverTimestamp()
+    });
   },
 
   // Leads
