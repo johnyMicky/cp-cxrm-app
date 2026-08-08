@@ -131,24 +131,127 @@ export const firestoreService = {
 
     const existingData = userDocSnap.data();
 
+    // A legacy CRM record can exist with the same email but a different document ID.
+    // This happens when a user was created in Firestore before/independently of Firebase Auth.
+    // Prefer the record that contains the strongest team assignment/role and migrate it
+    // onto the real Firebase Auth UID instead of leaving the logged-in account as "Agent".
+    const sameEmailSnapshot = await getDocs(
+      query(collection(db, USERS_COL), where("email", "==", cleanEmail))
+    );
+
+    const duplicateDocs = sameEmailSnapshot.docs.filter(d => d.id !== user.uid);
+
+    let preferredLegacy: any = null;
+    let preferredLegacyId = '';
+
+    for (const duplicate of duplicateDocs) {
+      const candidate = duplicate.data() as any;
+
+      const candidateScore =
+        (candidate.role === 'Team Leader' ? 100 : 0) +
+        (candidate.teamId ? 50 : 0) +
+        (candidate.name ? 5 : 0);
+
+      const currentScore = preferredLegacy
+        ? ((preferredLegacy.role === 'Team Leader' ? 100 : 0) +
+          (preferredLegacy.teamId ? 50 : 0) +
+          (preferredLegacy.name ? 5 : 0))
+        : -1;
+
+      if (candidateScore > currentScore) {
+        preferredLegacy = candidate;
+        preferredLegacyId = duplicate.id;
+      }
+    }
+
+    const effectiveRole = adminUser
+      ? "Administrator"
+      : (
+          preferredLegacy?.role === 'Team Leader'
+            ? 'Team Leader'
+            : (existingData?.role || preferredLegacy?.role || "Agent")
+        );
+
+    const effectiveTeamId =
+      preferredLegacy?.teamId ||
+      existingData?.teamId ||
+      '';
+
+    const effectiveTeamName =
+      preferredLegacy?.teamName ||
+      existingData?.teamName ||
+      '';
+
     const mergedData = {
+      ...preferredLegacy,
       ...existingData,
       uid: user.uid,
-      email: existingData?.email || user.email || cleanEmail,
-      role: adminUser ? "Administrator" : (existingData?.role || "Agent"),
-      name: existingData?.name || (adminUser ? "Admin User" : (user.displayName || cleanEmail.split('@')[0] || 'User')),
-      avatar: existingData?.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
+      email: existingData?.email || preferredLegacy?.email || user.email || cleanEmail,
+      role: effectiveRole,
+      teamId: effectiveTeamId,
+      teamName: effectiveTeamName,
+      name: existingData?.name || preferredLegacy?.name || (adminUser ? "Admin User" : (user.displayName || cleanEmail.split('@')[0] || 'User')),
+      avatar: existingData?.avatar || preferredLegacy?.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
       isOnline: true,
       lastSeen: serverTimestamp()
     };
 
     await setDoc(userDocRef, mergedData, { merge: true });
 
+    // Move references from duplicate legacy user documents to the real Auth UID.
+    for (const duplicate of duplicateDocs) {
+      const duplicateId = duplicate.id;
+
+      const teamLeaderships = await getDocs(
+        query(collection(db, TEAMS_COL), where("teamLeaderId", "==", duplicateId))
+      );
+
+      await Promise.all(
+        teamLeaderships.docs.map(teamDoc =>
+          updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+            teamLeaderId: user.uid,
+            teamLeaderName: mergedData.name || '',
+            updatedAt: serverTimestamp()
+          })
+        )
+      );
+
+      const assignedLeads = await getDocs(
+        query(collection(db, LEADS_COL), where("assigned_to", "==", duplicateId))
+      );
+
+      if (!assignedLeads.empty) {
+        const chunks = [];
+        let batch = writeBatch(db);
+        let count = 0;
+
+        for (const leadDoc of assignedLeads.docs) {
+          batch.update(doc(db, LEADS_COL, leadDoc.id), {
+            assigned_to: user.uid,
+            updatedAt: serverTimestamp()
+          });
+          count++;
+
+          if (count === 500) {
+            chunks.push(batch.commit());
+            batch = writeBatch(db);
+            count = 0;
+          }
+        }
+
+        if (count > 0) chunks.push(batch.commit());
+        await Promise.all(chunks);
+      }
+
+      await deleteDoc(doc(db, USERS_COL, duplicateId)).catch(console.error);
+    }
+
     return {
       id: user.uid,
-      ...existingData,
       ...mergedData,
-      role: adminUser ? "Administrator" : (mergedData.role || "Agent")
+      role: effectiveRole,
+      teamId: effectiveTeamId,
+      teamName: effectiveTeamName
     };
   },
 
@@ -1204,7 +1307,8 @@ export const firestoreService = {
       leadsByStatus: [] as any[],
       usersByRole: [] as any[],
       topSources: [] as any[],
-      workload: [] as any[]
+      workload: [] as any[],
+      teamMembers: [] as any[]
     };
 
     const statusMap: any = {};
@@ -1250,6 +1354,22 @@ export const firestoreService = {
     })
     .sort((a: any, b: any) => b.total - a.total)
     .slice(0, 5);
+
+    // Team Leader gets a concrete list of their own agents for the dashboard.
+    // Administrators/Managers keep the existing dashboard behaviour.
+    if (currentRole === 'Team Leader') {
+      stats.teamMembers = visibleUsers
+        .filter((member: any) => member.role === 'Agent')
+        .map((member: any) => ({
+          id: member.id,
+          name: member.name || member.email || 'Agent',
+          email: member.email || '',
+          avatar: member.avatar || `https://i.pravatar.cc/150?u=${member.id}`,
+          isOnline: !!member.isOnline,
+          lastSeen: member.lastSeen || null
+        }))
+        .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)));
+    }
 
     const historySnap = await getDocs(query(collection(db, "history"), orderBy("createdAt", "desc"), limit(100)));
     const visibleUserIds = new Set(visibleUsers.map((u: any) => String(u.id)));
