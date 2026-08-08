@@ -1,4 +1,4 @@
-import { initializeApp } from "firebase/app";
+import { initializeApp, getApps } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { getAuth } from "firebase/auth";
@@ -14,6 +14,16 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
+// Secondary Firebase app/auth instance.
+// IMPORTANT: this is used only when an Administrator creates a new CRM user.
+// Creating a user with the primary Auth instance automatically signs the browser
+// into the newly created account, which replaces the Administrator session.
+// The secondary Auth instance isolates that operation and keeps the Admin logged in.
+const secondaryApp =
+  getApps().find((firebaseApp) => firebaseApp.name === "SecondaryAuthApp") ||
+  initializeApp(firebaseConfig, "SecondaryAuthApp");
+
 export const db = getFirestore(app);
 export const storage = getStorage(app);
 export const auth = getAuth(app);
+export const secondaryAuth = getAuth(secondaryApp);
