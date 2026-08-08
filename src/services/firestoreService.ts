@@ -18,10 +18,13 @@ import {
 import { 
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signOut
+  signOut,
+  setPersistence,
+  browserSessionPersistence,
+  inMemoryPersistence
 } from "firebase/auth";
 import { format } from 'date-fns';
-import { db, auth, secondaryAuth } from "../firebase";
+import { db, auth, secondaryAuth, authPersistenceReady } from "../firebase";
 
 // Collections
 const LEADS_COL = "leads";
@@ -105,10 +108,17 @@ export const firestoreService = {
   async login(email: string, password: string) {
     const cleanEmail = normalizeEmail(email);
 
+    // Make sure persistence configuration has finished before signing in.
+    await authPersistenceReady;
+    await setPersistence(auth, browserSessionPersistence);
+
     try {
       const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, password);
       const user = userCredential.user;
-      return await this._handleUserMigration(user, cleanEmail);
+
+      await this._handleUserMigration(user, cleanEmail);
+
+      return await this.resolveSessionUser(user.uid, cleanEmail);
     } catch (authError: any) {
       if (authError.code === 'auth/user-not-found') {
         const q = query(collection(db, USERS_COL), where("email", "==", cleanEmail));
@@ -119,12 +129,21 @@ export const firestoreService = {
           const legacyData = legacyDoc.data();
 
           try {
+            // This branch is an actual login/migration for the person who is
+            // trying to sign in, therefore using the primary auth instance here
+            // is correct.
             const newUserCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
-            return await this._handleUserMigration(
+
+            await this._handleUserMigration(
               newUserCredential.user,
               cleanEmail,
               legacyData,
               legacyDoc.id
+            );
+
+            return await this.resolveSessionUser(
+              newUserCredential.user.uid,
+              cleanEmail
             );
           } catch (createError: any) {
             throw createError;
@@ -145,14 +164,24 @@ export const firestoreService = {
 
     if (!userDocSnap.exists()) {
       let userData: any = providedLegacyData || null;
+      let sourceLegacyId = legacyId || '';
 
       if (!userData) {
         const q = query(collection(db, USERS_COL), where("email", "==", cleanEmail));
         const querySnapshot = await getDocs(q);
 
         if (!querySnapshot.empty) {
-          userData = querySnapshot.docs[0].data();
-          legacyId = querySnapshot.docs[0].id;
+          // Prefer a Team Leader/team-assigned legacy record if duplicates exist.
+          const ranked = [...querySnapshot.docs].sort((a, b) => {
+            const ad = a.data() as any;
+            const bd = b.data() as any;
+            const aScore = (ad.role === 'Team Leader' ? 100 : 0) + (ad.teamId ? 50 : 0);
+            const bScore = (bd.role === 'Team Leader' ? 100 : 0) + (bd.teamId ? 50 : 0);
+            return bScore - aScore;
+          });
+
+          userData = ranked[0].data();
+          sourceLegacyId = ranked[0].id;
         }
       }
 
@@ -170,108 +199,203 @@ export const firestoreService = {
         teamName: userData?.teamName || ''
       };
 
-      await setDoc(userDocRef, finalUserData);
+      await setDoc(userDocRef, finalUserData, { merge: true });
 
-      if (legacyId && legacyId !== user.uid) {
+      if (sourceLegacyId && sourceLegacyId !== user.uid) {
         await this._migrateUserReferences(
-          legacyId,
+          sourceLegacyId,
           user.uid,
           finalUserData.name || ''
         );
-        await deleteDoc(doc(db, USERS_COL, legacyId)).catch(console.error);
       }
-
-      return { id: user.uid, ...finalUserData };
+    } else {
+      await setDoc(userDocRef, {
+        uid: user.uid,
+        email: userDocSnap.data()?.email || user.email || cleanEmail,
+        isOnline: true,
+        lastSeen: serverTimestamp()
+      }, { merge: true });
     }
 
-    const existingData = userDocSnap.data();
+    // Do not decide role/team in this helper. resolveSessionUser() below is the
+    // single canonical place that reconciles duplicates and Team Leader state.
+    return await this.resolveSessionUser(user.uid, cleanEmail);
+  },
 
-    // A legacy CRM record can exist with the same email but a different document ID.
-    // This happens when a user was created in Firestore before/independently of Firebase Auth.
-    // Prefer the record that contains the strongest team assignment/role and migrate it
-    // onto the real Firebase Auth UID instead of leaving the logged-in account as "Agent".
-    const sameEmailSnapshot = await getDocs(
-      query(collection(db, USERS_COL), where("email", "==", cleanEmail))
+  async resolveSessionUser(uid: string, email?: string) {
+    if (!uid) return null;
+
+    const cleanEmail = normalizeEmail(email || '');
+    const exactRef = doc(db, USERS_COL, uid);
+    const exactSnap = await getDoc(exactRef);
+    const exactData = exactSnap.exists() ? (exactSnap.data() as any) : null;
+
+    const effectiveEmail = normalizeEmail(
+      exactData?.email ||
+      cleanEmail ||
+      auth.currentUser?.email ||
+      ''
     );
 
-    const duplicateDocs = sameEmailSnapshot.docs.filter(d => d.id !== user.uid);
+    const emailSnapshot = effectiveEmail
+      ? await getDocs(query(collection(db, USERS_COL), where("email", "==", effectiveEmail)))
+      : null;
 
-    let preferredLegacy: any = null;
-    let preferredLegacyId = '';
+    const candidateDocs = emailSnapshot ? emailSnapshot.docs : [];
+    const candidateIds = Array.from(
+      new Set([uid, ...candidateDocs.map(d => d.id)])
+    );
 
-    for (const duplicate of duplicateDocs) {
-      const candidate = duplicate.data() as any;
+    // Find whether ANY UID/document belonging to this email is referenced as
+    // a Team Leader. The teams collection is authoritative for leadership.
+    let leadershipTeamDoc: any = null;
+    let leadershipSourceId = '';
 
-      const candidateScore =
-        (candidate.role === 'Team Leader' ? 100 : 0) +
-        (candidate.teamId ? 50 : 0) +
-        (candidate.name ? 5 : 0);
+    for (const candidateId of candidateIds) {
+      const leadershipSnap = await getDocs(
+        query(collection(db, TEAMS_COL), where("teamLeaderId", "==", candidateId))
+      );
 
-      const currentScore = preferredLegacy
-        ? ((preferredLegacy.role === 'Team Leader' ? 100 : 0) +
-          (preferredLegacy.teamId ? 50 : 0) +
-          (preferredLegacy.name ? 5 : 0))
-        : -1;
-
-      if (candidateScore > currentScore) {
-        preferredLegacy = candidate;
-        preferredLegacyId = duplicate.id;
+      if (!leadershipSnap.empty) {
+        leadershipTeamDoc = leadershipSnap.docs[0];
+        leadershipSourceId = candidateId;
+        break;
       }
     }
 
-    const effectiveRole = adminUser
-      ? "Administrator"
-      : (
-          preferredLegacy?.role === 'Team Leader'
-            ? 'Team Leader'
-            : (existingData?.role || preferredLegacy?.role || "Agent")
+    const duplicateDocs = candidateDocs.filter(d => d.id !== uid);
+
+    // Pick the best CRM profile source without allowing a weak "Agent" duplicate
+    // to overwrite an already assigned Team Leader.
+    const profileCandidates: Array<{ id: string; data: any }> = [];
+
+    if (exactData) {
+      profileCandidates.push({ id: uid, data: exactData });
+    }
+
+    duplicateDocs.forEach(d => {
+      profileCandidates.push({ id: d.id, data: d.data() as any });
+    });
+
+    profileCandidates.sort((a, b) => {
+      const score = (item: { id: string; data: any }) => {
+        const data = item.data || {};
+        return (
+          (item.id === leadershipSourceId ? 1000 : 0) +
+          (data.role === 'Team Leader' ? 200 : 0) +
+          (data.teamId ? 100 : 0) +
+          (data.name ? 10 : 0) +
+          (item.id === uid ? 5 : 0)
         );
+      };
 
-    const effectiveTeamId =
-      preferredLegacy?.teamId ||
-      existingData?.teamId ||
-      '';
+      return score(b) - score(a);
+    });
 
-    const effectiveTeamName =
-      preferredLegacy?.teamName ||
-      existingData?.teamName ||
-      '';
+    const preferred = profileCandidates[0]?.data || exactData || {};
 
-    const mergedData = {
-      ...preferredLegacy,
-      ...existingData,
-      uid: user.uid,
-      email: existingData?.email || preferredLegacy?.email || user.email || cleanEmail,
-      role: effectiveRole,
-      teamId: effectiveTeamId,
-      teamName: effectiveTeamName,
-      name: existingData?.name || preferredLegacy?.name || (adminUser ? "Admin User" : (user.displayName || cleanEmail.split('@')[0] || 'User')),
-      avatar: existingData?.avatar || preferredLegacy?.avatar || `https://i.pravatar.cc/150?u=${user.uid}`,
+    let teamId = preferred.teamId || exactData?.teamId || '';
+    let teamName = preferred.teamName || exactData?.teamName || '';
+    let role = isAdminEmail(effectiveEmail)
+      ? 'Administrator'
+      : (preferred.role || exactData?.role || 'Agent');
+
+    if (leadershipTeamDoc) {
+      const teamData = leadershipTeamDoc.data() as any;
+      role = 'Team Leader';
+      teamId = leadershipTeamDoc.id;
+      teamName = teamData.name || teamName || '';
+    } else if (role === 'Team Leader' && teamId) {
+      // Repair the inverse relationship if the user document says Team Leader
+      // but a previous bug cleared team.teamLeaderId.
+      const teamSnap = await getDoc(doc(db, TEAMS_COL, teamId));
+
+      if (teamSnap.exists()) {
+        const teamData = teamSnap.data() as any;
+
+        // Only auto-repair an empty leader slot or a duplicate UID for the same
+        // email/profile. Never steal a team from a different valid leader.
+        const currentLeaderId = String(teamData.teamLeaderId || '');
+        const canRepair =
+          !currentLeaderId ||
+          currentLeaderId === uid ||
+          candidateIds.includes(currentLeaderId);
+
+        if (canRepair) {
+          await updateDoc(doc(db, TEAMS_COL, teamId), {
+            teamLeaderId: uid,
+            teamLeaderName: preferred.name || exactData?.name || '',
+            updatedAt: serverTimestamp()
+          });
+
+          teamName = teamData.name || teamName || '';
+        } else {
+          // Another real leader owns the team. Do not manufacture leadership.
+          role = exactData?.role && exactData.role !== 'Team Leader'
+            ? exactData.role
+            : 'Agent';
+          teamId = exactData?.teamId || '';
+          teamName = exactData?.teamName || '';
+        }
+      }
+    }
+
+    const canonicalData = {
+      ...preferred,
+      ...exactData,
+      uid,
+      email: effectiveEmail || exactData?.email || preferred.email || '',
+      role,
+      teamId: teamId || '',
+      teamName: teamName || '',
+      name:
+        exactData?.name ||
+        preferred.name ||
+        (isAdminEmail(effectiveEmail) ? 'Admin User' : (effectiveEmail.split('@')[0] || 'User')),
+      avatar:
+        exactData?.avatar ||
+        preferred.avatar ||
+        `https://i.pravatar.cc/150?u=${uid}`,
       isOnline: true,
       lastSeen: serverTimestamp()
     };
 
-    await setDoc(userDocRef, mergedData, { merge: true });
+    await setDoc(exactRef, canonicalData, { merge: true });
 
-    // Move references from duplicate legacy user documents to the real Auth UID.
+    // If a legacy/duplicate UID was the leader, move team/lead references to
+    // the real Firebase Auth UID BEFORE removing the duplicate document.
     for (const duplicate of duplicateDocs) {
-      const duplicateId = duplicate.id;
-
       await this._migrateUserReferences(
-        duplicateId,
-        user.uid,
-        mergedData.name || ''
+        duplicate.id,
+        uid,
+        canonicalData.name || ''
       );
+    }
 
-      await deleteDoc(doc(db, USERS_COL, duplicateId)).catch(console.error);
+    // Reassert the Team Leader relationship after reference migration.
+    if (role === 'Team Leader' && teamId) {
+      const teamSnap = await getDoc(doc(db, TEAMS_COL, teamId));
+      if (teamSnap.exists()) {
+        const teamData = teamSnap.data() as any;
+        const currentLeaderId = String(teamData.teamLeaderId || '');
+
+        if (!currentLeaderId || currentLeaderId === uid || candidateIds.includes(currentLeaderId)) {
+          await updateDoc(doc(db, TEAMS_COL, teamId), {
+            teamLeaderId: uid,
+            teamLeaderName: canonicalData.name || '',
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+    }
+
+    for (const duplicate of duplicateDocs) {
+      await deleteDoc(doc(db, USERS_COL, duplicate.id)).catch(console.error);
     }
 
     return {
-      id: user.uid,
-      ...mergedData,
-      role: effectiveRole,
-      teamId: effectiveTeamId,
-      teamName: effectiveTeamName
+      id: uid,
+      ...canonicalData
     };
   },
 
@@ -378,6 +502,10 @@ export const firestoreService = {
       // CRITICAL:
       // Use the secondary Auth instance here so creating a CRM user does NOT
       // replace the currently logged-in Administrator session.
+      // The secondary auth must NEVER persist a session.
+      await authPersistenceReady;
+      await setPersistence(secondaryAuth, inMemoryPersistence);
+
       const userCredential = await createUserWithEmailAndPassword(
         secondaryAuth,
         cleanEmail,
