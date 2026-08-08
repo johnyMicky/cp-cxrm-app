@@ -100,7 +100,7 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
     { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
-    { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator'] },
+    { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator', 'Team Leader'] },
     { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager'] },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
     { name: 'Activity', path: '/activity', icon: Activity, roles: ['Administrator', 'Manager'] },
