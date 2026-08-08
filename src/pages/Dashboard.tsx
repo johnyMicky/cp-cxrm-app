@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert, MessageSquare } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart as RePieChart, Pie } from 'recharts';
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
+import { chatService } from '../services/chatService';
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null);
@@ -96,6 +97,39 @@ export default function Dashboard() {
     } catch (err) {
       console.error('Report Generation Error:', err);
       alert('Failed to generate report');
+    }
+  };
+
+  const currentUserId = localStorage.getItem('userId') || '';
+  const currentUserRole = localStorage.getItem('userRole') || 'Agent';
+  const [openingChatUserId, setOpeningChatUserId] = useState<string | null>(null);
+
+  const handleMessageAgent = async (agent: any) => {
+    if (!currentUserId || !agent?.id) return;
+
+    try {
+      setOpeningChatUserId(agent.id);
+
+      const directChat = await chatService.getOrCreateDirectChat(
+        currentUserId,
+        agent.id,
+        agent.name || agent.email || 'Agent'
+      );
+
+      // App.tsx listens for this event and opens the existing ChatPanel.
+      // The chat is created/touched first, so it appears at the top of the chat list.
+      window.dispatchEvent(new CustomEvent('crm:open-chat', {
+        detail: {
+          chatId: directChat?.id || '',
+          userId: agent.id,
+          userName: agent.name || ''
+        }
+      }));
+    } catch (err: any) {
+      console.error('Failed to open direct chat:', err);
+      alert(err?.message || 'Failed to open chat');
+    } finally {
+      setOpeningChatUserId(null);
     }
   };
 
@@ -249,26 +283,90 @@ export default function Dashboard() {
         </div>
 
         <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
-          <h3 className="text-lg font-medium text-white mb-6 flex items-center space-x-2">
-            <ShieldCheck className="w-5 h-5 text-emerald-500" />
-            <span>Team Roles</span>
-          </h3>
-          <div className="space-y-4">
-            {data.usersByRole.map((role: any, index: number) => (
-              <div key={role.role} className="flex items-center justify-between p-4 rounded-lg bg-white/[0.02] border border-white/5">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
-                    <Users className="w-5 h-5 text-blue-400" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-white capitalize">{role.role}</p>
-                    <p className="text-xs text-slate-500">Total Members</p>
-                  </div>
-                </div>
-                <span className="text-xl font-bold text-white">{role.count}</span>
+          {currentUserRole === 'Team Leader' ? (
+            <>
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-medium text-white flex items-center space-x-2">
+                  <ShieldCheck className="w-5 h-5 text-emerald-500" />
+                  <span>My Team Agents</span>
+                </h3>
+                <span className="text-xs font-semibold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full">
+                  {data.teamMembers?.length || 0} Agents
+                </span>
               </div>
-            ))}
-          </div>
+
+              <div className="space-y-3 max-h-72 overflow-y-auto custom-scrollbar pr-1">
+                {(data.teamMembers || []).map((agent: any) => (
+                  <div
+                    key={agent.id}
+                    className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-colors"
+                  >
+                    <div className="flex items-center space-x-3 min-w-0">
+                      <div className="relative shrink-0">
+                        <img
+                          src={agent.avatar}
+                          alt={agent.name}
+                          className="w-10 h-10 rounded-full object-cover border border-white/10"
+                        />
+                        <span
+                          className={`absolute -right-0.5 -bottom-0.5 w-3 h-3 rounded-full border-2 border-[#0A0F1C] ${
+                            agent.isOnline ? 'bg-emerald-500' : 'bg-slate-600'
+                          }`}
+                          title={agent.isOnline ? 'Online' : 'Offline'}
+                        />
+                      </div>
+
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{agent.name}</p>
+                        <p className="text-xs text-slate-500 truncate">{agent.email || 'No email'}</p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleMessageAgent(agent)}
+                      disabled={openingChatUserId === agent.id}
+                      className="ml-3 inline-flex items-center space-x-2 px-3 py-2 rounded-lg bg-blue-600/10 hover:bg-blue-600/20 border border-blue-500/20 text-blue-400 hover:text-blue-300 text-xs font-medium transition-all disabled:opacity-50"
+                      title={`Message ${agent.name}`}
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                      <span>{openingChatUserId === agent.id ? 'Opening...' : 'Message'}</span>
+                    </button>
+                  </div>
+                ))}
+
+                {(!data.teamMembers || data.teamMembers.length === 0) && (
+                  <div className="py-10 text-center">
+                    <Users className="w-8 h-8 text-slate-700 mx-auto mb-3" />
+                    <p className="text-sm text-slate-500">No agents assigned to your team.</p>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <h3 className="text-lg font-medium text-white mb-6 flex items-center space-x-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-500" />
+                <span>Team Roles</span>
+              </h3>
+              <div className="space-y-4">
+                {data.usersByRole.map((role: any, index: number) => (
+                  <div key={role.role} className="flex items-center justify-between p-4 rounded-lg bg-white/[0.02] border border-white/5">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+                        <Users className="w-5 h-5 text-blue-400" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-white capitalize">{role.role}</p>
+                        <p className="text-xs text-slate-500">Total Members</p>
+                      </div>
+                    </div>
+                    <span className="text-xl font-bold text-white">{role.count}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
