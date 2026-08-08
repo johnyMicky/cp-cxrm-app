@@ -33,6 +33,8 @@ const ACTIVITY_COL = "activity";
 const NOTIFICATIONS_COL = "notifications";
 const IMPORTS_COL = "imports";
 const TEAMS_COL = "teams";
+const SHIFT_SESSIONS_COL = "shift_sessions";
+const WORK_EVENTS_COL = "work_events";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const sanitizeData = (data: any) => {
@@ -1364,6 +1366,211 @@ export const firestoreService = {
     return await this.getLeads();
   },
 
+
+  // Shift / Attendance tracking
+  _getLocalDateKey(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  },
+
+  async getTodayShift(userId: string, dateKey?: string) {
+    if (!userId) return null;
+
+    const key = dateKey || this._getLocalDateKey();
+    const shiftId = `${userId}_${key}`;
+    const snap = await getDoc(doc(db, SHIFT_SESSIONS_COL, shiftId));
+
+    return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  },
+
+  async setWorkStatus(userId: string, status: 'ready' | 'break' | 'ended') {
+    if (!userId) throw new Error('User is required.');
+
+    const user = await this.getUser(userId);
+    if (!user) throw new Error('User not found.');
+
+    if (user.role !== 'Agent') {
+      throw new Error('Shift controls are available only for Agent users.');
+    }
+
+    const now = new Date();
+    const dateKey = this._getLocalDateKey(now);
+    const shiftId = `${userId}_${dateKey}`;
+    const shiftRef = doc(db, SHIFT_SESSIONS_COL, shiftId);
+    const shiftSnap = await getDoc(shiftRef);
+    const current = shiftSnap.exists() ? (shiftSnap.data() as any) : null;
+
+    if (!current) {
+      if (status !== 'ready') {
+        throw new Error('Start the shift with Ready to Work first.');
+      }
+
+      await setDoc(shiftRef, {
+        userId,
+        userName: user.name || '',
+        userEmail: user.email || '',
+        teamId: user.teamId || '',
+        teamName: user.teamName || '',
+        dateKey,
+        status: 'ready',
+        shiftStart: Timestamp.fromDate(now),
+        shiftEnd: null,
+        currentBreakStart: null,
+        totalBreakMs: 0,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      await addDoc(collection(db, WORK_EVENTS_COL), {
+        userId,
+        userName: user.name || '',
+        teamId: user.teamId || '',
+        teamName: user.teamName || '',
+        dateKey,
+        type: 'ready',
+        createdAt: Timestamp.fromDate(now)
+      });
+
+      return await this.getTodayShift(userId, dateKey);
+    }
+
+    if (current.status === 'ended') {
+      throw new Error('Today\'s shift has already ended.');
+    }
+
+    if (status === current.status) {
+      return { id: shiftId, ...current };
+    }
+
+    if (status === 'break') {
+      if (current.status !== 'ready') {
+        throw new Error('You can start a break only while Ready to Work.');
+      }
+
+      await updateDoc(shiftRef, {
+        status: 'break',
+        currentBreakStart: Timestamp.fromDate(now),
+        updatedAt: serverTimestamp()
+      });
+    }
+
+    if (status === 'ready') {
+      if (current.status === 'break') {
+        const breakStart = current.currentBreakStart?.toDate
+          ? current.currentBreakStart.toDate()
+          : new Date(current.currentBreakStart || now);
+
+        const breakMs = Math.max(0, now.getTime() - breakStart.getTime());
+
+        await updateDoc(shiftRef, {
+          status: 'ready',
+          currentBreakStart: null,
+          totalBreakMs: Number(current.totalBreakMs || 0) + breakMs,
+          updatedAt: serverTimestamp()
+        });
+      }
+    }
+
+    if (status === 'ended') {
+      let totalBreakMs = Number(current.totalBreakMs || 0);
+
+      if (current.status === 'break' && current.currentBreakStart) {
+        const breakStart = current.currentBreakStart?.toDate
+          ? current.currentBreakStart.toDate()
+          : new Date(current.currentBreakStart);
+        totalBreakMs += Math.max(0, now.getTime() - breakStart.getTime());
+      }
+
+      await updateDoc(shiftRef, {
+        status: 'ended',
+        shiftEnd: Timestamp.fromDate(now),
+        currentBreakStart: null,
+        totalBreakMs,
+        updatedAt: serverTimestamp()
+      });
+    }
+
+    await addDoc(collection(db, WORK_EVENTS_COL), {
+      userId,
+      userName: user.name || '',
+      teamId: user.teamId || '',
+      teamName: user.teamName || '',
+      dateKey,
+      type: status,
+      createdAt: Timestamp.fromDate(now)
+    });
+
+    return await this.getTodayShift(userId, dateKey);
+  },
+
+  async getShiftEvents(userId: string, dateKey?: string) {
+    if (!userId) return [];
+
+    const key = dateKey || this._getLocalDateKey();
+    const snap = await getDocs(
+      query(
+        collection(db, WORK_EVENTS_COL),
+        where('userId', '==', userId)
+      )
+    );
+
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter((event: any) => event.dateKey === key)
+      .sort((a: any, b: any) => {
+        const aTime = a.createdAt?.toMillis?.() || 0;
+        const bTime = b.createdAt?.toMillis?.() || 0;
+        return aTime - bTime;
+      });
+  },
+
+  async getWorkLogs(viewer: any, dateKey?: string) {
+    if (!viewer?.id) return [];
+
+    const freshViewer = await this.getUser(String(viewer.id));
+    const effectiveViewer = freshViewer || viewer;
+    const role = String(effectiveViewer.role || 'Agent');
+    const key = dateKey || this._getLocalDateKey();
+
+    const [users, shiftsSnap] = await Promise.all([
+      this.getUsers(),
+      getDocs(collection(db, SHIFT_SESSIONS_COL))
+    ]);
+
+    let allowedUsers = users as any[];
+
+    if (role === 'Agent') {
+      allowedUsers = allowedUsers.filter((u: any) => String(u.id) === String(effectiveViewer.id));
+    } else if (role === 'Team Leader') {
+      allowedUsers = allowedUsers.filter(
+        (u: any) => u.role === 'Agent' && String(u.teamId || '') === String(effectiveViewer.teamId || '')
+      );
+    } else if (!['Administrator', 'Manager'].includes(role)) {
+      return [];
+    }
+
+    const allowedIds = new Set(allowedUsers.map((u: any) => String(u.id)));
+
+    const shifts = shiftsSnap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter((shift: any) => shift.dateKey === key && allowedIds.has(String(shift.userId)));
+
+    const shiftMap = new Map(shifts.map((shift: any) => [String(shift.userId), shift]));
+
+    return allowedUsers
+      .filter((u: any) => u.role === 'Agent')
+      .map((user: any) => {
+        const shift: any = shiftMap.get(String(user.id)) || null;
+        return {
+          user,
+          shift
+        };
+      })
+      .sort((a: any, b: any) => String(a.user.name).localeCompare(String(b.user.name)));
+  },
+
   // Dashboard
   async getDashboardStats(user: any, timeRange: '1d' | '1w' | '1m' | 'all' = 'all') {
     const usersSnap = await getDocs(collection(db, USERS_COL));
@@ -1522,6 +1729,15 @@ export const firestoreService = {
     // Team Leader gets a concrete list of their own agents for the dashboard.
     // Administrators/Managers keep the existing dashboard behaviour.
     if (currentRole === 'Team Leader') {
+      const todayKey = this._getLocalDateKey();
+      const todayShiftsSnap = await getDocs(collection(db, SHIFT_SESSIONS_COL));
+      const todayShifts = new Map(
+        todayShiftsSnap.docs
+          .map(d => ({ id: d.id, ...d.data() } as any))
+          .filter((shift: any) => shift.dateKey === todayKey)
+          .map((shift: any) => [String(shift.userId), shift])
+      );
+
       stats.teamMembers = visibleUsers
         .filter((member: any) => member.role === 'Agent')
         .map((member: any) => ({
@@ -1530,7 +1746,8 @@ export const firestoreService = {
           email: member.email || '',
           avatar: member.avatar || `https://i.pravatar.cc/150?u=${member.id}`,
           isOnline: !!member.isOnline,
-          lastSeen: member.lastSeen || null
+          lastSeen: member.lastSeen || null,
+          shift: todayShifts.get(String(member.id)) || null
         }))
         .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)));
     }
