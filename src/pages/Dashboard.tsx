@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert, MessageSquare } from 'lucide-react';
+import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert, MessageSquare, Coffee, PlayCircle, Square, Clock3 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart as RePieChart, Pie } from 'recharts';
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
@@ -103,6 +103,71 @@ export default function Dashboard() {
   const currentUserId = localStorage.getItem('userId') || '';
   const currentUserRole = localStorage.getItem('userRole') || 'Agent';
   const [openingChatUserId, setOpeningChatUserId] = useState<string | null>(null);
+  const [myShift, setMyShift] = useState<any>(null);
+  const [shiftLoading, setShiftLoading] = useState(false);
+  const [shiftError, setShiftError] = useState('');
+
+  const loadMyShift = async () => {
+    if (currentUserRole !== 'Agent' || !currentUserId) return;
+    try {
+      const shift = await firestoreService.getTodayShift(currentUserId);
+      setMyShift(shift);
+    } catch (err) {
+      console.error('Failed to load shift:', err);
+    }
+  };
+
+  const handleShiftAction = async (status: 'ready' | 'break' | 'ended') => {
+    if (!currentUserId) return;
+
+    try {
+      setShiftLoading(true);
+      setShiftError('');
+      const shift = await firestoreService.setWorkStatus(currentUserId, status);
+      setMyShift(shift);
+      loadData();
+    } catch (err: any) {
+      console.error('Shift action failed:', err);
+      setShiftError(err?.message || 'Failed to update shift status.');
+    } finally {
+      setShiftLoading(false);
+    }
+  };
+
+  const formatDuration = (ms: number) => {
+    const totalMinutes = Math.max(0, Math.floor(ms / 60000));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  };
+
+  const calculateBreakMs = (shift: any) => {
+    if (!shift) return 0;
+
+    let total = Number(shift.totalBreakMs || 0);
+
+    if (shift.status === 'break' && shift.currentBreakStart) {
+      const start = shift.currentBreakStart?.toDate
+        ? shift.currentBreakStart.toDate()
+        : new Date(shift.currentBreakStart);
+      total += Math.max(0, Date.now() - start.getTime());
+    }
+
+    return total;
+  };
+
+  const calculateWorkedMs = (shift: any) => {
+    if (!shift?.shiftStart) return 0;
+
+    const start = shift.shiftStart?.toDate
+      ? shift.shiftStart.toDate()
+      : new Date(shift.shiftStart);
+    const end = shift.shiftEnd
+      ? (shift.shiftEnd?.toDate ? shift.shiftEnd.toDate() : new Date(shift.shiftEnd))
+      : new Date();
+
+    return Math.max(0, end.getTime() - start.getTime() - calculateBreakMs(shift));
+  };
 
   const handleMessageAgent = async (agent: any) => {
     if (!currentUserId || !agent?.id) return;
@@ -136,6 +201,15 @@ export default function Dashboard() {
   useEffect(() => {
     loadData();
   }, [timeRange]);
+
+  useEffect(() => {
+    loadMyShift();
+
+    if (currentUserRole !== 'Agent') return;
+
+    const interval = setInterval(loadMyShift, 30000);
+    return () => clearInterval(interval);
+  }, [currentUserId, currentUserRole]);
 
   if (error) {
     return (
@@ -212,6 +286,104 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {currentUserRole === 'Agent' && (
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-5 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+            <div className="flex items-center space-x-4">
+              <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+                myShift?.status === 'ready'
+                  ? 'bg-emerald-500/10'
+                  : myShift?.status === 'break'
+                    ? 'bg-amber-500/10'
+                    : myShift?.status === 'ended'
+                      ? 'bg-slate-500/10'
+                      : 'bg-blue-500/10'
+              }`}>
+                {myShift?.status === 'break' ? (
+                  <Coffee className="w-6 h-6 text-amber-400" />
+                ) : myShift?.status === 'ended' ? (
+                  <Square className="w-6 h-6 text-slate-400" />
+                ) : (
+                  <PlayCircle className={`w-6 h-6 ${myShift?.status === 'ready' ? 'text-emerald-400' : 'text-blue-400'}`} />
+                )}
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">My Shift</p>
+                <h3 className="text-lg font-semibold text-white mt-1">
+                  {!myShift
+                    ? 'Not Started'
+                    : myShift.status === 'ready'
+                      ? 'Ready to Work'
+                      : myShift.status === 'break'
+                        ? 'On Break'
+                        : 'Shift Ended'}
+                </h3>
+                {shiftError && <p className="text-xs text-rose-400 mt-1">{shiftError}</p>}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 flex-1 lg:max-w-2xl">
+              <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Started</p>
+                <p className="text-sm font-semibold text-white mt-1">
+                  {myShift?.shiftStart?.toDate ? format(myShift.shiftStart.toDate(), 'HH:mm') : '—'}
+                </p>
+              </div>
+              <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Break Total</p>
+                <p className="text-sm font-semibold text-amber-400 mt-1">{formatDuration(calculateBreakMs(myShift))}</p>
+              </div>
+              <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Work Time</p>
+                <p className="text-sm font-semibold text-emerald-400 mt-1">{formatDuration(calculateWorkedMs(myShift))}</p>
+              </div>
+              <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Ended</p>
+                <p className="text-sm font-semibold text-white mt-1">
+                  {myShift?.shiftEnd?.toDate ? format(myShift.shiftEnd.toDate(), 'HH:mm') : '—'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {(!myShift || myShift.status === 'break') && (
+                <button
+                  onClick={() => handleShiftAction('ready')}
+                  disabled={shiftLoading || myShift?.status === 'ended'}
+                  className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                >
+                  <PlayCircle className="w-4 h-4" />
+                  <span>Ready to Work</span>
+                </button>
+              )}
+
+              {myShift?.status === 'ready' && (
+                <button
+                  onClick={() => handleShiftAction('break')}
+                  disabled={shiftLoading}
+                  className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-400 text-sm font-medium transition-colors"
+                >
+                  <Coffee className="w-4 h-4" />
+                  <span>On Break</span>
+                </button>
+              )}
+
+              {myShift && myShift.status !== 'ended' && (
+                <button
+                  onClick={() => handleShiftAction('ended')}
+                  disabled={shiftLoading}
+                  className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-400 text-sm font-medium transition-colors"
+                >
+                  <Square className="w-4 h-4" />
+                  <span>End Shift</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {stats.map((stat) => (
@@ -317,7 +489,26 @@ export default function Dashboard() {
                       </div>
 
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-white truncate">{agent.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-white truncate">{agent.name}</p>
+                          <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${
+                            agent.shift?.status === 'ready'
+                              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+                              : agent.shift?.status === 'break'
+                                ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+                                : agent.shift?.status === 'ended'
+                                  ? 'text-slate-400 bg-slate-500/10 border-slate-500/20'
+                                  : 'text-slate-500 bg-white/5 border-white/10'
+                          }`}>
+                            {agent.shift?.status === 'ready'
+                              ? 'Ready'
+                              : agent.shift?.status === 'break'
+                                ? 'Break'
+                                : agent.shift?.status === 'ended'
+                                  ? 'Ended'
+                                  : 'Not Started'}
+                          </span>
+                        </div>
                         <p className="text-xs text-slate-500 truncate">{agent.email || 'No email'}</p>
                       </div>
                     </div>
