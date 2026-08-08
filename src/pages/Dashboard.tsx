@@ -13,10 +13,23 @@ export default function Dashboard() {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const user = {
+      const sessionUser = {
         id: localStorage.getItem('userId'),
         role: localStorage.getItem('userRole')
       };
+
+      // Pull the latest role/team assignment from Firestore before loading stats.
+      const freshUser = sessionUser.id
+        ? await firestoreService.getUser(sessionUser.id)
+        : null;
+      const user = freshUser || sessionUser;
+
+      if (freshUser) {
+        localStorage.setItem('userRole', freshUser.role || 'Agent');
+        localStorage.setItem('userTeamId', freshUser.teamId || '');
+        localStorage.setItem('userTeamName', freshUser.teamName || '');
+      }
+
       const body = await firestoreService.getDashboardStats(user, timeRange);
       setData(body);
     } catch (err: any) {
@@ -29,12 +42,17 @@ export default function Dashboard() {
 
   const handleGenerateReport = async () => {
     try {
-      const user = {
+      const sessionUser = {
         id: localStorage.getItem('userId'),
         role: localStorage.getItem('userRole')
       };
-      // Fetch leads to export
-      const leads = await firestoreService.getLeads(user.role === 'Agent' ? user.id : undefined);
+      const freshUser = sessionUser.id
+        ? await firestoreService.getUser(sessionUser.id)
+        : null;
+      const user = freshUser || sessionUser;
+
+      // Export only the leads this user is allowed to see.
+      const leads = await firestoreService.getLeadsForUser(user);
       
       // Filter by timeRange (same logic as in dashboard)
       const now = new Date();
