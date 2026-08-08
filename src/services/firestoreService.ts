@@ -1064,13 +1064,74 @@ export const firestoreService = {
     await updateDoc(doc(db, NOTIFICATIONS_COL, id), { read: true });
   },
 
+  // Role/team-aware lead scope. Existing getLeads() remains unchanged.
+  async getLeadsForUser(user: any) {
+    if (!user?.id) return [];
+
+    const freshUser = await this.getUser(String(user.id));
+    const effectiveUser = freshUser || user;
+    const role = String(effectiveUser.role || 'Agent').trim();
+
+    if (role === 'Agent') {
+      return await this.getLeads(String(effectiveUser.id));
+    }
+
+    if (role === 'Team Leader') {
+      const teamId = effectiveUser.teamId || '';
+      if (!teamId) return [];
+
+      const teamUsers = await this.getUsersByTeam(teamId);
+      const allowedUserIds = new Set(
+        teamUsers
+          .filter((member: any) => ['Agent', 'Team Leader'].includes(member.role))
+          .map((member: any) => String(member.id))
+      );
+
+      const allLeads = await this.getLeads();
+      return (allLeads as any[]).filter((lead: any) =>
+        allowedUserIds.has(String(lead.assigned_to || ''))
+      );
+    }
+
+    // Administrator and Manager keep their existing organization-wide view.
+    return await this.getLeads();
+  },
+
   // Dashboard
   async getDashboardStats(user: any, timeRange: '1d' | '1w' | '1m' | 'all' = 'all') {
+    const usersSnap = await getDocs(collection(db, USERS_COL));
+    const allUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+
+    // Always trust the current Firestore user record over stale localStorage data.
+    const currentUser = allUsers.find((u: any) => String(u.id) === String(user?.id)) || user || {};
+    const currentRole = String(currentUser.role || 'Agent').trim();
+    const currentTeamId = currentUser.teamId || '';
+
     const leadsSnap = await getDocs(collection(db, LEADS_COL));
-    const leads = leadsSnap.docs.map(d => d.data());
-    
-    const isAgent = user.role === 'Agent';
-    const filteredLeads = isAgent ? leads.filter(l => l.assigned_to === user.id) : leads;
+    const allLeads = leadsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+
+    let visibleUsers = allUsers;
+    let filteredLeads = allLeads;
+
+    if (currentRole === 'Agent') {
+      visibleUsers = allUsers.filter((u: any) => String(u.id) === String(currentUser.id));
+      filteredLeads = allLeads.filter((l: any) => String(l.assigned_to) === String(currentUser.id));
+    } else if (currentRole === 'Team Leader') {
+      if (!currentTeamId) {
+        visibleUsers = [currentUser].filter(Boolean);
+        filteredLeads = [];
+      } else {
+        visibleUsers = allUsers.filter((u: any) => String(u.teamId || '') === String(currentTeamId));
+        const teamMemberIds = new Set(
+          visibleUsers
+            .filter((u: any) => ['Agent', 'Team Leader'].includes(u.role))
+            .map((u: any) => String(u.id))
+        );
+        filteredLeads = allLeads.filter((l: any) =>
+          teamMemberIds.has(String(l.assigned_to || ''))
+        );
+      }
+    }
 
     const now = new Date();
     const today = new Date();
@@ -1139,7 +1200,7 @@ export const firestoreService = {
       convertedChange: getChange(currentStats.converted, previousStats.converted),
       lost: currentStats.lost,
       lostChange: getChange(currentStats.lost, previousStats.lost),
-      duplicates: 0, 
+      duplicates: 0,
       leadsByStatus: [] as any[],
       usersByRole: [] as any[],
       topSources: [] as any[],
@@ -1154,10 +1215,9 @@ export const firestoreService = {
       .map(([status, count]) => ({ status, count }))
       .sort((a: any, b: any) => b.count - a.count);
 
-    const usersSnap = await getDocs(collection(db, USERS_COL));
-    const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Team Leader sees only roles inside their own team.
     const roleMap: any = {};
-    users.forEach((u: any) => {
+    visibleUsers.forEach((u: any) => {
       const role = u.role || 'Undefined';
       roleMap[role] = (roleMap[role] || 0) + 1;
     });
@@ -1176,9 +1236,10 @@ export const firestoreService = {
       .sort((a: any, b: any) => b.count - a.count)
       .slice(0, 5);
 
-    const agents = users.filter((u: any) => ['Agent', 'Team Leader'].includes(u.role));
+    // "Top Agent Workload" stays agent-only; Team Leader sees only agents in their team.
+    const agents = visibleUsers.filter((u: any) => u.role === 'Agent');
     stats.workload = agents.map((agent: any) => {
-      const agentLeads = currentLeads.filter(l => l.assigned_to === agent.id);
+      const agentLeads = currentLeads.filter(l => String(l.assigned_to) === String(agent.id));
       return {
         name: agent.name,
         new_leads: agentLeads.filter(l => l.status === 'New').length,
@@ -1190,17 +1251,40 @@ export const firestoreService = {
     .sort((a: any, b: any) => b.total - a.total)
     .slice(0, 5);
 
-    const historySnap = await getDocs(query(collection(db, "history"), orderBy("createdAt", "desc"), limit(10)));
-    const recentActivity = historySnap.docs.map(d => {
-      const data = d.data();
-      const user = users.find((u: any) => u.id === data.user_id) as any;
-      return {
-        id: d.id,
-        ...data,
-        userName: user?.name || 'Unknown User'
-      };
-    });
+    const historySnap = await getDocs(query(collection(db, "history"), orderBy("createdAt", "desc"), limit(100)));
+    const visibleUserIds = new Set(visibleUsers.map((u: any) => String(u.id)));
+    const visibleLeadIds = new Set(filteredLeads.map((l: any) => String(l.id)));
+
+    const recentActivity = historySnap.docs
+      .map(d => {
+        const data = d.data();
+        const activityUser = allUsers.find((u: any) => String(u.id) === String(data.user_id)) as any;
+        return {
+          id: d.id,
+          ...data,
+          userName: activityUser?.name || 'Unknown User'
+        };
+      })
+      .filter((activity: any) => {
+        if (currentRole === 'Administrator' || currentRole === 'Manager') return true;
+        if (currentRole === 'Agent') {
+          return String(activity.user_id || '') === String(currentUser.id) ||
+            (activity.lead_id && visibleLeadIds.has(String(activity.lead_id)));
+        }
+        if (currentRole === 'Team Leader') {
+          return visibleUserIds.has(String(activity.user_id || '')) ||
+            (activity.lead_id && visibleLeadIds.has(String(activity.lead_id)));
+        }
+        return false;
+      })
+      .slice(0, 10);
+
     (stats as any).recentActivity = recentActivity;
+    (stats as any).scope = currentRole === 'Team Leader'
+      ? { type: 'team', teamId: currentTeamId, teamName: currentUser.teamName || '' }
+      : currentRole === 'Agent'
+        ? { type: 'agent', userId: currentUser.id }
+        : { type: 'organization' };
 
     return stats;
   }
