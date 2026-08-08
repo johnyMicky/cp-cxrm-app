@@ -33,10 +33,54 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   
-  const currentUserRole = (localStorage.getItem('userRole') === 'undefined' ? null : localStorage.getItem('userRole')) || 'Agent';
   const currentUserId = localStorage.getItem('userId') === 'undefined' ? null : localStorage.getItem('userId');
-  const userName = (localStorage.getItem('userName') === 'undefined' ? null : localStorage.getItem('userName')) || 'User';
-  const userAvatar = (localStorage.getItem('userAvatar') === 'undefined' ? null : localStorage.getItem('userAvatar')) || `https://i.pravatar.cc/150?u=${currentUserId}`;
+  const [currentUserRole, setCurrentUserRole] = useState(
+    (localStorage.getItem('userRole') === 'undefined' ? null : localStorage.getItem('userRole')) || 'Agent'
+  );
+  const [userName, setUserName] = useState(
+    (localStorage.getItem('userName') === 'undefined' ? null : localStorage.getItem('userName')) || 'User'
+  );
+  const [userAvatar, setUserAvatar] = useState(
+    (localStorage.getItem('userAvatar') === 'undefined' ? null : localStorage.getItem('userAvatar')) || `https://i.pravatar.cc/150?u=${currentUserId}`
+  );
+
+  // Keep the sidebar identity/role synced with the real Firestore user document.
+  useEffect(() => {
+    if (!currentUserId || currentUserId === '1') return;
+
+    let cancelled = false;
+
+    const syncProfile = async () => {
+      try {
+        const freshUser = await firestoreService.getUser(currentUserId);
+        if (!freshUser || cancelled) return;
+
+        const freshRole = freshUser.role || 'Agent';
+        const freshName = freshUser.name || 'User';
+        const freshAvatar = freshUser.avatar || `https://i.pravatar.cc/150?u=${currentUserId}`;
+
+        setCurrentUserRole(freshRole);
+        setUserName(freshName);
+        setUserAvatar(freshAvatar);
+
+        localStorage.setItem('userRole', freshRole);
+        localStorage.setItem('userName', freshName);
+        localStorage.setItem('userAvatar', freshAvatar);
+        localStorage.setItem('userTeamId', freshUser.teamId || '');
+        localStorage.setItem('userTeamName', freshUser.teamName || '');
+      } catch (err) {
+        console.error('Failed to sync sidebar user profile:', err);
+      }
+    };
+
+    syncProfile();
+
+    const interval = setInterval(syncProfile, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [currentUserId]);
 
   const fetchNotifications = async () => {
     if (!currentUserId || currentUserId === '1') return;
@@ -132,6 +176,8 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
     localStorage.removeItem('userRole');
     localStorage.removeItem('userName');
     localStorage.removeItem('userAvatar');
+    localStorage.removeItem('userTeamId');
+    localStorage.removeItem('userTeamName');
     window.location.href = '/login';
   };
 
@@ -285,7 +331,7 @@ function Sidebar({ onOpenChat, unreadChatCount }: { onOpenChat: () => void, unre
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('userId'));
   const [currentUserId, setCurrentUserId] = useState(localStorage.getItem('userId'));
-  const currentUserRole = localStorage.getItem('userRole') || 'Agent';
+  const [currentUserRole, setCurrentUserRole] = useState(localStorage.getItem('userRole') || 'Agent');
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -329,6 +375,53 @@ export default function App() {
     });
 
     return () => unsubscribeAuth();
+  }, []);
+
+  // Keep the App-level role fresh so chat permissions, lead listeners and
+  // navigation logic do not continue using an old localStorage role.
+  useEffect(() => {
+    if (!isAuthenticated || !currentUserId || currentUserId === '1') return;
+
+    let cancelled = false;
+
+    const syncCurrentUser = async () => {
+      try {
+        const freshUser = await firestoreService.getUser(currentUserId);
+        if (!freshUser || cancelled) return;
+
+        const freshRole = freshUser.role || 'Agent';
+        setCurrentUserRole(freshRole);
+
+        localStorage.setItem('userRole', freshRole);
+        localStorage.setItem('userName', freshUser.name || 'User');
+        localStorage.setItem(
+          'userAvatar',
+          freshUser.avatar || `https://i.pravatar.cc/150?u=${currentUserId}`
+        );
+        localStorage.setItem('userTeamId', freshUser.teamId || '');
+        localStorage.setItem('userTeamName', freshUser.teamName || '');
+      } catch (err) {
+        console.error('Failed to sync current user role:', err);
+      }
+    };
+
+    syncCurrentUser();
+    const interval = setInterval(syncCurrentUser, 30000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [isAuthenticated, currentUserId]);
+
+  // Dashboard "Message" buttons use this event to open the existing ChatPanel.
+  useEffect(() => {
+    const handleOpenChat = () => setIsChatOpen(true);
+    window.addEventListener('crm:open-chat', handleOpenChat as EventListener);
+
+    return () => {
+      window.removeEventListener('crm:open-chat', handleOpenChat as EventListener);
+    };
   }, []);
 
   useEffect(() => {
