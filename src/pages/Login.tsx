@@ -114,20 +114,17 @@ export default function Login() {
       const data = await firestoreService.login(cleanEmail, cleanPassword);
 
       if (data && data.id) {
-        // Always re-read the Firestore user document so role/team changes made by
-        // an Administrator are reflected on the next login.
-        const freshUser = await firestoreService.getUser(String(data.id));
-        const sessionUser = freshUser || data;
-
-        localStorage.setItem('userId', String(sessionUser.id || data.id || ''));
-        localStorage.setItem('userRole', sessionUser.role || 'Agent');
-        localStorage.setItem('userName', sessionUser.name || 'User');
+        // firestoreService.login() now returns the one canonical CRM user.
+        // App.tsx will also verify the same Firebase Auth UID before rendering.
+        localStorage.setItem('userId', String(data.id || ''));
+        localStorage.setItem('userRole', data.role || 'Agent');
+        localStorage.setItem('userName', data.name || 'User');
         localStorage.setItem(
           'userAvatar',
-          sessionUser.avatar || `https://i.pravatar.cc/150?u=${sessionUser.id || data.id}`
+          data.avatar || `https://i.pravatar.cc/150?u=${data.id}`
         );
-        localStorage.setItem('userTeamId', sessionUser.teamId || '');
-        localStorage.setItem('userTeamName', sessionUser.teamName || '');
+        localStorage.setItem('userTeamId', data.teamId || '');
+        localStorage.setItem('userTeamName', data.teamName || '');
 
         navigate('/');
       } else {
