@@ -1,7 +1,7 @@
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
-import { getAuth } from "firebase/auth";
+import { getAuth, setPersistence, browserSessionPersistence, inMemoryPersistence } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCSfBcYpTKfuTzKO_56JBtyBgQqXiggvM4",
@@ -27,3 +27,12 @@ export const db = getFirestore(app);
 export const storage = getStorage(app);
 export const auth = getAuth(app);
 export const secondaryAuth = getAuth(secondaryApp);
+
+// Primary CRM login is isolated per browser tab/session.
+// Secondary user-creation auth never persists at all.
+export const authPersistenceReady = Promise.all([
+  setPersistence(auth, browserSessionPersistence),
+  setPersistence(secondaryAuth, inMemoryPersistence)
+]).catch((error) => {
+  console.error("Failed to configure Firebase Auth persistence:", error);
+});
