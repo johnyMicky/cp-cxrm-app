@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3 } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -16,6 +16,7 @@ import ActivityPage from './pages/Activity';
 import Imports from './pages/Imports';
 import SettingsPage from './pages/Settings';
 import WorkLogs from './pages/WorkLogs';
+import SecurityLogs from './pages/SecurityLogs';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
 import { auth, db, authPersistenceReady } from './firebase';
@@ -116,6 +117,7 @@ function Sidebar({
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
     { name: 'Activity', path: '/activity', icon: Activity, roles: ['Administrator', 'Manager'] },
     { name: 'Work Logs', path: '/work-logs', icon: Clock3, roles: ['Administrator', 'Manager', 'Team Leader'] },
+    { name: 'Security Logs', path: '/security-logs', icon: ShieldCheck, roles: ['Administrator'] },
     { name: 'Settings', path: '/settings', icon: Settings, roles: ['Administrator'] },
   ];
 
@@ -572,6 +574,7 @@ export default function App() {
                       <Route path="/imports" element={<Imports />} />
                       <Route path="/settings" element={<SettingsPage />} />
                       <Route path="/work-logs" element={<WorkLogs />} />
+                      <Route path="/security-logs" element={currentUserRole === 'Administrator' ? <SecurityLogs /> : <Navigate to="/" replace />} />
                     </Routes>
                   </main>
                   <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
