@@ -52,6 +52,181 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', environment: process.env.NODE_ENV });
 });
 
+
+const SECURITY_LOGS_COL = 'security_login_logs';
+const ADMIN_EMAIL = 'c.morgan@ghost.com';
+
+function getBearerToken(req: express.Request) {
+  const header = String(req.headers.authorization || '');
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+}
+
+async function getVerifiedRequestUser(req: express.Request) {
+  const token = getBearerToken(req);
+  if (!token) {
+    throw new Error('Missing authentication token.');
+  }
+
+  return await admin.auth().verifyIdToken(token);
+}
+
+async function isAdministrator(uid: string, email?: string) {
+  if ((email || '').trim().toLowerCase() === ADMIN_EMAIL) return true;
+
+  const userDoc = await db.collection('users').doc(uid).get();
+  return userDoc.exists && userDoc.data()?.role === 'Administrator';
+}
+
+function getRequestIp(req: express.Request) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    return String(forwarded[0]).split(',')[0].trim();
+  }
+  if (typeof forwarded === 'string' && forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+
+  return String(
+    req.headers['x-real-ip'] ||
+    req.socket?.remoteAddress ||
+    ''
+  ).replace(/^::ffff:/, '');
+}
+
+function getCountryCode(req: express.Request) {
+  return String(
+    req.headers['x-vercel-ip-country'] ||
+    req.headers['cf-ipcountry'] ||
+    ''
+  ).trim().toUpperCase();
+}
+
+function parseUserAgent(userAgent: string) {
+  const ua = userAgent || '';
+
+  let os = 'Unknown';
+  if (/Windows NT/i.test(ua)) os = 'Windows';
+  else if (/Android/i.test(ua)) os = 'Android';
+  else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS / iPadOS';
+  else if (/Mac OS X|Macintosh/i.test(ua)) os = 'macOS';
+  else if (/CrOS/i.test(ua)) os = 'ChromeOS';
+  else if (/Linux/i.test(ua)) os = 'Linux';
+
+  let browser = 'Unknown';
+  if (/Edg\//i.test(ua)) browser = 'Microsoft Edge';
+  else if (/OPR\//i.test(ua)) browser = 'Opera';
+  else if (/CriOS\//i.test(ua)) browser = 'Chrome';
+  else if (/FxiOS\//i.test(ua)) browser = 'Firefox';
+  else if (/Chrome\//i.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+  else if (/Safari\//i.test(ua) && /Version\//i.test(ua)) browser = 'Safari';
+
+  let device = 'Desktop';
+  if (/iPad|Tablet/i.test(ua)) device = 'Tablet';
+  else if (/Mobi|Android|iPhone|iPod/i.test(ua)) device = 'Mobile';
+
+  return { os, browser, device };
+}
+
+// Append-only login audit event.
+// Identity comes from the verified Firebase token, never from a client-supplied userId.
+app.post('/api/security/login', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    const userDoc = await db.collection('users').doc(decoded.uid).get();
+    const userData = userDoc.exists ? (userDoc.data() || {}) : {};
+
+    const userAgent = String(req.headers['user-agent'] || '');
+    const parsed = parseUserAgent(userAgent);
+    const countryCode = getCountryCode(req);
+    const client = req.body?.client || {};
+
+    const record = {
+      eventType: 'login',
+      userId: decoded.uid,
+      userName: userData.name || decoded.name || decoded.email || 'User',
+      email: decoded.email || userData.email || '',
+      role: userData.role || ((decoded.email || '').toLowerCase() === ADMIN_EMAIL ? 'Administrator' : 'Agent'),
+      teamId: userData.teamId || '',
+      teamName: userData.teamName || '',
+      ipAddress: getRequestIp(req),
+      countryCode,
+      device: parsed.device,
+      os: parsed.os,
+      browser: parsed.browser,
+      userAgent,
+      clientLanguage: String(client.language || ''),
+      clientPlatform: String(client.platform || ''),
+      clientMobile: Boolean(client.mobile),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAtIso: new Date().toISOString()
+    };
+
+    const created = await db.collection(SECURITY_LOGS_COL).add(record);
+    res.json({ success: true, id: created.id });
+  } catch (error: any) {
+    console.error('Security login audit error:', error);
+    const unauthorized = /token|auth/i.test(String(error?.message || ''));
+    res.status(unauthorized ? 401 : 500).json({
+      success: false,
+      error: unauthorized ? 'Unauthorized' : 'Failed to create security log.'
+    });
+  }
+});
+
+// Administrator-only read endpoint. No edit/delete endpoint exists by design.
+app.get('/api/security/logs', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+
+    if (!(await isAdministrator(decoded.uid, decoded.email))) {
+      return res.status(403).json({ success: false, error: 'Administrator access required.' });
+    }
+
+    const requestedLimit = Number(req.query.limit || 250);
+    const safeLimit = Math.min(Math.max(requestedLimit, 1), 500);
+
+    const snapshot = await db.collection(SECURITY_LOGS_COL)
+      .orderBy('createdAt', 'desc')
+      .limit(safeLimit)
+      .get();
+
+    const logs = snapshot.docs.map(docSnap => {
+      const data = docSnap.data();
+      const createdAt = data.createdAt?.toDate
+        ? data.createdAt.toDate().toISOString()
+        : (data.createdAtIso || null);
+
+      return {
+        id: docSnap.id,
+        eventType: data.eventType || 'login',
+        userId: data.userId || '',
+        userName: data.userName || '',
+        email: data.email || '',
+        role: data.role || '',
+        teamId: data.teamId || '',
+        teamName: data.teamName || '',
+        ipAddress: data.ipAddress || '',
+        countryCode: data.countryCode || '',
+        device: data.device || 'Unknown',
+        os: data.os || 'Unknown',
+        browser: data.browser || 'Unknown',
+        createdAt
+      };
+    });
+
+    res.json({ success: true, logs });
+  } catch (error: any) {
+    console.error('Security logs read error:', error);
+    const unauthorized = /token|auth/i.test(String(error?.message || ''));
+    res.status(unauthorized ? 401 : 500).json({
+      success: false,
+      error: unauthorized ? 'Unauthorized' : 'Failed to load security logs.'
+    });
+  }
+});
+
+
 // Helper for chunked deletion
 async function deleteInChunks(docRefs: admin.firestore.DocumentReference[]) {
   const CHUNK_SIZE = 200;
