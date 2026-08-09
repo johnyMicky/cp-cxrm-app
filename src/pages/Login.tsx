@@ -126,6 +126,31 @@ export default function Login() {
         localStorage.setItem('userTeamId', data.teamId || '');
         localStorage.setItem('userTeamName', data.teamName || '');
 
+        // Security audit logging is server-side and intentionally non-blocking:
+        // a temporary logging failure must never prevent a valid CRM login.
+        try {
+          const firebaseUser = auth.currentUser;
+          if (firebaseUser) {
+            const idToken = await firebaseUser.getIdToken();
+            await fetch('/api/security/login', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${idToken}`
+              },
+              body: JSON.stringify({
+                client: {
+                  language: navigator.language || '',
+                  platform: (navigator as any).userAgentData?.platform || navigator.platform || '',
+                  mobile: Boolean((navigator as any).userAgentData?.mobile)
+                }
+              })
+            });
+          }
+        } catch (auditError) {
+          console.error('Security login audit failed:', auditError);
+        }
+
         navigate('/');
       } else {
         setError('Invalid credentials.');
