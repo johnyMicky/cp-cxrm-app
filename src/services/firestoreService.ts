@@ -61,18 +61,41 @@ export const firestoreService = {
   async _migrateUserReferences(oldUserId: string, newUserId: string, userName: string) {
     if (!oldUserId || !newUserId || oldUserId === newUserId) return;
 
-    const teamLeaderships = await getDocs(
-      query(collection(db, TEAMS_COL), where("teamLeaderId", "==", oldUserId))
-    );
+    // Teams now support multiple Team Leaders. Scan teams so both legacy
+    // teamLeaderId and new teamLeaderIds[] records are migrated safely.
+    const allTeamsSnapshot = await getDocs(collection(db, TEAMS_COL));
 
     await Promise.all(
-      teamLeaderships.docs.map(teamDoc =>
-        updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
-          teamLeaderId: newUserId,
-          teamLeaderName: userName || '',
+      allTeamsSnapshot.docs.map(async (teamDoc) => {
+        const data = teamDoc.data() as any;
+        const legacyIds = data.teamLeaderId ? [String(data.teamLeaderId)] : [];
+        const currentIds = Array.isArray(data.teamLeaderIds)
+          ? data.teamLeaderIds.map((value: any) => String(value))
+          : legacyIds;
+
+        if (!currentIds.includes(oldUserId)) return;
+
+        const nextIds = Array.from(
+          new Set(currentIds.map((id: string) => id === oldUserId ? newUserId : id))
+        );
+
+        const nextNames = nextIds.map((id: string) => {
+          if (id === newUserId) return userName || '';
+          const index = currentIds.indexOf(id);
+          if (Array.isArray(data.teamLeaderNames) && index >= 0) {
+            return data.teamLeaderNames[index] || '';
+          }
+          return id === String(data.teamLeaderId || '') ? (data.teamLeaderName || '') : '';
+        });
+
+        await updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+          teamLeaderIds: nextIds,
+          teamLeaderNames: nextNames,
+          teamLeaderId: nextIds[0] || '',
+          teamLeaderName: nextNames[0] || '',
           updatedAt: serverTimestamp()
-        })
-      )
+        });
+      })
     );
 
     const assignedLeads = await getDocs(
@@ -249,18 +272,24 @@ export const firestoreService = {
     );
 
     // Find whether ANY UID/document belonging to this email is referenced as
-    // a Team Leader. The teams collection is authoritative for leadership.
+    // a Team Leader. Supports both legacy single-leader fields and the new
+    // teamLeaderIds[] array.
     let leadershipTeamDoc: any = null;
     let leadershipSourceId = '';
 
-    for (const candidateId of candidateIds) {
-      const leadershipSnap = await getDocs(
-        query(collection(db, TEAMS_COL), where("teamLeaderId", "==", candidateId))
-      );
+    const leadershipTeamsSnapshot = await getDocs(collection(db, TEAMS_COL));
 
-      if (!leadershipSnap.empty) {
-        leadershipTeamDoc = leadershipSnap.docs[0];
-        leadershipSourceId = candidateId;
+    for (const teamDoc of leadershipTeamsSnapshot.docs) {
+      const teamData = teamDoc.data() as any;
+      const leaderIds = Array.isArray(teamData.teamLeaderIds)
+        ? teamData.teamLeaderIds.map((value: any) => String(value))
+        : (teamData.teamLeaderId ? [String(teamData.teamLeaderId)] : []);
+
+      const matchedId = candidateIds.find(candidateId => leaderIds.includes(String(candidateId)));
+
+      if (matchedId) {
+        leadershipTeamDoc = teamDoc;
+        leadershipSourceId = String(matchedId);
         break;
       }
     }
@@ -315,30 +344,44 @@ export const firestoreService = {
       if (teamSnap.exists()) {
         const teamData = teamSnap.data() as any;
 
-        // Only auto-repair an empty leader slot or a duplicate UID for the same
-        // email/profile. Never steal a team from a different valid leader.
-        const currentLeaderId = String(teamData.teamLeaderId || '');
-        const canRepair =
-          !currentLeaderId ||
-          currentLeaderId === uid ||
-          candidateIds.includes(currentLeaderId);
+        const currentLeaderIds = Array.isArray(teamData.teamLeaderIds)
+          ? teamData.teamLeaderIds.map((value: any) => String(value))
+          : (teamData.teamLeaderId ? [String(teamData.teamLeaderId)] : []);
 
-        if (canRepair) {
-          await updateDoc(doc(db, TEAMS_COL, teamId), {
-            teamLeaderId: uid,
-            teamLeaderName: preferred.name || exactData?.name || '',
-            updatedAt: serverTimestamp()
-          });
+        // A Team may have several leaders. If the user document says Team Leader
+        // for this team, add/repair this UID without removing existing leaders.
+        const duplicateIndex = currentLeaderIds.findIndex((leaderId: string) =>
+          candidateIds.includes(leaderId)
+        );
 
-          teamName = teamData.name || teamName || '';
-        } else {
-          // Another real leader owns the team. Do not manufacture leadership.
-          role = exactData?.role && exactData.role !== 'Team Leader'
-            ? exactData.role
-            : 'Agent';
-          teamId = exactData?.teamId || '';
-          teamName = exactData?.teamName || '';
+        const nextLeaderIds = [...currentLeaderIds];
+        if (duplicateIndex >= 0) {
+          nextLeaderIds[duplicateIndex] = uid;
+        } else if (!nextLeaderIds.includes(uid)) {
+          nextLeaderIds.push(uid);
         }
+
+        const uniqueLeaderIds = Array.from(new Set(nextLeaderIds));
+        const nextLeaderNames = uniqueLeaderIds.map((leaderId: string) => {
+          if (leaderId === uid) return preferred.name || exactData?.name || '';
+          const originalIndex = currentLeaderIds.indexOf(leaderId);
+          if (Array.isArray(teamData.teamLeaderNames) && originalIndex >= 0) {
+            return teamData.teamLeaderNames[originalIndex] || '';
+          }
+          return leaderId === String(teamData.teamLeaderId || '')
+            ? (teamData.teamLeaderName || '')
+            : '';
+        });
+
+        await updateDoc(doc(db, TEAMS_COL, teamId), {
+          teamLeaderIds: uniqueLeaderIds,
+          teamLeaderNames: nextLeaderNames,
+          teamLeaderId: uniqueLeaderIds[0] || '',
+          teamLeaderName: nextLeaderNames[0] || '',
+          updatedAt: serverTimestamp()
+        });
+
+        teamName = teamData.name || teamName || '';
       }
     }
 
@@ -374,20 +417,44 @@ export const firestoreService = {
       );
     }
 
-    // Reassert the Team Leader relationship after reference migration.
+    // Reassert the Team Leader relationship after reference migration without
+    // replacing other Team Leaders already assigned to the same team.
     if (role === 'Team Leader' && teamId) {
       const teamSnap = await getDoc(doc(db, TEAMS_COL, teamId));
       if (teamSnap.exists()) {
         const teamData = teamSnap.data() as any;
-        const currentLeaderId = String(teamData.teamLeaderId || '');
+        const currentLeaderIds = Array.isArray(teamData.teamLeaderIds)
+          ? teamData.teamLeaderIds.map((value: any) => String(value))
+          : (teamData.teamLeaderId ? [String(teamData.teamLeaderId)] : []);
 
-        if (!currentLeaderId || currentLeaderId === uid || candidateIds.includes(currentLeaderId)) {
-          await updateDoc(doc(db, TEAMS_COL, teamId), {
-            teamLeaderId: uid,
-            teamLeaderName: canonicalData.name || '',
-            updatedAt: serverTimestamp()
-          });
+        let nextLeaderIds = currentLeaderIds.map((leaderId: string) =>
+          candidateIds.includes(leaderId) ? uid : leaderId
+        );
+
+        if (!nextLeaderIds.includes(uid)) {
+          nextLeaderIds.push(uid);
         }
+
+        nextLeaderIds = Array.from(new Set(nextLeaderIds));
+
+        const nextLeaderNames = nextLeaderIds.map((leaderId: string) => {
+          if (leaderId === uid) return canonicalData.name || '';
+          const originalIndex = currentLeaderIds.indexOf(leaderId);
+          if (Array.isArray(teamData.teamLeaderNames) && originalIndex >= 0) {
+            return teamData.teamLeaderNames[originalIndex] || '';
+          }
+          return leaderId === String(teamData.teamLeaderId || '')
+            ? (teamData.teamLeaderName || '')
+            : '';
+        });
+
+        await updateDoc(doc(db, TEAMS_COL, teamId), {
+          teamLeaderIds: nextLeaderIds,
+          teamLeaderNames: nextLeaderNames,
+          teamLeaderId: nextLeaderIds[0] || '',
+          teamLeaderName: nextLeaderNames[0] || '',
+          updatedAt: serverTimestamp()
+        });
       }
     }
 
@@ -572,33 +639,49 @@ export const firestoreService = {
         ? sanitized.teamName
         : (currentUserData.teamName || '');
 
-    const currentLeadershipQuery = query(
-      collection(db, TEAMS_COL),
-      where("teamLeaderId", "==", id)
-    );
-    const currentLeadershipSnap = await getDocs(currentLeadershipQuery);
+    // Remove this user from leadership arrays when the role/team changes.
+    const allTeamsSnapshot = await getDocs(collection(db, TEAMS_COL));
 
-    if (finalRole !== 'Team Leader' || !nextTeamId) {
-      const clearPromises = currentLeadershipSnap.docs.map(teamDoc =>
-        updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
-          teamLeaderId: '',
-          teamLeaderName: '',
+    await Promise.all(
+      allTeamsSnapshot.docs.map(async (teamDoc) => {
+        const teamData = teamDoc.data() as any;
+        const leaderIds = Array.isArray(teamData.teamLeaderIds)
+          ? teamData.teamLeaderIds.map((value: any) => String(value))
+          : (teamData.teamLeaderId ? [String(teamData.teamLeaderId)] : []);
+
+        if (!leaderIds.includes(id)) return;
+
+        const shouldRemainLeader =
+          finalRole === 'Team Leader' &&
+          !!nextTeamId &&
+          teamDoc.id === nextTeamId;
+
+        if (shouldRemainLeader) return;
+
+        const leaderNames = Array.isArray(teamData.teamLeaderNames)
+          ? teamData.teamLeaderNames
+          : leaderIds.map((leaderId: string) =>
+              leaderId === String(teamData.teamLeaderId || '')
+                ? (teamData.teamLeaderName || '')
+                : ''
+            );
+
+        const nextPairs = leaderIds
+          .map((leaderId: string, index: number) => ({
+            id: leaderId,
+            name: leaderNames[index] || ''
+          }))
+          .filter((leader: any) => leader.id !== id);
+
+        await updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+          teamLeaderIds: nextPairs.map((leader: any) => leader.id),
+          teamLeaderNames: nextPairs.map((leader: any) => leader.name),
+          teamLeaderId: nextPairs[0]?.id || '',
+          teamLeaderName: nextPairs[0]?.name || '',
           updatedAt: serverTimestamp()
-        })
-      );
-      await Promise.all(clearPromises);
-    } else {
-      const clearOtherLeaderships = currentLeadershipSnap.docs
-        .filter(teamDoc => teamDoc.id !== nextTeamId)
-        .map(teamDoc =>
-          updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
-            teamLeaderId: '',
-            teamLeaderName: '',
-            updatedAt: serverTimestamp()
-          })
-        );
-      await Promise.all(clearOtherLeaderships);
-    }
+        });
+      })
+    );
 
     const docRef = doc(db, USERS_COL, id);
     await updateDoc(docRef, {
@@ -615,20 +698,41 @@ export const firestoreService = {
   },
 
   async deleteUser(id: string) {
-    const leadershipQuery = query(
-      collection(db, TEAMS_COL),
-      where("teamLeaderId", "==", id)
-    );
-    const leadershipSnap = await getDocs(leadershipQuery);
+    // Remove this user from every Team Leader array before deleting the account.
+    const allTeamsSnapshot = await getDocs(collection(db, TEAMS_COL));
 
     await Promise.all(
-      leadershipSnap.docs.map(teamDoc =>
-        updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
-          teamLeaderId: '',
-          teamLeaderName: '',
+      allTeamsSnapshot.docs.map(async (teamDoc) => {
+        const teamData = teamDoc.data() as any;
+        const leaderIds = Array.isArray(teamData.teamLeaderIds)
+          ? teamData.teamLeaderIds.map((value: any) => String(value))
+          : (teamData.teamLeaderId ? [String(teamData.teamLeaderId)] : []);
+
+        if (!leaderIds.includes(id)) return;
+
+        const leaderNames = Array.isArray(teamData.teamLeaderNames)
+          ? teamData.teamLeaderNames
+          : leaderIds.map((leaderId: string) =>
+              leaderId === String(teamData.teamLeaderId || '')
+                ? (teamData.teamLeaderName || '')
+                : ''
+            );
+
+        const nextPairs = leaderIds
+          .map((leaderId: string, index: number) => ({
+            id: leaderId,
+            name: leaderNames[index] || ''
+          }))
+          .filter((leader: any) => leader.id !== id);
+
+        await updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+          teamLeaderIds: nextPairs.map((leader: any) => leader.id),
+          teamLeaderNames: nextPairs.map((leader: any) => leader.name),
+          teamLeaderId: nextPairs[0]?.id || '',
+          teamLeaderName: nextPairs[0]?.name || '',
           updatedAt: serverTimestamp()
-        })
-      )
+        });
+      })
     );
 
     await deleteDoc(doc(db, USERS_COL, id));
@@ -640,12 +744,28 @@ export const firestoreService = {
 
     return snapshot.docs
       .map(teamDoc => {
-        const data = teamDoc.data();
+        const data = teamDoc.data() as any;
+
+        const teamLeaderIds = Array.isArray(data.teamLeaderIds)
+          ? data.teamLeaderIds.map((value: any) => String(value))
+          : (data.teamLeaderId ? [String(data.teamLeaderId)] : []);
+
+        const teamLeaderNames = Array.isArray(data.teamLeaderNames)
+          ? data.teamLeaderNames
+          : teamLeaderIds.map((leaderId: string) =>
+              leaderId === String(data.teamLeaderId || '')
+                ? (data.teamLeaderName || '')
+                : ''
+            );
+
         return {
           id: teamDoc.id,
           name: data.name || '',
-          teamLeaderId: data.teamLeaderId || '',
-          teamLeaderName: data.teamLeaderName || '',
+          teamLeaderIds,
+          teamLeaderNames,
+          // Legacy compatibility: first leader remains exposed in old fields.
+          teamLeaderId: teamLeaderIds[0] || '',
+          teamLeaderName: teamLeaderNames[0] || '',
           createdAt: data.createdAt || null,
           updatedAt: data.updatedAt || null
         };
@@ -659,13 +779,27 @@ export const firestoreService = {
     const teamDoc = await getDoc(doc(db, TEAMS_COL, id));
     if (!teamDoc.exists()) return null;
 
-    const data = teamDoc.data();
+    const data = teamDoc.data() as any;
+
+    const teamLeaderIds = Array.isArray(data.teamLeaderIds)
+      ? data.teamLeaderIds.map((value: any) => String(value))
+      : (data.teamLeaderId ? [String(data.teamLeaderId)] : []);
+
+    const teamLeaderNames = Array.isArray(data.teamLeaderNames)
+      ? data.teamLeaderNames
+      : teamLeaderIds.map((leaderId: string) =>
+          leaderId === String(data.teamLeaderId || '')
+            ? (data.teamLeaderName || '')
+            : ''
+        );
 
     return {
       id: teamDoc.id,
       name: data.name || '',
-      teamLeaderId: data.teamLeaderId || '',
-      teamLeaderName: data.teamLeaderName || '',
+      teamLeaderIds,
+      teamLeaderNames,
+      teamLeaderId: teamLeaderIds[0] || '',
+      teamLeaderName: teamLeaderNames[0] || '',
       createdAt: data.createdAt || null,
       updatedAt: data.updatedAt || null
     };
@@ -689,6 +823,8 @@ export const firestoreService = {
 
     const teamRef = await addDoc(collection(db, TEAMS_COL), {
       name: cleanName,
+      teamLeaderIds: [],
+      teamLeaderNames: [],
       teamLeaderId: '',
       teamLeaderName: '',
       createdAt: serverTimestamp(),
@@ -698,6 +834,8 @@ export const firestoreService = {
     return {
       id: teamRef.id,
       name: cleanName,
+      teamLeaderIds: [],
+      teamLeaderNames: [],
       teamLeaderId: '',
       teamLeaderName: ''
     };
@@ -810,6 +948,7 @@ export const firestoreService = {
     await deleteDoc(doc(db, TEAMS_COL, id));
   },
 
+  // Add one Team Leader without replacing the other leaders of this team.
   async setTeamLeader(teamId: string, leaderId: string) {
     if (!teamId || !leaderId) {
       throw new Error('Team and Team Leader are required.');
@@ -832,34 +971,51 @@ export const firestoreService = {
       throw new Error('Administrator or Manager cannot be assigned as a Team Leader.');
     }
 
-    const otherLeaderships = await getDocs(
-      query(collection(db, TEAMS_COL), where("teamLeaderId", "==", leaderId))
-    );
+    // A Team Leader belongs to one team, but that team can have many leaders.
+    // Remove this user from leadership of any OTHER team first.
+    const allTeams = await this.getTeams();
 
     await Promise.all(
-      otherLeaderships.docs
-        .filter(teamDoc => teamDoc.id !== teamId)
-        .map(teamDoc =>
-          updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
-            teamLeaderId: '',
-            teamLeaderName: '',
-            updatedAt: serverTimestamp()
-          })
+      allTeams
+        .filter((otherTeam: any) =>
+          otherTeam.id !== teamId &&
+          (otherTeam.teamLeaderIds || []).includes(leaderId)
         )
+        .map(async (otherTeam: any) => {
+          const nextPairs = (otherTeam.teamLeaderIds || [])
+            .map((id: string, index: number) => ({
+              id,
+              name: (otherTeam.teamLeaderNames || [])[index] || ''
+            }))
+            .filter((item: any) => item.id !== leaderId);
+
+          await updateDoc(doc(db, TEAMS_COL, otherTeam.id), {
+            teamLeaderIds: nextPairs.map((item: any) => item.id),
+            teamLeaderNames: nextPairs.map((item: any) => item.name),
+            teamLeaderId: nextPairs[0]?.id || '',
+            teamLeaderName: nextPairs[0]?.name || '',
+            updatedAt: serverTimestamp()
+          });
+        })
     );
 
-    if (team.teamLeaderId && team.teamLeaderId !== leaderId) {
-      const oldLeaderSnap = await getDoc(doc(db, USERS_COL, team.teamLeaderId));
+    const currentIds = Array.isArray((team as any).teamLeaderIds)
+      ? [...(team as any).teamLeaderIds]
+      : ((team as any).teamLeaderId ? [(team as any).teamLeaderId] : []);
 
-      if (oldLeaderSnap.exists()) {
-        const oldLeaderData = oldLeaderSnap.data();
+    const currentNames = Array.isArray((team as any).teamLeaderNames)
+      ? [...(team as any).teamLeaderNames]
+      : currentIds.map((id: string) =>
+          id === (team as any).teamLeaderId ? ((team as any).teamLeaderName || '') : ''
+        );
 
-        await updateDoc(doc(db, USERS_COL, team.teamLeaderId), {
-          ...(oldLeaderData.role === 'Team Leader' ? { role: 'Agent' } : {}),
-          teamId,
-          teamName: team.name
-        });
-      }
+    const existingIndex = currentIds.indexOf(leaderId);
+
+    if (existingIndex >= 0) {
+      currentNames[existingIndex] = leader.name || currentNames[existingIndex] || '';
+    } else {
+      currentIds.push(leaderId);
+      currentNames.push(leader.name || '');
     }
 
     await updateDoc(doc(db, USERS_COL, leaderId), {
@@ -869,30 +1025,55 @@ export const firestoreService = {
     });
 
     await updateDoc(doc(db, TEAMS_COL, teamId), {
-      teamLeaderId: leaderId,
-      teamLeaderName: leader.name,
+      teamLeaderIds: currentIds,
+      teamLeaderNames: currentNames,
+      teamLeaderId: currentIds[0] || '',
+      teamLeaderName: currentNames[0] || '',
       updatedAt: serverTimestamp()
     });
 
     return {
       teamId,
       leaderId,
-      leaderName: leader.name
+      leaderName: leader.name,
+      teamLeaderIds: currentIds,
+      teamLeaderNames: currentNames
     };
   },
 
-  async clearTeamLeader(teamId: string) {
+  async removeTeamLeader(teamId: string, leaderId: string) {
+    if (!teamId || !leaderId) return;
+
     const team = await this.getTeam(teamId);
     if (!team) return;
 
-    if (team.teamLeaderId) {
-      const leaderSnap = await getDoc(doc(db, USERS_COL, team.teamLeaderId));
+    const currentIds = Array.isArray((team as any).teamLeaderIds)
+      ? [...(team as any).teamLeaderIds]
+      : ((team as any).teamLeaderId ? [(team as any).teamLeaderId] : []);
 
-      if (leaderSnap.exists()) {
-        const leaderData = leaderSnap.data();
+    const currentNames = Array.isArray((team as any).teamLeaderNames)
+      ? [...(team as any).teamLeaderNames]
+      : currentIds.map((id: string) =>
+          id === (team as any).teamLeaderId ? ((team as any).teamLeaderName || '') : ''
+        );
 
-        await updateDoc(doc(db, USERS_COL, team.teamLeaderId), {
-          ...(leaderData.role === 'Team Leader' ? { role: 'Agent' } : {}),
+    const nextPairs = currentIds
+      .map((id: string, index: number) => ({
+        id,
+        name: currentNames[index] || ''
+      }))
+      .filter((item: any) => item.id !== leaderId);
+
+    const leaderSnap = await getDoc(doc(db, USERS_COL, leaderId));
+
+    if (leaderSnap.exists()) {
+      const leaderData = leaderSnap.data();
+      if (
+        leaderData.role === 'Team Leader' &&
+        String(leaderData.teamId || '') === String(teamId)
+      ) {
+        await updateDoc(doc(db, USERS_COL, leaderId), {
+          role: 'Agent',
           teamId,
           teamName: team.name
         });
@@ -900,10 +1081,71 @@ export const firestoreService = {
     }
 
     await updateDoc(doc(db, TEAMS_COL, teamId), {
-      teamLeaderId: '',
-      teamLeaderName: '',
+      teamLeaderIds: nextPairs.map((item: any) => item.id),
+      teamLeaderNames: nextPairs.map((item: any) => item.name),
+      teamLeaderId: nextPairs[0]?.id || '',
+      teamLeaderName: nextPairs[0]?.name || '',
       updatedAt: serverTimestamp()
     });
+  },
+
+  // Replace the full Team Leader selection for a team.
+  async setTeamLeaders(teamId: string, leaderIds: string[]) {
+    if (!teamId) {
+      throw new Error('Team is required.');
+    }
+
+    const uniqueLeaderIds = Array.from(
+      new Set((leaderIds || []).filter(Boolean).map(id => String(id)))
+    );
+
+    const team = await this.getTeam(teamId);
+    if (!team) {
+      throw new Error('Team not found.');
+    }
+
+    const previousIds = Array.isArray((team as any).teamLeaderIds)
+      ? [...(team as any).teamLeaderIds]
+      : ((team as any).teamLeaderId ? [(team as any).teamLeaderId] : []);
+
+    const removedIds = previousIds.filter((id: string) => !uniqueLeaderIds.includes(id));
+
+    for (const removedId of removedIds) {
+      await this.removeTeamLeader(teamId, removedId);
+    }
+
+    for (const leaderId of uniqueLeaderIds) {
+      await this.setTeamLeader(teamId, leaderId);
+    }
+
+    // Re-read after additive/removal operations and keep selected order stable.
+    const refreshedTeam = await this.getTeam(teamId);
+    const refreshedIds = (refreshedTeam as any)?.teamLeaderIds || [];
+    const refreshedNames = (refreshedTeam as any)?.teamLeaderNames || [];
+
+    const orderedPairs = uniqueLeaderIds
+      .map((leaderId: string) => {
+        const index = refreshedIds.indexOf(leaderId);
+        return {
+          id: leaderId,
+          name: index >= 0 ? (refreshedNames[index] || '') : ''
+        };
+      })
+      .filter((item: any) => refreshedIds.includes(item.id));
+
+    await updateDoc(doc(db, TEAMS_COL, teamId), {
+      teamLeaderIds: orderedPairs.map((item: any) => item.id),
+      teamLeaderNames: orderedPairs.map((item: any) => item.name),
+      teamLeaderId: orderedPairs[0]?.id || '',
+      teamLeaderName: orderedPairs[0]?.name || '',
+      updatedAt: serverTimestamp()
+    });
+
+    return await this.getTeam(teamId);
+  },
+
+  async clearTeamLeader(teamId: string) {
+    return await this.setTeamLeaders(teamId, []);
   },
 
   // Leads
