@@ -139,7 +139,7 @@ export default function Leads() {
 
   const fetchLeads = async () => {
     try {
-      const data = await firestoreService.getLeads(currentUser.role === 'Agent' ? currentUser.id : undefined);
+      const data = await firestoreService.getLeadsForUser(currentUser);
       setLeads(data);
     } catch (err) {
       console.error('Failed to fetch leads:', err);
@@ -148,6 +148,22 @@ export default function Leads() {
 
   const fetchAgents = async () => {
     try {
+      if (currentUser.role === 'Team Leader' && currentUser.id) {
+        const freshUser = await firestoreService.getUser(String(currentUser.id));
+        const teamId = freshUser?.teamId || '';
+
+        if (!teamId) {
+          setAgents([]);
+          return;
+        }
+
+        const teamUsers = await firestoreService.getUsersByTeam(teamId);
+        setAgents(
+          teamUsers.filter((u: any) => ['Agent', 'Team Leader'].includes(u.role))
+        );
+        return;
+      }
+
       const data = await firestoreService.getUsers();
       setAgents(data.filter((u: any) => ['Agent', 'Team Leader', 'Manager'].includes(u.role)));
     } catch (err) {
@@ -173,7 +189,7 @@ export default function Leads() {
         clearTimeout(toastTimeoutRef.current);
       }
     };
-  }, []);
+  }, [currentUser.id, currentUser.role]);
 
   useEffect(() => {
     if (currentUser.role !== 'Agent' || !currentUser.id) {
