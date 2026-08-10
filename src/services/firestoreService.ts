@@ -1312,6 +1312,244 @@ export const firestoreService = {
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   },
 
+  // Role-aware Lead Files visibility.
+  // Administrator/Manager: all imports.
+  // Team Leader: only files uploaded by that Team Leader.
+  // Agent/other roles: no import records.
+  async getImportsForUser(userId: string) {
+    if (!userId) return [];
+
+    const currentUser = await this.getUser(String(userId));
+    if (!currentUser) return [];
+
+    const role = String(currentUser.role || 'Agent').trim();
+
+    if (role === 'Administrator' || role === 'Manager') {
+      return await this.getImports();
+    }
+
+    if (role === 'Team Leader') {
+      const q = query(
+        collection(db, IMPORTS_COL),
+        where("createdBy", "==", String(userId))
+      );
+      const snap = await getDocs(q);
+
+      return snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as any))
+        .sort((a: any, b: any) => {
+          const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+          const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+          return dateB.getTime() - dateA.getTime();
+        });
+    }
+
+    return [];
+  },
+
+  async getLeadsByImport(importId: string) {
+    if (!importId) return [];
+
+    const q = query(collection(db, LEADS_COL), where("importId", "==", importId));
+    const snap = await getDocs(q);
+
+    return snap.docs.map(d => ({
+      id: d.id,
+      ...d.data()
+    }));
+  },
+
+  // Returns only users that the current role is allowed to use for distribution.
+  async getDistributionUsersForUser(userId: string) {
+    if (!userId) return [];
+
+    const currentUser = await this.getUser(String(userId));
+    if (!currentUser) return [];
+
+    const role = String(currentUser.role || 'Agent').trim();
+
+    if (role === 'Team Leader') {
+      const teamId = String(currentUser.teamId || '');
+      if (!teamId) return [];
+
+      const teamUsers = await this.getUsersByTeam(teamId);
+      return teamUsers.filter((member: any) => member.role === 'Agent');
+    }
+
+    if (role === 'Administrator' || role === 'Manager') {
+      const allUsers = await this.getUsers();
+      return allUsers.filter((member: any) =>
+        ['Agent', 'Team Leader'].includes(member.role)
+      );
+    }
+
+    return [];
+  },
+
+  // Internal permission validation used by import distribution and reshuffle.
+  async _validateImportDistributionAccess(importId: string, agentIds: string[], userId: string) {
+    if (!importId) throw new Error('Import is required.');
+    if (!userId) throw new Error('User is required.');
+    if (!Array.isArray(agentIds) || agentIds.length === 0) {
+      throw new Error('Select at least one agent.');
+    }
+
+    const [currentUser, importSnap] = await Promise.all([
+      this.getUser(String(userId)),
+      getDoc(doc(db, IMPORTS_COL, importId))
+    ]);
+
+    if (!currentUser) throw new Error('Current user not found.');
+    if (!importSnap.exists()) throw new Error('Lead file not found.');
+
+    const importData = importSnap.data() as any;
+    const role = String(currentUser.role || 'Agent').trim();
+    const uniqueAgentIds = Array.from(new Set(agentIds.map(id => String(id)).filter(Boolean)));
+
+    if (role === 'Team Leader') {
+      if (String(importData.createdBy || '') !== String(userId)) {
+        throw new Error('You can only distribute lead files that you uploaded.');
+      }
+
+      const teamId = String(currentUser.teamId || '');
+      if (!teamId) {
+        throw new Error('Your Team Leader account is not assigned to a team.');
+      }
+
+      const teamUsers = await this.getUsersByTeam(teamId);
+      const allowedAgentIds = new Set(
+        teamUsers
+          .filter((member: any) => member.role === 'Agent')
+          .map((member: any) => String(member.id))
+      );
+
+      const invalidAgent = uniqueAgentIds.find(id => !allowedAgentIds.has(id));
+      if (invalidAgent) {
+        throw new Error('Team Leaders can distribute leads only to Agents in their own team.');
+      }
+
+      return {
+        currentUser,
+        importData,
+        agentIds: uniqueAgentIds
+      };
+    }
+
+    if (role === 'Administrator' || role === 'Manager') {
+      const allUsers = await this.getUsers();
+      const allowedAgentIds = new Set(
+        allUsers
+          .filter((member: any) => ['Agent', 'Team Leader'].includes(member.role))
+          .map((member: any) => String(member.id))
+      );
+
+      const invalidAgent = uniqueAgentIds.find(id => !allowedAgentIds.has(id));
+      if (invalidAgent) {
+        throw new Error('One or more selected users are not valid distribution recipients.');
+      }
+
+      return {
+        currentUser,
+        importData,
+        agentIds: uniqueAgentIds
+      };
+    }
+
+    throw new Error('You do not have permission to distribute lead files.');
+  },
+
+  async distributeImportLeads(
+    importId: string,
+    agentIds: string[],
+    userId: string,
+    agentNamesMap?: Record<string, string>
+  ) {
+    const access = await this._validateImportDistributionAccess(importId, agentIds, userId);
+    const importLeads = await this.getLeadsByImport(importId);
+
+    if (importLeads.length === 0) {
+      return { total: 0, summary: {} as Record<string, number> };
+    }
+
+    const leadIds = importLeads.map((lead: any) => String(lead.id));
+    const summary = await this.distributeLeads(
+      leadIds,
+      access.agentIds as string[],
+      userId,
+      agentNamesMap
+    );
+
+    await this.logActivity({
+      user_id: userId,
+      action: "Import Distribution",
+      details: `Distributed ${leadIds.length} leads from import ${importId}.`
+    }).catch(() => {});
+
+    return {
+      total: leadIds.length,
+      summary
+    };
+  },
+
+  async reshuffleImportLeads(
+    importId: string,
+    agentIds: string[],
+    userId: string,
+    agentNamesMap?: Record<string, string>
+  ) {
+    const access = await this._validateImportDistributionAccess(importId, agentIds, userId);
+    const importLeads = await this.getLeadsByImport(importId);
+
+    if (importLeads.length === 0) {
+      return { total: 0, summary: {} as Record<string, number> };
+    }
+
+    const summary: Record<string, number> = {};
+    const BATCH_SIZE = 500;
+    let batch = writeBatch(db);
+    let batchCount = 0;
+    const commits: Promise<void>[] = [];
+    const now = new Date();
+
+    for (let index = 0; index < importLeads.length; index++) {
+      const lead: any = importLeads[index];
+      const agentId = String((access.agentIds as string[])[index % (access.agentIds as string[]).length]);
+
+      batch.update(doc(db, LEADS_COL, String(lead.id)), {
+        assigned_to: agentId,
+        updatedAt: now
+      });
+
+      const displayName = agentNamesMap?.[agentId] || agentId;
+      summary[displayName] = (summary[displayName] || 0) + 1;
+
+      batchCount++;
+
+      if (batchCount === BATCH_SIZE) {
+        commits.push(batch.commit());
+        batch = writeBatch(db);
+        batchCount = 0;
+      }
+    }
+
+    if (batchCount > 0) {
+      commits.push(batch.commit());
+    }
+
+    await Promise.all(commits);
+
+    await this.logActivity({
+      user_id: userId,
+      action: "Import Reshuffle",
+      details: `Reshuffled ${importLeads.length} leads from import ${importId}.`
+    }).catch(() => {});
+
+    return {
+      total: importLeads.length,
+      summary
+    };
+  },
+
   async deleteImport(importId: string) {
     const q = query(collection(db, LEADS_COL), where("importId", "==", importId));
     const snap = await getDocs(q);
