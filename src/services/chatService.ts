@@ -421,6 +421,87 @@ export const chatService = {
     return { id: snap.docs[0].id, ...snap.docs[0].data() };
   },
 
+  async searchGifs(searchTerm: string, limitCount = 18) {
+    const apiKey = (import.meta as any).env?.VITE_GIPHY_API_KEY || '';
+    if (!apiKey) {
+      throw new Error('GIF search is not configured. Add VITE_GIPHY_API_KEY in Vercel.');
+    }
+
+    const cleanTerm = String(searchTerm || '').trim();
+    if (!cleanTerm) {
+      return await this.getTrendingGifs(limitCount);
+    }
+
+    const params = new URLSearchParams({
+      api_key: apiKey,
+      q: cleanTerm.slice(0, 50),
+      limit: String(limitCount),
+      rating: 'pg-13',
+      lang: 'en'
+    });
+
+    const response = await fetch(`https://api.giphy.com/v1/gifs/search?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`GIF search failed (${response.status})`);
+    }
+
+    const body = await response.json();
+
+    return (body?.data || []).map((gif: any) => ({
+      id: gif.id,
+      title: gif.title || 'GIF',
+      url:
+        gif.images?.fixed_height?.url ||
+        gif.images?.downsized?.url ||
+        gif.images?.original?.url ||
+        '',
+      previewUrl:
+        gif.images?.fixed_width_small?.url ||
+        gif.images?.fixed_height_small?.url ||
+        gif.images?.fixed_height?.url ||
+        gif.images?.original?.url ||
+        '',
+      originalUrl: gif.images?.original?.url || gif.images?.downsized?.url || ''
+    })).filter((gif: any) => gif.url);
+  },
+
+  async getTrendingGifs(limitCount = 18) {
+    const apiKey = (import.meta as any).env?.VITE_GIPHY_API_KEY || '';
+    if (!apiKey) {
+      throw new Error('GIF search is not configured. Add VITE_GIPHY_API_KEY in Vercel.');
+    }
+
+    const params = new URLSearchParams({
+      api_key: apiKey,
+      limit: String(limitCount),
+      rating: 'pg-13'
+    });
+
+    const response = await fetch(`https://api.giphy.com/v1/gifs/trending?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`GIF loading failed (${response.status})`);
+    }
+
+    const body = await response.json();
+
+    return (body?.data || []).map((gif: any) => ({
+      id: gif.id,
+      title: gif.title || 'GIF',
+      url:
+        gif.images?.fixed_height?.url ||
+        gif.images?.downsized?.url ||
+        gif.images?.original?.url ||
+        '',
+      previewUrl:
+        gif.images?.fixed_width_small?.url ||
+        gif.images?.fixed_height_small?.url ||
+        gif.images?.fixed_height?.url ||
+        gif.images?.original?.url ||
+        '',
+      originalUrl: gif.images?.original?.url || gif.images?.downsized?.url || ''
+    })).filter((gif: any) => gif.url);
+  },
+
   async getOrCreateDirectChat(userId1: string, userId2: string, user2Name: string) {
     if (!userId1 || !userId2 || userId1 === userId2) {
       throw new Error("A direct chat requires two different users");
