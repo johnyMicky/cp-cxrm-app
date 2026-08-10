@@ -29,6 +29,9 @@ interface User {
 interface TeamRecord {
   id: string;
   name: string;
+  teamLeaderIds?: string[];
+  teamLeaderNames?: string[];
+  // Legacy first-leader fields remain supported for existing Firestore teams.
   teamLeaderId?: string;
   teamLeaderName?: string;
   createdAt?: any;
@@ -225,9 +228,16 @@ export default function Team() {
         ) : teams.length > 0 ? (
           teams.map((team) => {
             const members = users.filter((user) => user.teamId === team.id);
-            const teamLeader =
-              members.find((user) => user.id === team.teamLeaderId) ||
-              members.find((user) => user.role === 'Team Leader');
+            const leaderIds =
+              team.teamLeaderIds && team.teamLeaderIds.length > 0
+                ? team.teamLeaderIds
+                : (team.teamLeaderId ? [team.teamLeaderId] : []);
+
+            const teamLeaders = members.filter(
+              (user) =>
+                leaderIds.includes(user.id) ||
+                (user.role === 'Team Leader' && user.teamId === team.id)
+            );
 
             const agents = members.filter((user) => user.role === 'Agent');
 
@@ -277,24 +287,36 @@ export default function Team() {
                 <div className="mt-5 pt-4 border-t border-white/5">
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                      Team Leader
+                      Team Leaders
                     </span>
+                    {teamLeaders.length > 0 && (
+                      <span className="text-[10px] text-blue-400 font-semibold">
+                        {teamLeaders.length}
+                      </span>
+                    )}
                   </div>
 
-                  {teamLeader ? (
-                    <div className="flex items-center space-x-3">
-                      <img
-                        src={teamLeader.avatar}
-                        alt=""
-                        className="w-8 h-8 rounded-full border border-white/10 object-cover"
-                      />
-                      <div className="min-w-0">
-                        <div className="flex items-center space-x-1.5">
-                          <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                          <p className="text-sm font-medium text-white truncate">{teamLeader.name}</p>
+                  {teamLeaders.length > 0 ? (
+                    <div className="space-y-2">
+                      {teamLeaders.map((teamLeader) => (
+                        <div
+                          key={teamLeader.id}
+                          className="flex items-center space-x-3 bg-white/[0.02] border border-white/5 rounded-lg p-2.5"
+                        >
+                          <img
+                            src={teamLeader.avatar}
+                            alt=""
+                            className="w-8 h-8 rounded-full border border-white/10 object-cover"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center space-x-1.5">
+                              <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                              <p className="text-sm font-medium text-white truncate">{teamLeader.name}</p>
+                            </div>
+                            <p className="text-xs text-slate-500 truncate">{teamLeader.email}</p>
+                          </div>
                         </div>
-                        <p className="text-xs text-slate-500 truncate">{teamLeader.email}</p>
-                      </div>
+                      ))}
                     </div>
                   ) : (
                     <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
@@ -727,7 +749,7 @@ function UserModal({
             </select>
             {formData.role === 'Team Leader' && (
               <p className="text-xs text-amber-400">
-                Assigning a Team Leader to a team will make this user that team's active Team Leader.
+                Assigning this user as Team Leader will add them to the selected team's Team Leaders without replacing the others.
               </p>
             )}
           </div>
@@ -780,13 +802,27 @@ function TeamModal({
   onSuccess: () => void;
 }) {
   const [name, setName] = useState(team?.name || '');
-  const [teamLeaderId, setTeamLeaderId] = useState(team?.teamLeaderId || '');
+  const [teamLeaderIds, setTeamLeaderIds] = useState<string[]>(
+    team?.teamLeaderIds && team.teamLeaderIds.length > 0
+      ? team.teamLeaderIds
+      : (team?.teamLeaderId ? [team.teamLeaderId] : [])
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const leaderCandidates = users.filter(
-    (user) => !['Administrator', 'Manager'].includes(user.role) || user.id === teamLeaderId
+    (user) =>
+      !['Administrator', 'Manager'].includes(user.role) ||
+      teamLeaderIds.includes(user.id)
   );
+
+  const toggleLeader = (userId: string) => {
+    setTeamLeaderIds((current) =>
+      current.includes(userId)
+        ? current.filter((id) => id !== userId)
+        : [...current, userId]
+    );
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -807,19 +843,13 @@ function TeamModal({
           name: cleanName
         });
 
-        if (teamLeaderId) {
-          await firestoreService.setTeamLeader(team.id, teamLeaderId);
-        } else {
-          await firestoreService.clearTeamLeader(team.id);
-        }
+        await firestoreService.setTeamLeaders(team.id, teamLeaderIds);
       } else {
         const createdTeam = await firestoreService.createTeam({
           name: cleanName
         });
 
-        if (teamLeaderId) {
-          await firestoreService.setTeamLeader(createdTeam.id, teamLeaderId);
-        }
+        await firestoreService.setTeamLeaders(createdTeam.id, teamLeaderIds);
       }
 
       onSuccess();
@@ -870,23 +900,66 @@ function TeamModal({
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-              Team Leader
-            </label>
-            <select
-              value={teamLeaderId}
-              onChange={(e) => setTeamLeaderId(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all appearance-none"
-            >
-              <option value="">No Team Leader</option>
-              {leaderCandidates.map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.name} — {user.role}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+                Team Leaders
+              </label>
+              <span className="text-[10px] text-blue-400 font-semibold">
+                {teamLeaderIds.length} selected
+              </span>
+            </div>
+
+            <div className="max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-white/[0.02] p-2 space-y-1">
+              {leaderCandidates.map((user) => {
+                const selected = teamLeaderIds.includes(user.id);
+
+                return (
+                  <button
+                    key={user.id}
+                    type="button"
+                    onClick={() => toggleLeader(user.id)}
+                    className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition-colors border ${
+                      selected
+                        ? 'bg-blue-500/10 border-blue-500/30'
+                        : 'bg-transparent border-transparent hover:bg-white/5'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <img
+                        src={user.avatar}
+                        alt={user.name}
+                        className="w-8 h-8 rounded-full border border-white/10 object-cover"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{user.name}</p>
+                        <p className="text-xs text-slate-500 truncate">
+                          {user.email} · {user.role}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div
+                      className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                        selected
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'border-white/20 text-transparent'
+                      }`}
+                    >
+                      ✓
+                    </div>
+                  </button>
+                );
+              })}
+
+              {leaderCandidates.length === 0 && (
+                <div className="px-3 py-6 text-center text-xs text-slate-500 italic">
+                  No users are available for Team Leader assignment.
+                </div>
+              )}
+            </div>
+
             <p className="text-xs text-slate-500">
-              The selected user will automatically receive the Team Leader role and be assigned to this team.
+              You can select multiple Team Leaders. Selected users automatically receive the Team Leader role and are assigned to this team.
             </p>
           </div>
 
