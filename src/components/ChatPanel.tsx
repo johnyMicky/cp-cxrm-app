@@ -88,7 +88,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       }
     });
 
-    chatService.getAllUsers().then(setUsers).catch(console.error);
+    chatService.getVisibleUsers(currentUserId, currentUserRole).then(setUsers).catch(console.error);
 
     return () => {
       unsubscribe();
@@ -99,9 +99,16 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     if (!selectedChat || !currentUserId) return;
 
     const unsubscribe = chatService.getMessages(selectedChat.id, (data) => {
-      setMessages(data);
+      // A direct conversation must only contain messages from its two members.
+      // This also protects the UI from legacy/corrupt records that were written
+      // into the wrong direct chat.
+      const safeMessages = selectedChat.isDirect
+        ? data.filter((m: any) => selectedChat.members?.includes(m.senderId))
+        : data;
 
-      data.forEach((m) => {
+      setMessages(safeMessages);
+
+      safeMessages.forEach((m) => {
         if (!m.seenBy?.includes(currentUserId)) {
           chatService.markAsSeen(selectedChat.id, m.id, currentUserId).catch(console.error);
         }
@@ -124,8 +131,17 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const canManageGroups =
-    currentUserRole === 'Administrator' || currentUserRole === 'Manager';
+  // Every CRM role may create a group.
+  const canCreateGroups = true;
+
+  const canManageSelectedGroup =
+    !!selectedChat &&
+    !selectedChat.isDirect &&
+    (
+      currentUserRole === 'Administrator' ||
+      currentUserRole === 'Manager' ||
+      selectedChat.createdBy === currentUserId
+    );
 
   const canDeleteSelectedGroup =
     !!selectedChat &&
@@ -489,29 +505,34 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     }
   };
 
-  const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const term = e.target.value;
     setSearchTerm(term);
-
-    if (term.includes('@') && term.includes('.')) {
-      setIsSearchingUser(true);
-      try {
-        const user = await chatService.findUserByEmail(term);
-        if (user && user.id !== currentUserId) {
-          setFoundUser(user);
-        } else {
-          setFoundUser(null);
-        }
-      } catch (err) {
-        console.error("User search failed:", err);
-        setFoundUser(null);
-      } finally {
-        setIsSearchingUser(false);
-      }
-    } else {
-      setFoundUser(null);
-    }
+    setFoundUser(null);
+    setIsSearchingUser(false);
   };
+
+  const visiblePeople = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+
+    const candidates = users
+      .filter((user) => user.id !== currentUserId)
+      .filter((user) => {
+        if (!term) return true;
+        const name = String(user.name || '').toLowerCase();
+        const email = String(user.email || '').toLowerCase();
+        const role = String(user.role || '').toLowerCase();
+        const teamName = String(user.teamName || '').toLowerCase();
+        return (
+          name.includes(term) ||
+          email.includes(term) ||
+          role.includes(term) ||
+          teamName.includes(term)
+        );
+      });
+
+    return candidates.slice(0, term ? 12 : 6);
+  }, [users, currentUserId, searchTerm]);
 
   const handleStartDirectChat = async (user: any) => {
     try {
@@ -753,7 +774,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                     </div>
                   )}
 
-                  {canManageGroups && (
+                  {canCreateGroups && (
                     <button
                       onClick={() => setIsCreatingGroup(true)}
                       className="w-full flex items-center justify-center space-x-2 bg-blue-600/10 text-blue-500 border border-blue-500/20 rounded-lg py-2 text-sm font-medium hover:bg-blue-600 hover:text-white transition-all"
@@ -762,6 +783,61 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                       <span>New Group</span>
                     </button>
                   )}
+
+                  <div className="rounded-xl border border-white/5 bg-black/20 overflow-hidden">
+                    <div className="px-3 py-2 border-b border-white/5 flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        {searchTerm.trim() ? 'People results' : 'Your team'}
+                      </span>
+                      <span className="text-[10px] text-slate-600">{visiblePeople.length}</span>
+                    </div>
+
+                    <div className="max-h-44 overflow-y-auto custom-scrollbar p-1">
+                      {visiblePeople.length > 0 ? (
+                        visiblePeople.map((user) => (
+                          <button
+                            key={user.id}
+                            type="button"
+                            onClick={() => handleStartDirectChat(user)}
+                            className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 hover:bg-white/5 transition-colors text-left"
+                          >
+                            <div className="relative shrink-0">
+                              {user.avatar ? (
+                                <img
+                                  src={user.avatar}
+                                  alt={user.name || user.email}
+                                  className="w-8 h-8 rounded-full object-cover border border-white/10"
+                                />
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold">
+                                  {(user.name || user.email || '?').charAt(0).toUpperCase()}
+                                </div>
+                              )}
+                              <span
+                                className={cn(
+                                  "absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#0A0F1C]",
+                                  user.isOnline ? "bg-emerald-500" : "bg-slate-600"
+                                )}
+                              />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-semibold text-slate-200 truncate">
+                                {user.name || user.email || 'User'}
+                              </p>
+                              <p className="text-[10px] text-slate-500 truncate">
+                                {user.role || 'User'}{user.teamName ? ` · ${user.teamName}` : ''}
+                              </p>
+                            </div>
+                            <MessageCircle className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                          </button>
+                        ))
+                      ) : (
+                        <div className="px-3 py-4 text-center text-xs text-slate-600">
+                          No users found in your chat scope.
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto custom-scrollbar px-2 space-y-1">
@@ -867,7 +943,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                           <Sparkles className={cn("w-4 h-4", isSummarizing && "animate-spin")} />
                         </button>
 
-                        {!selectedChat.isDirect && canManageGroups && (
+                        {!selectedChat.isDirect && canManageSelectedGroup && (
                           <button
                             onClick={() => {
                               setIsAddingMember(true);
@@ -917,7 +993,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                         <div className="flex items-center space-x-2 min-w-0">
                           <Pin className="w-3 h-3 text-blue-400 flex-shrink-0" />
                           <p className="text-[10px] text-blue-300 truncate">
-                            <span className="font-bold mr-1">{pinnedMessage.senderName}:</span>
+                            <span className="font-bold mr-1">{users.find((u) => u.id === pinnedMessage.senderId)?.name || pinnedMessage.senderName}:</span>
                             {pinnedMessage.text || "[File]"}
                           </p>
                         </div>
@@ -935,6 +1011,10 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                         {messages.map((msg, i) => {
                           const isMe = msg.senderId === currentUserId;
                           const showAvatar = i === 0 || messages[i - 1].senderId !== msg.senderId;
+                          const liveSenderName =
+                            users.find((u) => u.id === msg.senderId)?.name ||
+                            msg.senderName ||
+                            'User';
 
                           return (
                             <div
@@ -943,7 +1023,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                             >
                               {!isMe && showAvatar && (
                                 <span className="text-[10px] font-bold text-slate-500 mb-1 ml-1">
-                                  {msg.senderName}
+                                  {liveSenderName}
                                 </span>
                               )}
 
