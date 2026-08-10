@@ -81,6 +81,19 @@ export const chatService = {
     });
   },
 
+  async addMembersToChat(chatId: string, userIds: string[]) {
+    const cleanIds = [...new Set((userIds || []).filter(Boolean).map(String))];
+
+    if (!chatId) throw new Error("Chat is required");
+    if (cleanIds.length === 0) throw new Error("Select at least one user");
+
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      members: arrayUnion(...cleanIds)
+    });
+
+    return cleanIds.length;
+  },
+
   async deleteChat(chatId: string, currentUserId: string, currentUserRole: string) {
     const chatRef = doc(db, CHATS_COL, chatId);
     const chatSnap = await getDoc(chatRef);
