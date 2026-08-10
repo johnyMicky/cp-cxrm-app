@@ -130,16 +130,41 @@ export const chatService = {
   },
 
   getChats(userId: string, role: string, callback: (chats: any[]) => void) {
-    let q;
-
-    if (role === "Administrator") {
-      q = query(collection(db, CHATS_COL));
-    } else {
-      q = query(collection(db, CHATS_COL), where("members", "array-contains", userId));
-    }
+    // Regular chat is participant-private for every role, including Administrator.
+    // This prevents an Administrator from accidentally opening a direct chat
+    // between two other users and seeing a misleading conversation title.
+    const q = query(
+      collection(db, CHATS_COL),
+      where("members", "array-contains", userId)
+    );
 
     return onSnapshot(q, (snap) => {
-      const chats = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const rawChats = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+
+      // Old versions could create duplicate direct chats for the same pair.
+      // Keep only the most recently active one in the UI without deleting history.
+      const directByPair = new Map<string, any>();
+      const groups: any[] = [];
+
+      for (const chat of rawChats) {
+        if (!chat.isDirect) {
+          groups.push(chat);
+          continue;
+        }
+
+        const pairKey = (chat.members || []).map((id: string) => String(id)).sort().join("__");
+        if (!pairKey) continue;
+
+        const existing = directByPair.get(pairKey);
+        const chatTime = chat.lastMessageAt?.toMillis?.() || chat.createdAt?.toMillis?.() || 0;
+        const existingTime = existing?.lastMessageAt?.toMillis?.() || existing?.createdAt?.toMillis?.() || 0;
+
+        if (!existing || chatTime >= existingTime) {
+          directByPair.set(pairKey, chat);
+        }
+      }
+
+      const chats = [...groups, ...Array.from(directByPair.values())];
 
       chats.sort((a: any, b: any) => {
         const timeA = a.lastMessageAt?.toMillis?.() || a.createdAt?.toMillis?.() || 0;
@@ -318,43 +343,130 @@ export const chatService = {
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   },
 
-  async findUserByEmail(email: string) {
+  async getVisibleUsers(currentUserId: string, currentUserRole: string) {
+    if (!currentUserId) return [];
+
+    const allUsers = await this.getAllUsers() as any[];
+    const currentUser = allUsers.find((user: any) => String(user.id) === String(currentUserId));
+    const role = String(currentUser?.role || currentUserRole || 'Agent');
+    const teamId = String(currentUser?.teamId || '');
+
+    let visible: any[];
+
+    if (role === 'Administrator' || role === 'Manager') {
+      visible = allUsers;
+    } else {
+      visible = allUsers.filter((user: any) => {
+        if (String(user.id) === String(currentUserId)) return true;
+
+        const userRole = String(user.role || 'Agent');
+        const sameTeam = !!teamId && String(user.teamId || '') === teamId;
+
+        // Agents and Team Leaders can communicate with their own team
+        // plus Managers, as requested.
+        return (
+          (sameTeam && ['Agent', 'Team Leader'].includes(userRole)) ||
+          userRole === 'Manager'
+        );
+      });
+    }
+
+    // Remove legacy duplicate user documents by normalized email where possible.
+    const deduped = new Map<string, any>();
+    for (const user of visible) {
+      const key = String(user.email || user.id || '').trim().toLowerCase();
+      if (!key) continue;
+      const existing = deduped.get(key);
+      if (!existing || String(user.id) === String(currentUserId)) {
+        deduped.set(key, user);
+      }
+    }
+
+    return Array.from(deduped.values()).sort((a: any, b: any) =>
+      String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''))
+    );
+  },
+
+  async findUserByEmail(
+    email: string,
+    currentUserId?: string,
+    currentUserRole?: string
+  ) {
     const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) return null;
+
+    if (currentUserId) {
+      const visibleUsers = await this.getVisibleUsers(currentUserId, currentUserRole || 'Agent');
+      return (visibleUsers as any[]).find((user: any) =>
+        String(user.email || '').trim().toLowerCase() === cleanEmail
+      ) || null;
+    }
+
     const q = query(collection(db, USERS_COL), where("email", "==", cleanEmail));
     const snap = await getDocs(q);
-
     if (snap.empty) return null;
-
     return { id: snap.docs[0].id, ...snap.docs[0].data() };
   },
 
   async getOrCreateDirectChat(userId1: string, userId2: string, user2Name: string) {
-    const q = query(
-      collection(db, CHATS_COL),
-      where("members", "array-contains", userId1),
-      where("isDirect", "==", true)
-    );
-
-    const snap = await getDocs(q);
-    const existingChat = snap.docs.find((d) => {
-      const data = d.data() as any;
-      return data.members.includes(userId2) && data.members.length === 2;
-    });
-
-    if (existingChat) {
-      return { id: existingChat.id, ...existingChat.data() };
+    if (!userId1 || !userId2 || userId1 === userId2) {
+      throw new Error("A direct chat requires two different users");
     }
 
-    const docRef = await addDoc(collection(db, CHATS_COL), {
+    // Query only by membership, then filter in memory. This avoids requiring a
+    // composite Firestore index and also works with legacy direct-chat records.
+    const snap = await getDocs(
+      query(collection(db, CHATS_COL), where("members", "array-contains", userId1))
+    );
+
+    const matches = snap.docs.filter((d) => {
+      const data = d.data() as any;
+      return (
+        data.isDirect === true &&
+        Array.isArray(data.members) &&
+        data.members.length === 2 &&
+        data.members.includes(userId2)
+      );
+    });
+
+    if (matches.length > 0) {
+      matches.sort((a, b) => {
+        const ad = a.data() as any;
+        const bd = b.data() as any;
+        const at = ad.lastMessageAt?.toMillis?.() || ad.createdAt?.toMillis?.() || 0;
+        const bt = bd.lastMessageAt?.toMillis?.() || bd.createdAt?.toMillis?.() || 0;
+        return bt - at;
+      });
+
+      const existingChat = matches[0];
+      const directKey = [userId1, userId2].sort().join("__");
+
+      await updateDoc(existingChat.ref, { directKey });
+      return { id: existingChat.id, ...existingChat.data(), directKey };
+    }
+
+    // Deterministic document id prevents future duplicate direct chats even if
+    // both users start the conversation at the same time.
+    const sortedIds = [userId1, userId2].sort();
+    const directKey = sortedIds.join("__");
+    const directRef = doc(db, CHATS_COL, `direct_${directKey}`);
+    const existingDeterministic = await getDoc(directRef);
+
+    if (existingDeterministic.exists()) {
+      return { id: existingDeterministic.id, ...existingDeterministic.data() };
+    }
+
+    await setDoc(directRef, {
       name: user2Name,
-      members: [userId1, userId2],
+      members: sortedIds,
       isDirect: true,
+      directKey,
       createdAt: serverTimestamp(),
       lastMessageAt: serverTimestamp(),
       typing: {}
     });
 
-    const newDoc = await getDoc(docRef);
+    const newDoc = await getDoc(directRef);
     return { id: newDoc.id, ...newDoc.data() };
   }
 };
