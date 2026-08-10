@@ -69,7 +69,10 @@ function Sidebar({
   useEffect(() => {
     const checkCallbacks = async () => {
       try {
-        const leads = await firestoreService.getLeads(currentUserRole === 'Agent' ? currentUserId : undefined);
+        const leads = await firestoreService.getLeadsForUser({
+          id: currentUserId,
+          role: currentUserRole
+        });
         const now = new Date();
         const thirtyMinsLater = new Date(now.getTime() + 30 * 60000);
 
