@@ -116,7 +116,7 @@ function Sidebar({
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator', 'Team Leader'] },
-    { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager'] },
+    { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
     { name: 'Activity', path: '/activity', icon: Activity, roles: ['Administrator', 'Manager'] },
     { name: 'Work Logs', path: '/work-logs', icon: Clock3, roles: ['Administrator', 'Manager', 'Team Leader'] },
