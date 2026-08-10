@@ -56,6 +56,13 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview: string; type: 'image' | 'file' }[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isDeletingChat, setIsDeletingChat] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<any>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showGifPicker, setShowGifPicker] = useState(false);
+  const [gifSearchTerm, setGifSearchTerm] = useState('');
+  const [gifResults, setGifResults] = useState<any[]>([]);
+  const [isLoadingGifs, setIsLoadingGifs] = useState(false);
+  const [gifError, setGifError] = useState<string | null>(null);
 
   const [showMentionDropdown, setShowMentionDropdown] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
@@ -69,6 +76,14 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   const currentUserId = localStorage.getItem('userId') || '';
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
   const userName = localStorage.getItem('userName') || 'User';
+
+  const emojiOptions = [
+    '😀','😃','😄','😁','😂','🤣','😊','😍',
+    '😘','😎','🤔','😅','🙄','😴','😭','😡',
+    '👍','👎','👏','🙌','🙏','💪','👌','🤝',
+    '❤️','🔥','🎉','✅','❌','💯','🚀','👀',
+    '😈','🤦','🤷','🥳','😇','😜','🤩','🫡'
+  ];
 
   useEffect(() => {
     if (!isOpen || !currentUserId) return;
@@ -85,6 +100,9 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
           setMessages([]);
           setPinnedMessage(null);
           setShowMembersPanel(false);
+          setReplyingTo(null);
+          setShowEmojiPicker(false);
+          setShowGifPicker(false);
         }
       }
     });
@@ -373,12 +391,146 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     );
   };
 
+  const getReplySenderName = (msg: any) => {
+    return (
+      users.find((u) => u.id === msg?.senderId)?.name ||
+      msg?.senderName ||
+      'User'
+    );
+  };
+
+  const getReplyPreviewText = (msg: any) => {
+    if (!msg) return '';
+    if (msg.type === 'gif') return 'GIF';
+    if (msg.type === 'image') return `Photo${msg.fileName ? ` · ${msg.fileName}` : ''}`;
+    if (msg.type === 'file') return `File${msg.fileName ? ` · ${msg.fileName}` : ''}`;
+    return String(msg.text || '').slice(0, 140);
+  };
+
+  const buildReplyPayload = () => {
+    if (!replyingTo) return {};
+
+    return {
+      replyTo: {
+        messageId: replyingTo.id,
+        senderId: replyingTo.senderId || '',
+        senderName: getReplySenderName(replyingTo),
+        type: replyingTo.type || 'text',
+        text: replyingTo.text || '',
+        fileUrl: replyingTo.fileUrl || '',
+        fileName: replyingTo.fileName || '',
+        gifUrl: replyingTo.gifUrl || ''
+      }
+    };
+  };
+
+  const handleReplyToMessage = (msg: any) => {
+    setReplyingTo(msg);
+    setShowEmojiPicker(false);
+    setShowGifPicker(false);
+
+    setTimeout(() => {
+      messageInputRef.current?.focus();
+    }, 0);
+  };
+
+  const scrollToRepliedMessage = (messageId: string) => {
+    if (!messageId) return;
+    const element = document.getElementById(`chat-message-${messageId}`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    if (element) {
+      element.classList.add('ring-2', 'ring-blue-500/50');
+      setTimeout(() => {
+        element.classList.remove('ring-2', 'ring-blue-500/50');
+      }, 1400);
+    }
+  };
+
+  const handleEmojiSelect = (emoji: string) => {
+    const input = messageInputRef.current;
+    const cursorPos = input?.selectionStart ?? newMessage.length;
+    const before = newMessage.slice(0, cursorPos);
+    const after = newMessage.slice(cursorPos);
+    const nextValue = `${before}${emoji}${after}`;
+
+    setNewMessage(nextValue);
+    setShowEmojiPicker(false);
+
+    setTimeout(() => {
+      if (messageInputRef.current) {
+        const nextPos = before.length + emoji.length;
+        messageInputRef.current.focus();
+        messageInputRef.current.setSelectionRange(nextPos, nextPos);
+      }
+    }, 0);
+  };
+
+  const loadGifs = async (term = '') => {
+    setIsLoadingGifs(true);
+    setGifError(null);
+
+    try {
+      const results = term.trim()
+        ? await chatService.searchGifs(term, 18)
+        : await chatService.getTrendingGifs(18);
+
+      setGifResults(results);
+    } catch (err: any) {
+      console.error('GIF load failed:', err);
+      setGifResults([]);
+      setGifError(err?.message || 'Failed to load GIFs');
+    } finally {
+      setIsLoadingGifs(false);
+    }
+  };
+
+  const handleToggleGifPicker = () => {
+    const next = !showGifPicker;
+    setShowGifPicker(next);
+    setShowEmojiPicker(false);
+
+    if (next && gifResults.length === 0) {
+      loadGifs(gifSearchTerm);
+    }
+  };
+
+  const handleGifSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await loadGifs(gifSearchTerm);
+  };
+
+  const handleSendGif = async (gif: any) => {
+    if (!selectedChat || !gif?.url) return;
+
+    try {
+      await chatService.sendMessage(selectedChat.id, {
+        senderId: currentUserId,
+        senderName: userName,
+        type: 'gif',
+        gifUrl: gif.url,
+        gifPreviewUrl: gif.previewUrl || gif.url,
+        gifOriginalUrl: gif.originalUrl || gif.url,
+        gifTitle: gif.title || 'GIF',
+        ...buildReplyPayload()
+      });
+
+      setReplyingTo(null);
+      setShowGifPicker(false);
+      setGifSearchTerm('');
+    } catch (err: any) {
+      console.error('Failed to send GIF:', err);
+      alert(err?.message || 'Failed to send GIF');
+    }
+  };
+
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if ((!newMessage.trim() && pendingFiles.length === 0) || !selectedChat) return;
 
     const text = newMessage;
     const filesToSend = [...pendingFiles];
+    const replyPayload = buildReplyPayload();
 
     setNewMessage('');
     setPendingFiles([]);
@@ -388,7 +540,7 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     setIsUploading(true);
 
     try {
-      const uploadPromises = filesToSend.map(async (item) => {
+      const uploadPromises = filesToSend.map(async (item, index) => {
         const url = await chatService.uploadFile(item.file);
         return chatService.sendMessage(selectedChat.id, {
           senderId: currentUserId,
@@ -397,7 +549,8 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
           fileUrl: url,
           fileName: item.file.name,
           fileType: item.file.type,
-          fileSize: item.file.size
+          fileSize: item.file.size,
+          ...(!text.trim() && index === 0 ? replyPayload : {})
         });
       });
 
@@ -412,10 +565,12 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
           senderName: userName,
           type: 'text',
           mentions,
-          mentionAll
+          mentionAll,
+          ...replyPayload
         });
       }
 
+      setReplyingTo(null);
       await chatService.setTyping(selectedChat.id, currentUserId, false);
     } catch (err: any) {
       console.error("Failed to send message:", err);
@@ -547,6 +702,9 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       setFoundUser(null);
       setShowMembersPanel(false);
       setMemberSearchTerm('');
+      setReplyingTo(null);
+      setShowEmojiPicker(false);
+      setShowGifPicker(false);
     } catch (err) {
       console.error("Failed to start direct chat:", err);
       alert("Failed to start chat");
@@ -861,6 +1019,9 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                         onClick={() => {
                           setSelectedChat(chat);
                           setShowMembersPanel(false);
+                          setReplyingTo(null);
+                          setShowEmojiPicker(false);
+                          setShowGifPicker(false);
                         }}
                         className={cn(
                           "w-full flex items-center space-x-3 p-3 rounded-xl transition-all group",
@@ -1030,8 +1191,12 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
 
                           return (
                             <div
+                              id={`chat-message-${msg.id}`}
                               key={msg.id}
-                              className={cn("flex flex-col", isMe ? "items-end" : "items-start")}
+                              className={cn(
+                                "flex flex-col rounded-xl transition-all duration-300",
+                                isMe ? "items-end" : "items-start"
+                              )}
                             >
                               {!isMe && showAvatar && (
                                 <span className="text-[10px] font-bold text-slate-500 mb-1 ml-1">
@@ -1047,6 +1212,33 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                                     : "bg-white/5 text-slate-200 rounded-tl-none"
                                 )}
                               >
+                                {msg.replyTo && (
+                                  <button
+                                    type="button"
+                                    onClick={() => scrollToRepliedMessage(msg.replyTo.messageId)}
+                                    className={cn(
+                                      "w-full text-left mb-2 rounded-lg px-3 py-2 border-l-2 transition-colors",
+                                      isMe
+                                        ? "bg-black/15 border-white/60 hover:bg-black/25"
+                                        : "bg-black/20 border-blue-400 hover:bg-black/30"
+                                    )}
+                                    title="Go to replied message"
+                                  >
+                                    <p className="text-[10px] font-bold opacity-90 truncate mb-0.5">
+                                      {msg.replyTo.senderName || 'User'}
+                                    </p>
+                                    <p className="text-[10px] opacity-65 truncate">
+                                      {msg.replyTo.type === 'gif'
+                                        ? 'GIF'
+                                        : msg.replyTo.type === 'image'
+                                          ? `Photo${msg.replyTo.fileName ? ` · ${msg.replyTo.fileName}` : ''}`
+                                          : msg.replyTo.type === 'file'
+                                            ? `File${msg.replyTo.fileName ? ` · ${msg.replyTo.fileName}` : ''}`
+                                            : (msg.replyTo.text || 'Message')}
+                                    </p>
+                                  </button>
+                                )}
+
                                 {msg.type === 'text' && renderMessageText(msg.text || '')}
 
                                 {msg.type === 'image' && (
@@ -1063,6 +1255,18 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                                         <Download className="w-3 h-3" />
                                       </a>
                                     </div>
+                                  </div>
+                                )}
+
+                                {msg.type === 'gif' && (
+                                  <div className="space-y-2">
+                                    <img
+                                      src={msg.gifUrl}
+                                      alt={msg.gifTitle || 'GIF'}
+                                      className="rounded-lg max-h-72 max-w-full object-contain bg-black/20"
+                                      loading="lazy"
+                                    />
+                                    <span className="text-[9px] opacity-50">GIF via GIPHY</span>
                                   </div>
                                 )}
 
@@ -1094,6 +1298,13 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                                     isMe ? "right-0" : "left-0"
                                   )}
                                 >
+                                  <button
+                                    onClick={() => handleReplyToMessage(msg)}
+                                    className="px-1.5 py-1 hover:bg-white/5 text-slate-400 hover:text-blue-300 rounded text-[10px] font-semibold"
+                                    title="Reply"
+                                  >
+                                    ↩
+                                  </button>
                                   <button
                                     onClick={() => chatService.pinMessage(selectedChat.id, msg.id)}
                                     className="p-1 hover:bg-white/5 text-slate-400 hover:text-blue-400 rounded"
@@ -1239,6 +1450,120 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                     )}
 
                     <div className="p-4 bg-white/[0.02] border-t border-white/10">
+                      {replyingTo && (
+                        <div className="mb-3 flex items-center justify-between gap-3 rounded-xl bg-blue-500/10 border border-blue-500/20 px-3 py-2">
+                          <div className="min-w-0 border-l-2 border-blue-400 pl-3">
+                            <p className="text-[10px] font-bold text-blue-300 truncate">
+                              Replying to {getReplySenderName(replyingTo)}
+                            </p>
+                            <p className="text-[11px] text-slate-400 truncate">
+                              {getReplyPreviewText(replyingTo)}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setReplyingTo(null)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 shrink-0"
+                            title="Cancel reply"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+
+                      {showEmojiPicker && (
+                        <div className="mb-3 rounded-xl border border-white/10 bg-[#0F172A] p-3 shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-150">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500">Emoji</span>
+                            <button
+                              type="button"
+                              onClick={() => setShowEmojiPicker(false)}
+                              className="p-1 text-slate-500 hover:text-white"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-8 sm:grid-cols-10 gap-1">
+                            {emojiOptions.map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => handleEmojiSelect(emoji)}
+                                className="h-9 rounded-lg text-xl hover:bg-white/10 transition-colors"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {showGifPicker && (
+                        <div className="mb-3 rounded-xl border border-white/10 bg-[#0F172A] p-3 shadow-xl animate-in fade-in slide-in-from-bottom-2 duration-150">
+                          <div className="flex items-center justify-between gap-3 mb-3">
+                            <form onSubmit={handleGifSearch} className="flex-1 flex items-center gap-2">
+                              <div className="relative flex-1">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                                <input
+                                  type="text"
+                                  value={gifSearchTerm}
+                                  onChange={(e) => setGifSearchTerm(e.target.value)}
+                                  placeholder="Search GIFs..."
+                                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                                />
+                              </div>
+                              <button
+                                type="submit"
+                                disabled={isLoadingGifs}
+                                className="px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-semibold disabled:opacity-50"
+                              >
+                                Search
+                              </button>
+                            </form>
+                            <button
+                              type="button"
+                              onClick={() => setShowGifPicker(false)}
+                              className="p-1.5 text-slate-500 hover:text-white"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          {gifError ? (
+                            <div className="rounded-lg bg-rose-500/10 border border-rose-500/20 px-3 py-3 text-xs text-rose-300">
+                              {gifError}
+                            </div>
+                          ) : isLoadingGifs ? (
+                            <div className="py-8 flex items-center justify-center">
+                              <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-72 overflow-y-auto custom-scrollbar">
+                              {gifResults.map((gif) => (
+                                <button
+                                  key={gif.id}
+                                  type="button"
+                                  onClick={() => handleSendGif(gif)}
+                                  className="rounded-lg overflow-hidden bg-black/30 border border-white/5 hover:border-blue-500/50 transition-all"
+                                  title={gif.title || 'Send GIF'}
+                                >
+                                  <img
+                                    src={gif.previewUrl || gif.url}
+                                    alt={gif.title || 'GIF'}
+                                    className="w-full h-24 object-cover"
+                                    loading="lazy"
+                                  />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="mt-2 text-right text-[9px] text-slate-600">
+                            Powered by GIPHY
+                          </div>
+                        </div>
+                      )}
+
                       {pendingFiles.length > 0 && (
                         <div className="flex flex-wrap gap-2 mb-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
                           {pendingFiles.map((item, idx) => (
@@ -1283,6 +1608,35 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                             className="p-2 rounded-lg hover:bg-white/5 text-slate-400 transition-colors"
                           >
                             <Paperclip className="w-5 h-5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowEmojiPicker((prev) => !prev);
+                              setShowGifPicker(false);
+                            }}
+                            className={cn(
+                              "p-2 rounded-lg transition-colors text-lg leading-none",
+                              showEmojiPicker
+                                ? "bg-blue-600/10 text-blue-400"
+                                : "hover:bg-white/5 text-slate-400"
+                            )}
+                            title="Emoji"
+                          >
+                            😊
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleToggleGifPicker}
+                            className={cn(
+                              "px-2 py-1.5 rounded-lg transition-colors text-[10px] font-black tracking-wide",
+                              showGifPicker
+                                ? "bg-blue-600/10 text-blue-400"
+                                : "hover:bg-white/5 text-slate-400"
+                            )}
+                            title="GIF"
+                          >
+                            GIF
                           </button>
                         </div>
 
