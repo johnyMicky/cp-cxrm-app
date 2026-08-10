@@ -34,29 +34,56 @@ export default function LeadDetail() {
   const [editForm, setEditForm] = useState<any>({});
   const [isSchedulingCallback, setIsSchedulingCallback] = useState(false);
   const [callbackDate, setCallbackDate] = useState('');
+  const [accessDenied, setAccessDenied] = useState(false);
   
   const currentUserId = localStorage.getItem('userId');
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
 
   useEffect(() => {
     const loadData = async () => {
-      if (!id) return;
+      if (!id || !currentUserId) return;
+
+      setAccessDenied(false);
+
       try {
-        const [leadData, usersData] = await Promise.all([
-          firestoreService.getLead(id),
-          firestoreService.getUsers()
-        ]);
+        const sessionUser = {
+          id: currentUserId,
+          role: currentUserRole
+        };
+
+        const leadData = await firestoreService.getLeadForUser(id, sessionUser);
+
+        let usersData: any[] = [];
+
+        if (currentUserRole === 'Team Leader') {
+          const freshUser = await firestoreService.getUser(String(currentUserId));
+          const teamId = freshUser?.teamId || '';
+          usersData = teamId
+            ? await firestoreService.getUsersByTeam(teamId)
+            : [];
+        } else {
+          usersData = await firestoreService.getUsers();
+        }
 
         setLead(leadData);
         setEditForm(leadData);
         setUsers(usersData);
-      } catch (err) {
+      } catch (err: any) {
         console.error('Lead Detail Load Error:', err);
+
+        if (
+          err?.message === 'ACCESS_DENIED_LEAD' ||
+          err?.message === 'Access denied.'
+        ) {
+          setAccessDenied(true);
+          setLead(null);
+          setUsers([]);
+        }
       }
     };
 
     loadData();
-  }, [id]);
+  }, [id, currentUserId, currentUserRole]);
 
   const formatDate = (date: any) => {
     if (!date) return 'N/A';
@@ -79,6 +106,25 @@ export default function LeadDetail() {
       return 'Invalid Date';
     }
   };
+
+  if (accessDenied) {
+    return (
+      <div className="p-8 max-w-3xl mx-auto">
+        <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-6">
+          <h2 className="text-lg font-semibold text-rose-300">Access Denied</h2>
+          <p className="text-sm text-slate-400 mt-2">
+            You do not have permission to view this lead.
+          </p>
+          <Link
+            to="/leads"
+            className="inline-flex mt-4 text-sm font-medium text-blue-400 hover:text-blue-300"
+          >
+            Back to Leads
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   if (!lead) return <div className="p-8 text-slate-400">Loading lead details...</div>;
 
@@ -113,7 +159,7 @@ export default function LeadDetail() {
       });
     }
 
-    const data = await firestoreService.getLead(id);
+    const data = await firestoreService.getLeadForUser(id, { id: currentUserId, role: currentUserRole });
     setLead(data);
     setIsEditing(false);
   };
@@ -130,7 +176,7 @@ export default function LeadDetail() {
         action: 'Callback Scheduled',
         details: `Scheduled for ${format(new Date(callbackDate), 'MMM d, h:mm a')}`
       });
-      const data = await firestoreService.getLead(id);
+      const data = await firestoreService.getLeadForUser(id, { id: currentUserId, role: currentUserRole });
       setLead(data);
       setEditForm(data);
       setIsSchedulingCallback(false);
@@ -146,7 +192,7 @@ export default function LeadDetail() {
     await firestoreService.addNote(id, currentUserId, noteContent);
     
     setNoteContent('');
-    const data = await firestoreService.getLead(id);
+    const data = await firestoreService.getLeadForUser(id, { id: currentUserId, role: currentUserRole });
     setLead(data);
   };
 
