@@ -1608,6 +1608,52 @@ export const firestoreService = {
     return await this.getLeads();
   },
 
+  // Role/team-aware access for a single lead.
+  // Prevents Team Leaders and Agents from opening leads outside their scope.
+  async getLeadForUser(id: string, user: any) {
+    if (!id) throw new Error('Lead is required.');
+    if (!user?.id) throw new Error('Access denied.');
+
+    const freshUser = await this.getUser(String(user.id));
+    const effectiveUser = freshUser || user;
+    const role = String(effectiveUser.role || 'Agent').trim();
+
+    const lead = await this.getLead(id);
+
+    if (role === 'Administrator' || role === 'Manager') {
+      return lead;
+    }
+
+    if (role === 'Agent') {
+      if (String((lead as any).assigned_to || '') !== String(effectiveUser.id)) {
+        throw new Error('ACCESS_DENIED_LEAD');
+      }
+      return lead;
+    }
+
+    if (role === 'Team Leader') {
+      const teamId = String(effectiveUser.teamId || '');
+      if (!teamId) {
+        throw new Error('ACCESS_DENIED_LEAD');
+      }
+
+      const teamUsers = await this.getUsersByTeam(teamId);
+      const allowedUserIds = new Set(
+        teamUsers
+          .filter((member: any) => ['Agent', 'Team Leader'].includes(member.role))
+          .map((member: any) => String(member.id))
+      );
+
+      if (!allowedUserIds.has(String((lead as any).assigned_to || ''))) {
+        throw new Error('ACCESS_DENIED_LEAD');
+      }
+
+      return lead;
+    }
+
+    throw new Error('ACCESS_DENIED_LEAD');
+  },
+
 
   // Shift / Attendance tracking
   _getLocalDateKey(date = new Date()) {
