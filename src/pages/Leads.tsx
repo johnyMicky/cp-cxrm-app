@@ -22,6 +22,9 @@ const STATUSES = [
   'Underage',
   'No Experience',
   'Not Interested',
+  'Hung Up',
+  'Wrong Number',
+  'Drop',
 ];
 
 const getStatusStyles = (status: string) => {
@@ -38,6 +41,9 @@ const getStatusStyles = (status: string) => {
     case 'Underage': return 'text-red-400 border-red-500/20 bg-red-500/5';
     case 'No Experience': return 'text-red-500 border-red-600/20 bg-red-600/5';
     case 'Not Interested': return 'text-red-500 border-red-600/20 bg-red-600/5';
+    case 'Hung Up': return 'text-amber-400 border-amber-500/20 bg-amber-500/5';
+    case 'Wrong Number': return 'text-pink-400 border-pink-500/20 bg-pink-500/5';
+    case 'Drop': return 'text-slate-400 border-slate-500/20 bg-slate-500/5';
     default: return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
   }
 };
@@ -449,6 +455,9 @@ export default function Leads() {
       case 'Underage':
       case 'No Experience':
       case 'Not Interested': return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
+      case 'Hung Up': return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+      case 'Wrong Number': return 'bg-pink-500/10 text-pink-400 border-pink-500/20';
+      case 'Drop': return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
       default: return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
     }
   };
