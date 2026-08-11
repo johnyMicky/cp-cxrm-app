@@ -72,6 +72,7 @@ export default function Leads() {
   const [quickNoteText, setQuickNoteText] = useState('');
   const [isAssigning, setIsAssigning] = useState(false);
   const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
+  const [isReshuffling, setIsReshuffling] = useState(false);
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [deleteSummary, setDeleteSummary] = useState<{
@@ -159,7 +160,7 @@ export default function Leads() {
 
         const teamUsers = await firestoreService.getUsersByTeam(teamId);
         setAgents(
-          teamUsers.filter((u: any) => ['Agent', 'Team Leader'].includes(u.role))
+          teamUsers.filter((u: any) => u.role === 'Agent')
         );
         return;
       }
@@ -359,15 +360,33 @@ export default function Leads() {
   };
 
   const handleReshuffle = async () => {
+    if (isReshuffling) return;
+
+    const recipients =
+      reshuffleAgents.length > 0
+        ? reshuffleAgents
+        : agents.map(a => a.id);
+
+    if (recipients.length === 0) {
+      alert('Select at least one Agent to receive leads.');
+      return;
+    }
+
+    setIsReshuffling(true);
+
     try {
       const reshuffledCount = await firestoreService.reshuffleLeads(
-        reshuffleAgents.length > 0 ? reshuffleAgents : agents.map(a => a.id),
-        currentUser.id,
+        recipients,
+        String(currentUser.id || ''),
         reshuffleStatuses
       );
+
       handleSuccess(`Reshuffled ${reshuffledCount || 0} leads`);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Reshuffle failed:', err);
+      alert(err?.message || 'Failed to reshuffle leads.');
+    } finally {
+      setIsReshuffling(false);
     }
   };
 
@@ -642,8 +661,9 @@ export default function Leads() {
                   <span>Reshuffle Leads</span>
                 </h2>
                 <button 
-                  onClick={() => setIsReshuffleModalOpen(false)}
-                  className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors"
+                  onClick={() => !isReshuffling && setIsReshuffleModalOpen(false)}
+                  disabled={isReshuffling}
+                  className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors disabled:opacity-50"
                 >
                   <X className="w-5 h-5" />
                 </button>
