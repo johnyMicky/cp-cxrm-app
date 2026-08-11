@@ -1741,31 +1741,182 @@ export const firestoreService = {
   },
 
   async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
-    let q = query(collection(db, LEADS_COL), where("assigned_to", "!=", null));
-    if (statusFilter.length > 0) {
-      q = query(collection(db, LEADS_COL), where("status", "in", statusFilter));
+    if (!userId) {
+      throw new Error('Current user is required.');
     }
-    const snap = await getDocs(q);
-    const leads = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    
-    if (leads.length === 0) return 0;
 
-    let agentIndex = 0;
-    const promises = leads.map(async (lead: any) => {
-      const agentId = agentIds[agentIndex];
-      const agent = (await getDocs(query(collection(db, USERS_COL), where("__name__", "==", agentId)))).docs[0]?.data();
-      
-      await updateDoc(doc(db, LEADS_COL, lead.id), { assigned_to: agentId, updatedAt: serverTimestamp() });
-      await this.logActivity({
-        lead_id: lead.id,
-        user_id: userId,
-        action: "Reshuffled",
-        details: `Lead reshuffled to ${agent?.name || 'Unknown'}`
+    const requestedAgentIds = Array.from(
+      new Set((agentIds || []).map(id => String(id)).filter(Boolean))
+    );
+
+    if (requestedAgentIds.length === 0) {
+      throw new Error('Select at least one Agent to receive leads.');
+    }
+
+    const currentUser = await this.getUser(String(userId));
+    if (!currentUser) {
+      throw new Error('Current user was not found.');
+    }
+
+    const currentRole = String(currentUser.role || 'Agent').trim();
+
+    if (!['Administrator', 'Manager', 'Team Leader'].includes(currentRole)) {
+      throw new Error('You do not have permission to reshuffle leads.');
+    }
+
+    const normalizedStatuses = Array.from(
+      new Set((statusFilter || []).map(status => String(status)).filter(Boolean))
+    );
+
+    let allowedRecipientIds = new Set<string>();
+    let visibleLeadAssigneeIds: Set<string> | null = null;
+
+    if (currentRole === 'Team Leader') {
+      const teamId = String(currentUser.teamId || '');
+
+      if (!teamId) {
+        throw new Error('Your Team Leader account is not assigned to a team.');
+      }
+
+      const teamUsers = await this.getUsersByTeam(teamId);
+
+      // Team Leaders may reshuffle only to Agents inside their own team.
+      allowedRecipientIds = new Set(
+        teamUsers
+          .filter((member: any) => String(member.role || '') === 'Agent')
+          .map((member: any) => String(member.id))
+      );
+
+      // Scope of leads visible to a Team Leader:
+      // leads currently assigned to an Agent or Team Leader in their own team.
+      visibleLeadAssigneeIds = new Set(
+        teamUsers
+          .filter((member: any) => ['Agent', 'Team Leader'].includes(String(member.role || '')))
+          .map((member: any) => String(member.id))
+      );
+    } else {
+      const allUsers = await this.getUsers();
+
+      allowedRecipientIds = new Set(
+        allUsers
+          .filter((member: any) => ['Agent', 'Team Leader'].includes(String(member.role || '')))
+          .map((member: any) => String(member.id))
+      );
+    }
+
+    const invalidRecipientId = requestedAgentIds.find(
+      agentId => !allowedRecipientIds.has(agentId)
+    );
+
+    if (invalidRecipientId) {
+      if (currentRole === 'Team Leader') {
+        throw new Error('Team Leaders can reshuffle leads only to Agents in their own team.');
+      }
+      throw new Error('One or more selected recipients are not valid.');
+    }
+
+    // Read once, then apply role/status scope in memory.
+    // This avoids the old query replacement bug where selecting statuses
+    // discarded the assigned_to condition.
+    const snap = await getDocs(collection(db, LEADS_COL));
+
+    const leads = snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter((lead: any) => {
+        const assignedTo = String(lead.assigned_to || '');
+
+        if (!assignedTo) {
+          return false;
+        }
+
+        if (
+          normalizedStatuses.length > 0 &&
+          !normalizedStatuses.includes(String(lead.status || ''))
+        ) {
+          return false;
+        }
+
+        if (
+          currentRole === 'Team Leader' &&
+          visibleLeadAssigneeIds &&
+          !visibleLeadAssigneeIds.has(assignedTo)
+        ) {
+          return false;
+        }
+
+        return true;
       });
-      
-      agentIndex = (agentIndex + 1) % agentIds.length;
+
+    if (leads.length === 0) {
+      return 0;
+    }
+
+    // Resolve display names once instead of running a Firestore query per lead.
+    const recipientUsers =
+      currentRole === 'Team Leader'
+        ? await this.getUsersByTeam(String(currentUser.teamId || ''))
+        : await this.getUsers();
+
+    const recipientNameMap: Record<string, string> = {};
+    recipientUsers.forEach((member: any) => {
+      recipientNameMap[String(member.id)] =
+        member.name || member.email || String(member.id);
     });
-    await Promise.all(promises);
+
+    // Stable round-robin assignment.
+    // Do not mutate a shared async agentIndex inside Promise.all.
+    const assignments = leads.map((lead: any, index: number) => ({
+      lead,
+      agentId: requestedAgentIds[index % requestedAgentIds.length]
+    }));
+
+    // Firestore batch writes are capped at 500 operations.
+    // Keep activity logging separate so the existing history behaviour remains.
+    const BATCH_SIZE = 500;
+    const commits: Promise<void>[] = [];
+    let batch = writeBatch(db);
+    let batchCount = 0;
+
+    for (const assignment of assignments) {
+      batch.update(doc(db, LEADS_COL, String(assignment.lead.id)), {
+        assigned_to: assignment.agentId,
+        updatedAt: serverTimestamp()
+      });
+
+      batchCount++;
+
+      if (batchCount === BATCH_SIZE) {
+        commits.push(batch.commit());
+        batch = writeBatch(db);
+        batchCount = 0;
+      }
+    }
+
+    if (batchCount > 0) {
+      commits.push(batch.commit());
+    }
+
+    await Promise.all(commits);
+
+    // Preserve activity/history entries from the old implementation.
+    // Log in chunks to avoid creating all writes at exactly the same time.
+    const ACTIVITY_CHUNK = 50;
+
+    for (let i = 0; i < assignments.length; i += ACTIVITY_CHUNK) {
+      const chunk = assignments.slice(i, i + ACTIVITY_CHUNK);
+
+      await Promise.all(
+        chunk.map(({ lead, agentId }) =>
+          this.logActivity({
+            lead_id: lead.id,
+            user_id: userId,
+            action: "Reshuffled",
+            details: `Lead reshuffled to ${recipientNameMap[agentId] || agentId}`
+          })
+        )
+      );
+    }
+
     return leads.length;
   },
 
