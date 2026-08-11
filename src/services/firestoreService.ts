@@ -1770,6 +1770,7 @@ export const firestoreService = {
 
     let allowedRecipientIds = new Set<string>();
     let visibleLeadAssigneeIds: Set<string> | null = null;
+    let recipientUsers: any[] = [];
 
     if (currentRole === 'Team Leader') {
       const teamId = String(currentUser.teamId || '');
@@ -1780,27 +1781,30 @@ export const firestoreService = {
 
       const teamUsers = await this.getUsersByTeam(teamId);
 
-      // Team Leaders may reshuffle only to Agents inside their own team.
-      allowedRecipientIds = new Set(
-        teamUsers
-          .filter((member: any) => String(member.role || '') === 'Agent')
-          .map((member: any) => String(member.id))
+      recipientUsers = teamUsers.filter(
+        (member: any) => String(member.role || '') === 'Agent'
       );
 
-      // Scope of leads visible to a Team Leader:
-      // leads currently assigned to an Agent or Team Leader in their own team.
+      allowedRecipientIds = new Set(
+        recipientUsers.map((member: any) => String(member.id))
+      );
+
       visibleLeadAssigneeIds = new Set(
         teamUsers
-          .filter((member: any) => ['Agent', 'Team Leader'].includes(String(member.role || '')))
+          .filter((member: any) =>
+            ['Agent', 'Team Leader'].includes(String(member.role || ''))
+          )
           .map((member: any) => String(member.id))
       );
     } else {
       const allUsers = await this.getUsers();
 
+      recipientUsers = allUsers.filter((member: any) =>
+        ['Agent', 'Team Leader'].includes(String(member.role || ''))
+      );
+
       allowedRecipientIds = new Set(
-        allUsers
-          .filter((member: any) => ['Agent', 'Team Leader'].includes(String(member.role || '')))
-          .map((member: any) => String(member.id))
+        recipientUsers.map((member: any) => String(member.id))
       );
     }
 
@@ -1815,19 +1819,16 @@ export const firestoreService = {
       throw new Error('One or more selected recipients are not valid.');
     }
 
-    // Read once, then apply role/status scope in memory.
-    // This avoids the old query replacement bug where selecting statuses
-    // discarded the assigned_to condition.
+    // Read the collection once and scope locally. This also avoids Firestore
+    // "in" query limits when many statuses are selected.
     const snap = await getDocs(collection(db, LEADS_COL));
 
-    const leads = snap.docs
+    let eligibleLeads = snap.docs
       .map(d => ({ id: d.id, ...d.data() } as any))
       .filter((lead: any) => {
         const assignedTo = String(lead.assigned_to || '');
 
-        if (!assignedTo) {
-          return false;
-        }
+        if (!assignedTo) return false;
 
         if (
           normalizedStatuses.length > 0 &&
@@ -1847,15 +1848,24 @@ export const firestoreService = {
         return true;
       });
 
-    if (leads.length === 0) {
+    if (eligibleLeads.length === 0) {
       return 0;
     }
 
-    // Resolve display names once instead of running a Firestore query per lead.
-    const recipientUsers =
-      currentRole === 'Team Leader'
-        ? await this.getUsersByTeam(String(currentUser.teamId || ''))
-        : await this.getUsers();
+    // TRUE shuffle: randomize both leads and recipients.
+    // The previous round-robin could recreate the exact same assignments and
+    // visually look like "nothing happened".
+    const shuffle = <T,>(items: T[]): T[] => {
+      const arr = [...items];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
+
+    eligibleLeads = shuffle(eligibleLeads);
+    const shuffledRecipients = shuffle(requestedAgentIds);
 
     const recipientNameMap: Record<string, string> = {};
     recipientUsers.forEach((member: any) => {
@@ -1863,21 +1873,55 @@ export const firestoreService = {
         member.name || member.email || String(member.id);
     });
 
-    // Stable round-robin assignment.
-    // Do not mutate a shared async agentIndex inside Promise.all.
-    const assignments = leads.map((lead: any, index: number) => ({
-      lead,
-      agentId: requestedAgentIds[index % requestedAgentIds.length]
-    }));
+    // Keep distribution balanced while strongly preferring a DIFFERENT agent
+    // for every lead. With two or more recipients, a lead will not stay on the
+    // same agent unless there is no valid alternative.
+    const assignmentCounts: Record<string, number> = {};
+    shuffledRecipients.forEach(id => {
+      assignmentCounts[id] = 0;
+    });
 
-    // Firestore batch writes are capped at 500 operations.
-    // Keep activity logging separate so the existing history behaviour remains.
+    const assignments = eligibleLeads.map((lead: any) => {
+      const currentAgentId = String(lead.assigned_to || '');
+
+      const candidates = shuffledRecipients
+        .filter(id => shuffledRecipients.length === 1 || id !== currentAgentId)
+        .sort((a, b) => {
+          const countDiff = (assignmentCounts[a] || 0) - (assignmentCounts[b] || 0);
+          if (countDiff !== 0) return countDiff;
+          return Math.random() - 0.5;
+        });
+
+      const nextAgentId =
+        candidates[0] ||
+        shuffledRecipients[0];
+
+      assignmentCounts[nextAgentId] =
+        (assignmentCounts[nextAgentId] || 0) + 1;
+
+      return {
+        lead,
+        oldAgentId: currentAgentId,
+        agentId: nextAgentId
+      };
+    });
+
+    const changedAssignments = assignments.filter(
+      assignment => assignment.oldAgentId !== assignment.agentId
+    );
+
+    // If only one recipient is selected and every lead is already assigned to
+    // that recipient, there is genuinely nothing to change.
+    if (changedAssignments.length === 0) {
+      return 0;
+    }
+
     const BATCH_SIZE = 500;
     const commits: Promise<void>[] = [];
     let batch = writeBatch(db);
     let batchCount = 0;
 
-    for (const assignment of assignments) {
+    for (const assignment of changedAssignments) {
       batch.update(doc(db, LEADS_COL, String(assignment.lead.id)), {
         assigned_to: assignment.agentId,
         updatedAt: serverTimestamp()
@@ -1898,26 +1942,27 @@ export const firestoreService = {
 
     await Promise.all(commits);
 
-    // Preserve activity/history entries from the old implementation.
-    // Log in chunks to avoid creating all writes at exactly the same time.
+    // Keep existing activity/history behaviour.
     const ACTIVITY_CHUNK = 50;
 
-    for (let i = 0; i < assignments.length; i += ACTIVITY_CHUNK) {
-      const chunk = assignments.slice(i, i + ACTIVITY_CHUNK);
+    for (let i = 0; i < changedAssignments.length; i += ACTIVITY_CHUNK) {
+      const chunk = changedAssignments.slice(i, i + ACTIVITY_CHUNK);
 
       await Promise.all(
-        chunk.map(({ lead, agentId }) =>
+        chunk.map(({ lead, oldAgentId, agentId }) =>
           this.logActivity({
             lead_id: lead.id,
             user_id: userId,
             action: "Reshuffled",
-            details: `Lead reshuffled to ${recipientNameMap[agentId] || agentId}`
+            details:
+              `Lead reshuffled from ${recipientNameMap[oldAgentId] || oldAgentId || 'Unassigned'} ` +
+              `to ${recipientNameMap[agentId] || agentId}`
           })
         )
       );
     }
 
-    return leads.length;
+    return changedAssignments.length;
   },
 
   // Activity / History
