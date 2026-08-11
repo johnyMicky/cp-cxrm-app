@@ -5,7 +5,7 @@ import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { firestoreService } from '../services/firestoreService';
 
-const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'No Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience', 'Not Interested', 'Hung Up', 'Wrong Number', 'Drop'];
+const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'High Potential', 'No Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience', 'Not Interested', 'Hung Up', 'Wrong Number', 'Drop'];
 
 const getStatusStyles = (status: string) => {
   switch (status) {
@@ -15,6 +15,7 @@ const getStatusStyles = (status: string) => {
     case 'New': return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
     case 'No answer': return 'text-slate-400 border-slate-500/20 bg-slate-500/5';
     case 'Low Potential': return 'text-orange-400 border-orange-500/20 bg-orange-500/5';
+    case 'High Potential': return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
     case 'No Potential': return 'text-zinc-500 border-zinc-500/20 bg-zinc-500/5';
     case 'Language Barrier': return 'text-purple-400 border-purple-500/20 bg-purple-500/5';
     case 'Wrong Person': return 'text-pink-400 border-pink-500/20 bg-pink-500/5';
@@ -222,6 +223,7 @@ export default function LeadDetail() {
       case 'Low Potential':
       case 'Language Barrier':
       case 'Wrong Person': return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+      case 'High Potential': return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
       case 'Deposit': return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
       case 'Underage':
       case 'No Experience':
