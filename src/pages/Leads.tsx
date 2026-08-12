@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle } from 'lucide-react';
 import { format } from 'date-fns';
@@ -81,6 +81,7 @@ export default function Leads() {
   const [isAssigning, setIsAssigning] = useState(false);
   const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
   const [isReshuffling, setIsReshuffling] = useState(false);
+  const [visibleLeadCount, setVisibleLeadCount] = useState(100);
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [deleteSummary, setDeleteSummary] = useState<{
@@ -257,22 +258,43 @@ export default function Leads() {
     if (message) showToastMessage(message);
   };
 
-  const filteredLeads = leads.filter(lead => {
-    const query = safeLower(search);
+  // Keep typing/filtering responsive even when the account contains thousands of leads.
+  const deferredSearch = useDeferredValue(search);
 
-    const matchesSearch = 
-      safeLower(lead.name).includes(query) ||
-      safeLower(lead.email).includes(query) ||
-      safeLower(lead.phone).includes(query) ||
-      safeLower(lead.country).includes(query);
-    
-    const matchesStatus = filters.statuses.length === 0 || filters.statuses.includes(lead.status);
-    const matchesSource = !filters.source || safeLower(lead.source).includes(safeLower(filters.source));
-    const matchesAgent = filters.agents.length === 0 || filters.agents.includes(lead.assigned_to);
-    const matchesCountry = !filters.country || safeLower(lead.country).includes(safeLower(filters.country));
+  const filteredLeads = useMemo(() => {
+    const searchQuery = safeLower(deferredSearch);
+    const sourceQuery = safeLower(filters.source);
+    const countryQuery = safeLower(filters.country);
+    const statusSet = new Set(filters.statuses);
+    const agentSet = new Set(filters.agents);
 
-    return matchesSearch && matchesStatus && matchesSource && matchesAgent && matchesCountry;
-  });
+    return leads.filter(lead => {
+      const matchesSearch =
+        !searchQuery ||
+        safeLower(lead.name).includes(searchQuery) ||
+        safeLower(lead.email).includes(searchQuery) ||
+        safeLower(lead.phone).includes(searchQuery) ||
+        safeLower(lead.country).includes(searchQuery);
+
+      const matchesStatus = statusSet.size === 0 || statusSet.has(lead.status);
+      const matchesSource = !sourceQuery || safeLower(lead.source).includes(sourceQuery);
+      const matchesAgent = agentSet.size === 0 || agentSet.has(lead.assigned_to);
+      const matchesCountry = !countryQuery || safeLower(lead.country).includes(countryQuery);
+
+      return matchesSearch && matchesStatus && matchesSource && matchesAgent && matchesCountry;
+    });
+  }, [leads, deferredSearch, filters.statuses, filters.source, filters.agents, filters.country]);
+
+  // Rendering thousands of table rows is one of the biggest UI bottlenecks.
+  // Keep all records available for filters/bulk actions but render 100 at a time.
+  const visibleLeads = useMemo(
+    () => filteredLeads.slice(0, visibleLeadCount),
+    [filteredLeads, visibleLeadCount]
+  );
+
+  useEffect(() => {
+    setVisibleLeadCount(100);
+  }, [deferredSearch, filters.statuses, filters.source, filters.agents, filters.country]);
 
   const handleSelectAll = () => {
     if (selectedLeads.length === filteredLeads.length) {
@@ -921,7 +943,7 @@ export default function Leads() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
-              {filteredLeads.map((lead) => (
+              {visibleLeads.map((lead) => (
                 <tr key={lead.id} className={`hover:bg-white/[0.02] transition-colors group ${selectedLeads.includes(lead.id) ? 'bg-blue-500/[0.03]' : ''}`}>
                   <td className="px-6 py-4">
                     <button 
@@ -1048,6 +1070,17 @@ export default function Leads() {
               ))}
             </tbody>
           </table>
+          {visibleLeadCount < filteredLeads.length && (
+            <div className="p-4 border-t border-white/5 flex items-center justify-center">
+              <button
+                onClick={() => setVisibleLeadCount(count => count + 100)}
+                className="px-5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-medium text-slate-300 hover:text-white transition-colors"
+              >
+                Load 100 More ({filteredLeads.length - visibleLeadCount} remaining)
+              </button>
+            </div>
+          )}
+
           {filteredLeads.length === 0 && (
             <div className="p-8 text-center text-slate-500 text-sm">
               No leads found matching your search.
