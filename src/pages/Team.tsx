@@ -154,6 +154,8 @@ export default function Team() {
         return 'bg-rose-500/10 text-rose-400 border-rose-500/20';
       case 'manager':
         return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+      case 'financial manager':
+        return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
       case 'team leader':
         return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
       case 'agent':
@@ -726,6 +728,7 @@ function UserModal({
             >
               <option value="Administrator">Administrator</option>
               <option value="Manager">Manager</option>
+              <option value="Financial Manager">Financial Manager</option>
               <option value="Team Leader">Team Leader</option>
               <option value="Agent">Agent</option>
             </select>
