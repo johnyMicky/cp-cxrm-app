@@ -42,6 +42,7 @@ function Sidebar({
   const navigate = useNavigate();
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const notificationsRef = useRef<any[]>([]);
   
   const currentUserId = sessionUser?.id || null;
   const currentUserRole = sessionUser?.role || 'Agent';
@@ -67,6 +68,10 @@ function Sidebar({
   }, [currentUserId]);
 
   useEffect(() => {
+    notificationsRef.current = notifications;
+  }, [notifications]);
+
+  useEffect(() => {
     const checkCallbacks = async () => {
       try {
         const leads = await firestoreService.getLeadsForUser({
@@ -81,7 +86,7 @@ function Sidebar({
             const callbackDate = lead.callbackAt.toDate ? lead.callbackAt.toDate() : new Date(lead.callbackAt);
             
             if (callbackDate > now && callbackDate <= thirtyMinsLater) {
-              const alreadyNotified = notifications.some(n => n.type === 'callback' && n.lead_id === lead.id);
+              const alreadyNotified = notificationsRef.current.some(n => n.type === 'callback' && n.lead_id === lead.id);
               
               if (!alreadyNotified) {
                 await firestoreService.createNotification({
@@ -101,10 +106,12 @@ function Sidebar({
       }
     };
 
-    const interval = setInterval(checkCallbacks, 60000);
+    // Callback scanning is intentionally less aggressive; the old 60s loop repeatedly
+    // loaded the lead scope and competed with normal page requests.
+    const interval = setInterval(checkCallbacks, 300000);
     checkCallbacks();
     return () => clearInterval(interval);
-  }, [currentUserId, currentUserRole, notifications]);
+  }, [currentUserId, currentUserRole]);
 
   const handleMarkRead = async (id: string) => {
     await firestoreService.markNotificationRead(id);
