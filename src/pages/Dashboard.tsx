@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert, MessageSquare, Coffee, PlayCircle, Square, Clock3 } from 'lucide-react';
+import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert, MessageSquare, Coffee, PlayCircle, Square, Clock3, AlertTriangle, PhoneCall, UserX, Flame, Timer, FolderOpen, ChevronRight, TrendingUp, Target, CalendarDays, X } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart as RePieChart, Pie } from 'recharts';
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
@@ -10,6 +10,8 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<'1d' | '1w' | '1m' | 'all'>('all');
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedSource, setSelectedSource] = useState<any>(null);
+  const [selectedFile, setSelectedFile] = useState<any>(null);
 
   const loadData = async () => {
     setIsLoading(true);
@@ -232,9 +234,11 @@ export default function Dashboard() {
     { name: 'Total Leads', value: data.total, change: data.totalChange, icon: Users, color: 'text-blue-500', bg: 'bg-blue-500/10' },
     { name: 'New Today', value: data.newToday, icon: UserPlus, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
     { name: 'Active Leads', value: data.active, change: data.activeChange, icon: Activity, color: 'text-amber-500', bg: 'bg-amber-500/10' },
-    { name: 'Converted', value: data.converted, change: data.convertedChange, icon: CheckCircle, color: 'text-cyan-500', bg: 'bg-cyan-500/10' },
-    { name: 'Lost / No Pot.', value: data.lost, change: data.lostChange, icon: XCircle, color: 'text-rose-500', bg: 'bg-rose-500/10' },
-    { name: 'Duplicates', value: data.duplicates, icon: ShieldAlert, color: 'text-amber-500', bg: 'bg-amber-500/10' },
+    { name: 'Deposits', value: data.converted, change: data.convertedChange, icon: CheckCircle, color: 'text-cyan-500', bg: 'bg-cyan-500/10' },
+    { name: 'High Potential', value: data.highPotential || 0, icon: Flame, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+    { name: 'JOR', value: data.jor || 0, icon: Target, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+    { name: 'Callbacks Today', value: data.callbacksToday || 0, icon: PhoneCall, color: 'text-violet-400', bg: 'bg-violet-500/10' },
+    { name: 'Unassigned', value: data.unassigned || 0, icon: UserX, color: 'text-rose-400', bg: 'bg-rose-500/10' },
   ];
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e'];
@@ -375,220 +379,330 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
         {stats.map((stat) => (
-          <div key={stat.name} className="bg-[#0A0F1C] border border-white/5 rounded-xl p-5 shadow-sm">
+          <div key={stat.name} className="bg-[#0A0F1C] border border-white/5 rounded-xl p-4 shadow-sm">
             <div className="flex items-center justify-between">
-              <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${stat.bg}`}>
-                <stat.icon className={`w-5 h-5 ${stat.color}`} />
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${stat.bg}`}>
+                <stat.icon className={`w-4.5 h-4.5 ${stat.color}`} />
               </div>
               {stat.change !== undefined && timeRange !== 'all' && (
-                <div className="flex flex-col items-end">
-                  <div className={`flex items-center text-[10px] font-bold ${stat.change >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    {stat.change >= 0 ? '+' : ''}{stat.change}%
-                  </div>
-                  <span className="text-[8px] text-slate-500 uppercase font-medium">Growth</span>
+                <div className={`text-[10px] font-bold ${stat.change >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  {stat.change >= 0 ? '+' : ''}{stat.change}%
                 </div>
               )}
             </div>
-            <div className="mt-4">
-              <h3 className="text-3xl font-semibold text-white">{stat.value}</h3>
-              <p className="text-sm text-slate-400 mt-1 font-medium">{stat.name}</p>
-            </div>
+            <h3 className="text-2xl font-semibold text-white mt-4">{stat.value}</h3>
+            <p className="text-xs text-slate-400 mt-1 font-medium">{stat.name}</p>
           </div>
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
-          <h3 className="text-lg font-medium text-white mb-6 flex items-center space-x-2">
-            <PieChart className="w-5 h-5 text-blue-500" />
-            <span>Leads by Status</span>
-          </h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-              <RePieChart>
-                <Pie
-                  data={data.leadsByStatus}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={5}
-                  dataKey="count"
-                  nameKey="status"
-                >
-                  {data.leadsByStatus.map((entry: any, index: number) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#0A0F1C', borderColor: '#ffffff10', borderRadius: '8px', color: '#fff' }}
-                />
-              </RePieChart>
-            </ResponsiveContainer>
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="xl:col-span-2 bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-lg font-medium text-white flex items-center gap-2">
+              <PieChart className="w-5 h-5 text-blue-500" />
+              Leads by Status
+            </h3>
+            <span className="text-xs text-slate-500">Normalized status names</span>
           </div>
-          <div className="grid grid-cols-2 gap-2 mt-4">
-            {data.leadsByStatus.map((status: any, index: number) => (
-              <div key={status.status} className="flex items-center justify-between p-2 rounded-lg bg-white/[0.02] border border-white/5">
-                <div className="flex items-center space-x-2">
-                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                  <span className="text-[10px] text-slate-400 font-medium truncate max-w-[80px]">{status.status}</span>
+
+          <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5 items-center">
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+                <RePieChart>
+                  <Pie
+                    data={data.leadsByStatus}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={58}
+                    outerRadius={82}
+                    paddingAngle={3}
+                    dataKey="count"
+                    nameKey="status"
+                  >
+                    {data.leadsByStatus.map((entry: any, index: number) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#0A0F1C', borderColor: '#ffffff10', borderRadius: '8px', color: '#fff' }}
+                  />
+                </RePieChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto custom-scrollbar pr-1">
+              {data.leadsByStatus.map((status: any, index: number) => (
+                <div key={status.status} className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02] border border-white/5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
+                    <span className="text-[11px] text-slate-300 font-medium truncate">{status.status}</span>
+                  </div>
+                  <div className="text-right ml-2">
+                    <div className="text-xs font-bold text-white">{status.count}</div>
+                    <div className="text-[9px] text-slate-500">{Math.round((status.count / Math.max(1, data.total)) * 100)}%</div>
+                  </div>
                 </div>
-                <div className="flex flex-col items-end">
-                  <span className="text-xs font-bold text-white">{status.count}</span>
-                  <span className="text-[9px] text-slate-500">{Math.round((status.count / data.total) * 100) || 0}%</span>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
 
         <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
-          {currentUserRole === 'Team Leader' ? (
-            <>
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="text-lg font-medium text-white flex items-center space-x-2">
-                  <ShieldCheck className="w-5 h-5 text-emerald-500" />
-                  <span>My Team Agents</span>
-                </h3>
-                <span className="text-xs font-semibold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full">
-                  {data.teamMembers?.length || 0} Agents
-                </span>
+          <h3 className="text-lg font-medium text-white mb-5 flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 text-amber-400" />
+            Critical Alerts
+          </h3>
+
+          <div className="space-y-3">
+            {(data.criticalAlerts || []).map((alert: any) => (
+              <div
+                key={alert.type}
+                className={`rounded-xl border p-3 ${
+                  alert.severity === 'high'
+                    ? 'bg-rose-500/5 border-rose-500/20'
+                    : 'bg-amber-500/5 border-amber-500/20'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-white">{alert.label}</span>
+                  <span className={`text-lg font-bold ${alert.severity === 'high' ? 'text-rose-400' : 'text-amber-400'}`}>
+                    {alert.count}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">{alert.detail}</p>
               </div>
+            ))}
 
-              <div className="space-y-3 max-h-72 overflow-y-auto custom-scrollbar pr-1">
-                {(data.teamMembers || []).map((agent: any) => (
-                  <div
-                    key={agent.id}
-                    className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] transition-colors"
-                  >
-                    <div className="flex items-center space-x-3 min-w-0">
-                      <div className="relative shrink-0">
-                        <img
-                          src={agent.avatar}
-                          alt={agent.name}
-                          className="w-10 h-10 rounded-full object-cover border border-white/10"
-                        />
-                        <span
-                          className={`absolute -right-0.5 -bottom-0.5 w-3 h-3 rounded-full border-2 border-[#0A0F1C] ${
-                            agent.isOnline ? 'bg-emerald-500' : 'bg-slate-600'
-                          }`}
-                          title={agent.isOnline ? 'Online' : 'Offline'}
-                        />
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium text-white truncate">{agent.name}</p>
-                          <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${
-                            agent.shift?.status === 'ready'
-                              ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
-                              : agent.shift?.status === 'break'
-                                ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
-                                : agent.shift?.status === 'ended'
-                                  ? 'text-slate-400 bg-slate-500/10 border-slate-500/20'
-                                  : 'text-slate-500 bg-white/5 border-white/10'
-                          }`}>
-                            {agent.shift?.status === 'ready'
-                              ? 'Ready'
-                              : agent.shift?.status === 'break'
-                                ? 'Break'
-                                : agent.shift?.status === 'ended'
-                                  ? 'Ended'
-                                  : 'Not Started'}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-500 truncate">{agent.email || 'No email'}</p>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleMessageAgent(agent)}
-                      disabled={openingChatUserId === agent.id}
-                      className="ml-3 inline-flex items-center space-x-2 px-3 py-2 rounded-lg bg-blue-600/10 hover:bg-blue-600/20 border border-blue-500/20 text-blue-400 hover:text-blue-300 text-xs font-medium transition-all disabled:opacity-50"
-                      title={`Message ${agent.name}`}
-                    >
-                      <MessageSquare className="w-4 h-4" />
-                      <span>{openingChatUserId === agent.id ? 'Opening...' : 'Message'}</span>
-                    </button>
-                  </div>
-                ))}
-
-                {(!data.teamMembers || data.teamMembers.length === 0) && (
-                  <div className="py-10 text-center">
-                    <Users className="w-8 h-8 text-slate-700 mx-auto mb-3" />
-                    <p className="text-sm text-slate-500">No agents assigned to your team.</p>
-                  </div>
-                )}
+            {(!data.criticalAlerts || data.criticalAlerts.length === 0) && (
+              <div className="py-10 text-center">
+                <CheckCircle className="w-8 h-8 text-emerald-500/50 mx-auto mb-3" />
+                <p className="text-sm text-slate-500">No critical operational alerts.</p>
               </div>
-            </>
-          ) : (
-            <>
-              <h3 className="text-lg font-medium text-white mb-6 flex items-center space-x-2">
-                <ShieldCheck className="w-5 h-5 text-emerald-500" />
-                <span>Team Roles</span>
-              </h3>
-              <div className="space-y-4">
-                {data.usersByRole.map((role: any, index: number) => (
-                  <div key={role.role} className="flex items-center justify-between p-4 rounded-lg bg-white/[0.02] border border-white/5">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
-                        <Users className="w-5 h-5 text-blue-400" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-white capitalize">{role.role}</p>
-                        <p className="text-xs text-slate-500">Total Members</p>
-                      </div>
-                    </div>
-                    <span className="text-xl font-bold text-white">{role.count}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
-          <h3 className="text-lg font-medium text-white mb-6">Top Agent Workload</h3>
-          <div className="h-72">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-lg font-medium text-white flex items-center gap-2">
+              <CalendarDays className="w-5 h-5 text-blue-400" />
+              Daily Lead Flow
+            </h3>
+            <span className="text-xs text-slate-500">Recent incoming leads</span>
+          </div>
+
+          <div className="h-64">
             <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-              <BarChart data={data.workload} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+              <BarChart data={data.dailyFlow || []} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
-                <XAxis dataKey="name" stroke="#ffffff40" tick={{ fill: '#ffffff80', fontSize: 12 }} axisLine={false} tickLine={false} />
-                <YAxis stroke="#ffffff40" tick={{ fill: '#ffffff80', fontSize: 12 }} axisLine={false} tickLine={false} />
-                <Tooltip 
+                <XAxis dataKey="label" stroke="#ffffff40" tick={{ fill: '#ffffff80', fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis stroke="#ffffff40" tick={{ fill: '#ffffff80', fontSize: 11 }} axisLine={false} tickLine={false} />
+                <Tooltip
                   cursor={{ fill: '#ffffff05' }}
                   contentStyle={{ backgroundColor: '#0A0F1C', borderColor: '#ffffff10', borderRadius: '8px', color: '#fff' }}
                 />
-                <Bar dataKey="new_leads" name="New" stackId="a" fill="#3b82f6" radius={[0, 0, 4, 4]} />
-                <Bar dataKey="in_progress" name="In Progress" stackId="a" fill="#f59e0b" />
-                <Bar dataKey="completed" name="Completed" stackId="a" fill="#10b981" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="count" name="Leads" fill="#3b82f6" radius={[5, 5, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
-          <h3 className="text-lg font-medium text-white mb-6">Top Lead Sources</h3>
-          <div className="space-y-4">
-            {data.topSources.map((source: any, i: number) => (
-              <div key={source.source} className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-xs font-medium text-slate-300">
-                    {i + 1}
+          <h3 className="text-lg font-medium text-white mb-5 flex items-center gap-2">
+            <Clock3 className="w-5 h-5 text-emerald-400" />
+            Attendance Today
+          </h3>
+
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              ['Ready', data.attendance?.ready || 0, 'text-emerald-400'],
+              ['On Break', data.attendance?.break || 0, 'text-amber-400'],
+              ['Ended', data.attendance?.ended || 0, 'text-slate-300'],
+              ['Not Started', data.attendance?.notStarted || 0, 'text-rose-400'],
+            ].map(([label, value, color]: any) => (
+              <div key={label} className="rounded-xl bg-white/[0.02] border border-white/5 p-4">
+                <div className={`text-2xl font-bold ${color}`}>{value}</div>
+                <div className="text-xs text-slate-500 mt-1">{label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
+            <span className="text-xs text-slate-500">Visible Agents</span>
+            <span className="text-sm font-bold text-white">{data.attendance?.totalAgents || 0}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-lg font-medium text-white flex items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-emerald-400" />
+              Agent Operational Performance
+            </h3>
+            <span className="text-[10px] uppercase tracking-wider text-slate-500">Revenue ranking comes with Finance</span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
+                  <th className="pb-3 font-medium">Agent</th>
+                  <th className="pb-3 font-medium text-right">Leads</th>
+                  <th className="pb-3 font-medium text-right">Deposit</th>
+                  <th className="pb-3 font-medium text-right">High Pot.</th>
+                  <th className="pb-3 font-medium text-right">Conv.</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {(data.agentPerformance || []).slice(0, 8).map((agent: any) => (
+                  <tr key={agent.id}>
+                    <td className="py-3">
+                      <div className="flex items-center gap-2">
+                        <img src={agent.avatar} alt="" className="w-7 h-7 rounded-full object-cover" />
+                        <span className="text-sm text-white font-medium">{agent.name}</span>
+                      </div>
+                    </td>
+                    <td className="py-3 text-right text-sm text-slate-300">{agent.total}</td>
+                    <td className="py-3 text-right text-sm text-emerald-400 font-semibold">{agent.deposits}</td>
+                    <td className="py-3 text-right text-sm text-cyan-400">{agent.highPotential}</td>
+                    <td className="py-3 text-right text-sm text-white font-semibold">{agent.conversionRate}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-4 rounded-lg bg-blue-500/5 border border-blue-500/10 px-3 py-2 text-[11px] text-blue-300">
+            Finance module will replace this ranking with revenue, average deposit, commission and net contribution.
+          </div>
+        </div>
+
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
+          <h3 className="text-lg font-medium text-white mb-5 flex items-center gap-2">
+            <ShieldCheck className="w-5 h-5 text-blue-400" />
+            Team Performance
+          </h3>
+
+          <div className="space-y-3 max-h-80 overflow-y-auto custom-scrollbar pr-1">
+            {(data.teamPerformance || []).map((team: any) => (
+              <div key={team.teamId} className="rounded-xl bg-white/[0.02] border border-white/5 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-white">{team.teamName}</p>
+                    <p className="text-[11px] text-slate-500">{team.agents} Agents • {team.leads} Leads</p>
                   </div>
-                  <span className="text-sm font-medium text-slate-200">{source.source}</span>
+                  <div className="text-right">
+                    <div className="text-lg font-bold text-emerald-400">{team.conversionRate}%</div>
+                    <div className="text-[9px] text-slate-500 uppercase">Conversion</div>
+                  </div>
                 </div>
-                <div className="flex flex-col items-end">
-                  <span className="text-sm font-semibold text-white">{source.count}</span>
-                  <span className="text-[10px] text-slate-500">{Math.round((source.count / data.total) * 100) || 0}%</span>
+
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div className="rounded-lg bg-white/[0.02] p-2">
+                    <div className="text-sm font-bold text-emerald-400">{team.deposits}</div>
+                    <div className="text-[9px] text-slate-500">Deposits</div>
+                  </div>
+                  <div className="rounded-lg bg-white/[0.02] p-2">
+                    <div className="text-sm font-bold text-cyan-400">{team.highPotential}</div>
+                    <div className="text-[9px] text-slate-500">High Pot.</div>
+                  </div>
+                  <div className="rounded-lg bg-white/[0.02] p-2">
+                    <div className="text-sm font-bold text-rose-400">{team.lost}</div>
+                    <div className="text-[9px] text-slate-500">Lost</div>
+                  </div>
                 </div>
               </div>
             ))}
+
+            {(!data.teamPerformance || data.teamPerformance.length === 0) && (
+              <div className="py-10 text-center text-sm text-slate-500">No team performance data.</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="xl:col-span-2 bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="text-lg font-medium text-white flex items-center gap-2">
+              <FolderOpen className="w-5 h-5 text-violet-400" />
+              Lead Source & File Analytics
+            </h3>
+            <span className="text-xs text-slate-500">Click a source for drill-down</span>
+          </div>
+
+          <div className="space-y-2">
+            {(data.sourceAnalytics || []).slice(0, 10).map((source: any, index: number) => (
+              <button
+                key={source.source}
+                type="button"
+                onClick={() => {
+                  setSelectedSource(source);
+                  setSelectedFile(null);
+                }}
+                className="w-full flex items-center justify-between rounded-xl border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] p-3 transition-colors text-left"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-full bg-violet-500/10 text-violet-300 flex items-center justify-center text-xs font-bold shrink-0">
+                    {index + 1}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white truncate">{source.source}</p>
+                    <p className="text-[11px] text-slate-500">{source.files?.length || 0} files</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-5">
+                  <div className="text-right">
+                    <div className="text-sm font-bold text-white">{source.count}</div>
+                    <div className="text-[9px] text-slate-500">Leads</div>
+                  </div>
+                  <div className="text-right">
+                    <div className={`text-sm font-bold ${
+                      source.qualityScore >= 60 ? 'text-emerald-400' :
+                      source.qualityScore >= 40 ? 'text-amber-400' : 'text-rose-400'
+                    }`}>
+                      {source.qualityScore}
+                    </div>
+                    <div className="text-[9px] text-slate-500">Quality</div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-600" />
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
+          <h3 className="text-lg font-medium text-white mb-5 flex items-center gap-2">
+            <Timer className="w-5 h-5 text-amber-400" />
+            Lead Health
+          </h3>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4">
+              <span className="text-sm text-slate-400">Untouched 24h+</span>
+              <span className="text-xl font-bold text-amber-400">{data.untouched24h || 0}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4">
+              <span className="text-sm text-slate-400">Stale 7d+</span>
+              <span className="text-xl font-bold text-rose-400">{data.stale7d || 0}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4">
+              <span className="text-sm text-slate-400">Overdue Callbacks</span>
+              <span className="text-xl font-bold text-rose-400">{data.overdueCallbacks || 0}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4">
+              <span className="text-sm text-slate-400">Undefined Roles</span>
+              <span className="text-xl font-bold text-violet-400">{data.misconfiguredUsers || 0}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -623,6 +737,128 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      {selectedSource && (
+        <div className="fixed inset-0 z-[120] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-2xl bg-[#0A0F1C] border border-white/10 shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/[0.02]">
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-violet-400 font-bold">Lead Analytics</p>
+                <h3 className="text-xl font-semibold text-white mt-1">
+                  {selectedFile ? selectedFile.fileName : selectedSource.source}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  {selectedFile
+                    ? `${selectedFile.count} leads in this file`
+                    : `${selectedSource.count} leads • ${selectedSource.files?.length || 0} files`}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedSource(null);
+                  setSelectedFile(null);
+                }}
+                className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto max-h-[calc(88vh-90px)] custom-scrollbar">
+              {selectedFile ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFile(null)}
+                    className="text-xs text-blue-400 hover:text-blue-300 mb-5"
+                  >
+                    ← Back to files
+                  </button>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                      <div className="text-2xl font-bold text-white">{selectedFile.count}</div>
+                      <div className="text-xs text-slate-500 mt-1">Total Leads</div>
+                    </div>
+                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                      <div className={`text-2xl font-bold ${
+                        selectedFile.qualityScore >= 60 ? 'text-emerald-400' :
+                        selectedFile.qualityScore >= 40 ? 'text-amber-400' : 'text-rose-400'
+                      }`}>
+                        {selectedFile.qualityScore}/100
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1">Quality Score</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {(selectedFile.statuses || []).map((status: any) => (
+                      <div key={status.status} className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm text-slate-300">{status.status}</span>
+                          <span className="text-lg font-bold text-white">{status.count}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-1">
+                          {Math.round((status.count / Math.max(1, selectedFile.count)) * 100)}% of file
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                      <div className="text-2xl font-bold text-white">{selectedSource.count}</div>
+                      <div className="text-xs text-slate-500 mt-1">Total Leads</div>
+                    </div>
+                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                      <div className={`text-2xl font-bold ${
+                        selectedSource.qualityScore >= 60 ? 'text-emerald-400' :
+                        selectedSource.qualityScore >= 40 ? 'text-amber-400' : 'text-rose-400'
+                      }`}>
+                        {selectedSource.qualityScore}/100
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1">Source Quality</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {(selectedSource.files || []).map((file: any) => (
+                      <button
+                        key={file.fileName}
+                        type="button"
+                        onClick={() => setSelectedFile(file)}
+                        className="w-full rounded-xl border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] p-4 flex items-center justify-between text-left transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-white truncate">{file.fileName}</p>
+                          <p className="text-xs text-slate-500 mt-1">{file.count} leads</p>
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                            <div className={`text-sm font-bold ${
+                              file.qualityScore >= 60 ? 'text-emerald-400' :
+                              file.qualityScore >= 40 ? 'text-amber-400' : 'text-rose-400'
+                            }`}>
+                              {file.qualityScore}/100
+                            </div>
+                            <div className="text-[9px] text-slate-500">Quality</div>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-slate-600" />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
