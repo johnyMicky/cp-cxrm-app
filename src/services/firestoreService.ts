@@ -1151,12 +1151,18 @@ export const firestoreService = {
   // Leads
   async getLeads(agentId?: string) {
     try {
-      const q = query(collection(db, LEADS_COL), orderBy("createdAt", "desc"));
+      // IMPORTANT PERFORMANCE FIX:
+      // When an Agent is requested, ask Firestore only for that Agent's leads.
+      // The old implementation downloaded the entire leads collection first.
+      const q = agentId
+        ? query(collection(db, LEADS_COL), where("assigned_to", "==", String(agentId)))
+        : query(collection(db, LEADS_COL), orderBy("createdAt", "desc"));
+
       const querySnapshot = await getDocs(q);
-      const allLeads = querySnapshot.docs.map(doc => {
-        const data = doc.data();
+      const leads = querySnapshot.docs.map(docSnap => {
+        const data = docSnap.data();
         return {
-          id: doc.id,
+          id: docSnap.id,
           name: data.name || '',
           email: data.email || '',
           phone: data.phone || '',
@@ -1168,24 +1174,32 @@ export const firestoreService = {
           updatedAt: data.updatedAt || null
         };
       });
-      
+
+      // Agent-scoped query does not need a composite index because sorting is local.
       if (agentId) {
-        return allLeads.filter((lead: any) => String(lead.assigned_to) === String(agentId));
+        return leads.sort((a: any, b: any) => {
+          const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+          const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+          return dateB.getTime() - dateA.getTime();
+        });
       }
-      
-      return allLeads;
+
+      return leads;
     } catch (err: any) {
       if (err.code === 'resource-exhausted') {
         throw new Error('Firebase storage limit reached. Please wait for reset or upgrade plan.');
       }
       console.error('Error fetching leads:', err);
 
-      const q = query(collection(db, LEADS_COL));
-      const querySnapshot = await getDocs(q);
-      const allLeads = querySnapshot.docs.map(doc => {
-        const data = doc.data();
+      // Keep the existing safe fallback behaviour.
+      const fallbackQuery = agentId
+        ? query(collection(db, LEADS_COL), where("assigned_to", "==", String(agentId)))
+        : query(collection(db, LEADS_COL));
+      const querySnapshot = await getDocs(fallbackQuery);
+      const leads = querySnapshot.docs.map(docSnap => {
+        const data = docSnap.data();
         return {
-          id: doc.id,
+          id: docSnap.id,
           name: data.name || '',
           email: data.email || '',
           phone: data.phone || '',
@@ -1197,13 +1211,8 @@ export const firestoreService = {
           updatedAt: data.updatedAt || null
         };
       });
-      
-      let filtered = allLeads;
-      if (agentId) {
-        filtered = allLeads.filter((lead: any) => String(lead.assigned_to) === String(agentId));
-      }
-      
-      return filtered.sort((a: any, b: any) => {
+
+      return leads.sort((a: any, b: any) => {
         const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
         const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
         return dateB.getTime() - dateA.getTime();
@@ -1819,12 +1828,30 @@ export const firestoreService = {
       throw new Error('One or more selected recipients are not valid.');
     }
 
-    // Read the collection once and scope locally. This also avoids Firestore
-    // "in" query limits when many statuses are selected.
-    const snap = await getDocs(collection(db, LEADS_COL));
+    // PERFORMANCE FIX: Team Leaders should never download the whole company
+    // lead collection just to reshuffle their own team. Query only team assignees.
+    let rawLeadDocs: any[] = [];
 
-    let eligibleLeads = snap.docs
-      .map(d => ({ id: d.id, ...d.data() } as any))
+    if (currentRole === 'Team Leader' && visibleLeadAssigneeIds) {
+      const scopedSnapshots = await Promise.all(
+        Array.from(visibleLeadAssigneeIds).map(assigneeId =>
+          getDocs(query(collection(db, LEADS_COL), where("assigned_to", "==", assigneeId)))
+        )
+      );
+      rawLeadDocs = scopedSnapshots.flatMap(snapshot => snapshot.docs);
+    } else {
+      const snap = await getDocs(collection(db, LEADS_COL));
+      rawLeadDocs = snap.docs;
+    }
+
+    const seenLeadIds = new Set<string>();
+    let eligibleLeads = rawLeadDocs
+      .filter((leadDoc: any) => {
+        if (seenLeadIds.has(leadDoc.id)) return false;
+        seenLeadIds.add(leadDoc.id);
+        return true;
+      })
+      .map((leadDoc: any) => ({ id: leadDoc.id, ...leadDoc.data() } as any))
       .filter((lead: any) => {
         const assignedTo = String(lead.assigned_to || '');
 
@@ -1942,25 +1969,37 @@ export const firestoreService = {
 
     await Promise.all(commits);
 
-    // Keep existing activity/history behaviour.
-    const ACTIVITY_CHUNK = 50;
+    // Preserve the full per-lead History trail, but write it in Firestore
+    // batches instead of hundreds of individual addDoc network round trips.
+    let historyBatch = writeBatch(db);
+    let historyBatchCount = 0;
+    const historyCommits: Promise<void>[] = [];
 
-    for (let i = 0; i < changedAssignments.length; i += ACTIVITY_CHUNK) {
-      const chunk = changedAssignments.slice(i, i + ACTIVITY_CHUNK);
+    for (const { lead, oldAgentId, agentId } of changedAssignments) {
+      const historyRef = doc(collection(db, "history"));
+      historyBatch.set(historyRef, {
+        lead_id: lead.id,
+        user_id: userId,
+        action: "Reshuffled",
+        details:
+          `Lead reshuffled from ${recipientNameMap[oldAgentId] || oldAgentId || 'Unassigned'} ` +
+          `to ${recipientNameMap[agentId] || agentId}`,
+        createdAt: serverTimestamp()
+      });
 
-      await Promise.all(
-        chunk.map(({ lead, oldAgentId, agentId }) =>
-          this.logActivity({
-            lead_id: lead.id,
-            user_id: userId,
-            action: "Reshuffled",
-            details:
-              `Lead reshuffled from ${recipientNameMap[oldAgentId] || oldAgentId || 'Unassigned'} ` +
-              `to ${recipientNameMap[agentId] || agentId}`
-          })
-        )
-      );
+      historyBatchCount++;
+      if (historyBatchCount === 500) {
+        historyCommits.push(historyBatch.commit());
+        historyBatch = writeBatch(db);
+        historyBatchCount = 0;
+      }
     }
+
+    if (historyBatchCount > 0) {
+      historyCommits.push(historyBatch.commit());
+    }
+
+    await Promise.all(historyCommits);
 
     return changedAssignments.length;
   },
@@ -2009,7 +2048,7 @@ export const firestoreService = {
     await updateDoc(doc(db, NOTIFICATIONS_COL, id), { read: true });
   },
 
-  // Role/team-aware lead scope. Existing getLeads() remains unchanged.
+  // Role/team-aware lead scope. Existing permissions are preserved.
   async getLeadsForUser(user: any) {
     if (!user?.id) return [];
 
@@ -2026,19 +2065,56 @@ export const firestoreService = {
       if (!teamId) return [];
 
       const teamUsers = await this.getUsersByTeam(teamId);
-      const allowedUserIds = new Set(
+      const allowedUserIds = Array.from(new Set(
         teamUsers
           .filter((member: any) => ['Agent', 'Team Leader'].includes(member.role))
           .map((member: any) => String(member.id))
+          .filter(Boolean)
+      ));
+
+      if (allowedUserIds.length === 0) return [];
+
+      // PERFORMANCE FIX:
+      // Do not download every lead in the company and filter it in the browser.
+      // Query only leads assigned to members of this Team. Using one equality
+      // query per member avoids Firestore `in` limits and composite-index setup.
+      const snapshots = await Promise.all(
+        allowedUserIds.map(memberId =>
+          getDocs(query(collection(db, LEADS_COL), where("assigned_to", "==", memberId)))
+        )
       );
 
-      const allLeads = await this.getLeads();
-      return (allLeads as any[]).filter((lead: any) =>
-        allowedUserIds.has(String(lead.assigned_to || ''))
-      );
+      const seen = new Set<string>();
+      const teamLeads: any[] = [];
+
+      snapshots.forEach(snapshot => {
+        snapshot.docs.forEach(docSnap => {
+          if (seen.has(docSnap.id)) return;
+          seen.add(docSnap.id);
+          const data = docSnap.data();
+          teamLeads.push({
+            id: docSnap.id,
+            name: data.name || '',
+            email: data.email || '',
+            phone: data.phone || '',
+            country: data.country || '',
+            status: data.status || 'New',
+            source: data.source || '',
+            assigned_to: data.assigned_to || '',
+            createdAt: data.createdAt || null,
+            updatedAt: data.updatedAt || null
+          });
+        });
+      });
+
+      return teamLeads.sort((a: any, b: any) => {
+        const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+        const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        return dateB.getTime() - dateA.getTime();
+      });
     }
 
-    // Administrator and Manager keep their existing organization-wide view.
+    // Administrator and Manager keep their organization-wide view.
     return await this.getLeads();
   },
 
@@ -2303,8 +2379,10 @@ export const firestoreService = {
     const currentRole = String(currentUser.role || 'Agent').trim();
     const currentTeamId = currentUser.teamId || '';
 
-    const leadsSnap = await getDocs(collection(db, LEADS_COL));
-    const allLeads = leadsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    // PERFORMANCE FIX: use the existing role-aware lead loader so Agents and
+    // Team Leaders do not download the whole company lead collection.
+    const scopedLeads = await this.getLeadsForUser(currentUser);
+    const allLeads = scopedLeads as any[];
 
     let visibleUsers = allUsers;
     let filteredLeads = allLeads;
