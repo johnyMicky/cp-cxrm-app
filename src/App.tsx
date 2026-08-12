@@ -12,6 +12,7 @@ import LeadDetail from './pages/LeadDetail';
 import Dispatcher from './pages/Dispatcher';
 import Team from './pages/Team';
 import Lost from './pages/Lost';
+import JOR from './pages/JOR';
 import ActivityPage from './pages/Activity';
 import Imports from './pages/Imports';
 import SettingsPage from './pages/Settings';
@@ -122,6 +123,7 @@ function Sidebar({
     { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
+    { name: 'JOR', path: '/jor', icon: CheckCircle2, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator', 'Team Leader'] },
     { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
@@ -580,6 +582,7 @@ export default function App() {
                       <Route path="/team" element={<Team />} />
                       <Route path="/dispatcher" element={<Dispatcher />} />
                       <Route path="/lost" element={<Lost />} />
+                      <Route path="/jor" element={<JOR />} />
                       <Route path="/activity" element={<ActivityPage />} />
                       <Route path="/imports" element={<Imports />} />
                       <Route path="/settings" element={<SettingsPage />} />
