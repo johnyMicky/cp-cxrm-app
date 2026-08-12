@@ -4,6 +4,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
 import { chatService } from '../services/chatService';
+import AgentFinancePanel from '../components/AgentFinancePanel';
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null);
@@ -280,6 +281,8 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {currentUserRole === 'Agent' && <AgentFinancePanel />}
 
       {currentUserRole === 'Agent' && (
         <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-5 shadow-sm">
