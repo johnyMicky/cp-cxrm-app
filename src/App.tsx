@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
 
 import Dashboard from './pages/Dashboard';
 import Leads from './pages/Leads';
@@ -18,6 +18,7 @@ import Imports from './pages/Imports';
 import SettingsPage from './pages/Settings';
 import WorkLogs from './pages/WorkLogs';
 import SecurityLogs from './pages/SecurityLogs';
+import Finance from './pages/Finance';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
 import { auth, db, authPersistenceReady } from './firebase';
@@ -120,10 +121,11 @@ function Sidebar({
   };
 
   const navItems = [
-    { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
+    { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent', 'Financial Manager'] },
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'JOR', path: '/jor', icon: CheckCircle2, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
+    { name: 'Finance', path: '/finance', icon: DollarSign, roles: ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator', 'Team Leader'] },
     { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
@@ -322,6 +324,7 @@ export default function App() {
 
   const [showLeadToast, setShowLeadToast] = useState(false);
   const [leadToastMessage, setLeadToastMessage] = useState('');
+  const [financeCelebration, setFinanceCelebration] = useState<any>(null);
   const leadToastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialLeadLoadRef = useRef(true);
   const previousLeadIdsRef = useRef<Set<string>>(new Set());
@@ -543,6 +546,53 @@ export default function App() {
     };
   }, []);
 
+
+  useEffect(() => {
+    if (!isAuthenticated || !currentUserId) return;
+
+    const listenerStart = Timestamp.fromDate(new Date());
+    const celebrationQuery = query(
+      collection(db, 'finance_celebrations'),
+      where('createdAt', '>=', listenerStart)
+    );
+
+    const unsubscribe = onSnapshot(
+      celebrationQuery,
+      snapshot => {
+        snapshot.docChanges().forEach(change => {
+          if (change.type !== 'added') return;
+
+          const celebration = { id: change.doc.id, ...change.doc.data() } as any;
+          const userTeamId = String(sessionUser?.teamId || '');
+          const role = String(currentUserRole || '');
+
+          const canSee =
+            ['Administrator', 'Manager', 'Financial Manager'].includes(role) ||
+            (!!userTeamId && String(celebration.teamId || '') === userTeamId);
+
+          if (!canSee) return;
+
+          setFinanceCelebration(celebration);
+
+          try {
+            const audio = new Audio('/deposit-celebration.wav');
+            audio.volume = 0.65;
+            audio.play().catch(() => {});
+          } catch {}
+
+          window.setTimeout(() => {
+            setFinanceCelebration(current =>
+              current?.id === celebration.id ? null : current
+            );
+          }, 5000);
+        });
+      },
+      error => console.error('Finance celebration listener failed:', error)
+    );
+
+    return () => unsubscribe();
+  }, [isAuthenticated, currentUserId, currentUserRole, sessionUser?.teamId]);
+
   if (!authReady) {
     return (
       <div className="min-h-screen bg-[#050811] flex items-center justify-center text-slate-400">
@@ -574,6 +624,23 @@ export default function App() {
                     </div>
                   )}
 
+                  {financeCelebration && (
+                    <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[180] w-[min(560px,90vw)] bg-gradient-to-r from-emerald-600 to-cyan-600 text-white rounded-2xl shadow-2xl shadow-emerald-500/30 border border-white/20 p-5 animate-in slide-in-from-top-4 duration-300">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
+                          <PartyPopper className="w-7 h-7" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs uppercase tracking-[0.2em] font-bold text-white/80">Deposit Approved 🎉</p>
+                          <p className="text-xl font-bold mt-1 truncate">
+                            {financeCelebration.agentName || 'Agent'} closed ${Number(financeCelebration.amount || 0).toLocaleString()}!
+                          </p>
+                          <p className="text-xs text-white/75 mt-1">{financeCelebration.teamName || 'CRM Team'} • Congratulations!</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <main className="flex-1 overflow-auto">
                     <Routes>
                       <Route path="/" element={<Dashboard />} />
@@ -585,6 +652,14 @@ export default function App() {
                       <Route path="/jor" element={<JOR />} />
                       <Route path="/activity" element={<ActivityPage />} />
                       <Route path="/imports" element={<Imports />} />
+                      <Route
+                        path="/finance"
+                        element={
+                          ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(currentUserRole)
+                            ? <Finance />
+                            : <Navigate to="/" replace />
+                        }
+                      />
                       <Route path="/settings" element={<SettingsPage />} />
                       <Route path="/work-logs" element={<WorkLogs />} />
                       <Route path="/security-logs" element={currentUserRole === 'Administrator' ? <SecurityLogs /> : <Navigate to="/" replace />} />
