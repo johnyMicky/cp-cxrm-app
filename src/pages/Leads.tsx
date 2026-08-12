@@ -26,6 +26,7 @@ const STATUSES = [
   'Hung Up',
   'Wrong Number',
   'Drop',
+  'JOR',
 ];
 
 const getStatusStyles = (status: string) => {
@@ -46,6 +47,7 @@ const getStatusStyles = (status: string) => {
     case 'Hung Up': return 'text-amber-400 border-amber-500/20 bg-amber-500/5';
     case 'Wrong Number': return 'text-pink-400 border-pink-500/20 bg-pink-500/5';
     case 'Drop': return 'text-slate-400 border-slate-500/20 bg-slate-500/5';
+    case 'JOR': return 'text-cyan-400 border-cyan-500/20 bg-cyan-500/5';
     default: return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
   }
 };
@@ -483,6 +485,7 @@ export default function Leads() {
       case 'Hung Up': return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
       case 'Wrong Number': return 'bg-pink-500/10 text-pink-400 border-pink-500/20';
       case 'Drop': return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+      case 'JOR': return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
       default: return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
     }
   };
