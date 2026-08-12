@@ -29,8 +29,37 @@ const STATUSES = [
   'JOR',
 ];
 
+const normalizeStatus = (value: any) => {
+  const raw = String(value || 'New').trim();
+  const key = raw.toLowerCase().replace(/\s+/g, ' ');
+
+  const canonical: Record<string, string> = {
+    'new': 'New',
+    'vm': 'VM',
+    'no answer': 'No answer',
+    'deposit': 'Deposit',
+    'callback': 'Callback',
+    'low potential': 'Low Potential',
+    'high potential': 'High Potential',
+    'no potential': 'No Potential',
+    'language barrier': 'Language Barrier',
+    'wrong person': 'Wrong Person',
+    'underage': 'Underage',
+    'no experience': 'No Experience',
+    'not interested': 'Not Interested',
+    'hung up': 'Hung Up',
+    'hang up': 'Hung Up',
+    'wrong number': 'Wrong Number',
+    'drop': 'Drop',
+    'jor': 'JOR',
+  };
+
+  return canonical[key] || raw;
+};
+
 const getStatusStyles = (status: string) => {
-  switch (status) {
+  const normalizedStatus = normalizeStatus(status);
+  switch (normalizedStatus) {
     case 'Deposit': return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
     case 'VM': return 'text-rose-400 border-rose-500/20 bg-rose-500/5';
     case 'Callback': return 'text-amber-400 border-amber-500/20 bg-amber-500/5';
@@ -278,7 +307,9 @@ export default function Leads() {
         safeLower(lead.phone).includes(searchQuery) ||
         safeLower(lead.country).includes(searchQuery);
 
-      const matchesStatus = statusSet.size === 0 || statusSet.has(lead.status);
+      const matchesStatus =
+        statusSet.size === 0 ||
+        statusSet.has(normalizeStatus(lead.status));
       const matchesSource = !sourceQuery || safeLower(lead.source).includes(sourceQuery);
       const matchesAgent = agentSet.size === 0 || agentSet.has(lead.assigned_to);
       const matchesCountry = !countryQuery || safeLower(lead.country).includes(countryQuery);
@@ -469,7 +500,8 @@ export default function Leads() {
   };
 
   const getStatusColor = (status: string) => {
-    switch (status) {
+    const normalizedStatus = normalizeStatus(status);
+    switch (normalizedStatus) {
       case 'New': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
       case 'VM':
       case 'No answer':
@@ -973,7 +1005,7 @@ export default function Leads() {
                   </td>
                   <td className="px-6 py-4">
                     <select 
-                      value={lead.status}
+                      value={normalizeStatus(lead.status)}
                       onChange={(e) => handleStatusChange(lead.id, e.target.value)}
                       className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border bg-transparent focus:outline-none cursor-pointer transition-colors ${getStatusStyles(lead.status)}`}
                     >
