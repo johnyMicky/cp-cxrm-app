@@ -1170,6 +1170,10 @@ export const firestoreService = {
           status: data.status || 'New',
           source: data.source || '',
           assigned_to: data.assigned_to || '',
+          importId: data.importId || '',
+          importFileName: data.importFileName || '',
+          callbackAt: data.callbackAt || null,
+          createdBy: data.createdBy || '',
           createdAt: data.createdAt || null,
           updatedAt: data.updatedAt || null
         };
@@ -1207,6 +1211,10 @@ export const firestoreService = {
           status: data.status || 'New',
           source: data.source || '',
           assigned_to: data.assigned_to || '',
+          importId: data.importId || '',
+          importFileName: data.importFileName || '',
+          callbackAt: data.callbackAt || null,
+          createdBy: data.createdBy || '',
           createdAt: data.createdAt || null,
           updatedAt: data.updatedAt || null
         };
@@ -1287,6 +1295,7 @@ export const firestoreService = {
             ...lead,
             createdBy: userId,
             importId: importRef.id,
+            importFileName: fileName,
             createdAt: now,
             updatedAt: now
           });
@@ -2101,6 +2110,10 @@ export const firestoreService = {
             status: data.status || 'New',
             source: data.source || '',
             assigned_to: data.assigned_to || '',
+            importId: data.importId || '',
+            importFileName: data.importFileName || '',
+            callbackAt: data.callbackAt || null,
+            createdBy: data.createdBy || '',
             createdAt: data.createdAt || null,
             updatedAt: data.updatedAt || null
           });
@@ -2371,45 +2384,155 @@ export const firestoreService = {
 
   // Dashboard
   async getDashboardStats(user: any, timeRange: '1d' | '1w' | '1m' | 'all' = 'all') {
+    // Load users once. The old version loaded users and then called getLeadsForUser(),
+    // which could read the current user/team again. This version reuses allUsers.
     const usersSnap = await getDocs(collection(db, USERS_COL));
     const allUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
-    // Always trust the current Firestore user record over stale localStorage data.
-    const currentUser = allUsers.find((u: any) => String(u.id) === String(user?.id)) || user || {};
+    const currentUser =
+      allUsers.find((u: any) => String(u.id) === String(user?.id)) ||
+      user ||
+      {};
+
     const currentRole = String(currentUser.role || 'Agent').trim();
-    const currentTeamId = currentUser.teamId || '';
+    const currentTeamId = String(currentUser.teamId || '');
 
-    // PERFORMANCE FIX: use the existing role-aware lead loader so Agents and
-    // Team Leaders do not download the whole company lead collection.
-    const scopedLeads = await this.getLeadsForUser(currentUser);
-    const allLeads = scopedLeads as any[];
-
-    let visibleUsers = allUsers;
-    let filteredLeads = allLeads;
+    let visibleUsers = allUsers as any[];
+    let leadLoader: Promise<any[]>;
 
     if (currentRole === 'Agent') {
-      visibleUsers = allUsers.filter((u: any) => String(u.id) === String(currentUser.id));
-      filteredLeads = allLeads.filter((l: any) => String(l.assigned_to) === String(currentUser.id));
+      visibleUsers = allUsers.filter(
+        (u: any) => String(u.id) === String(currentUser.id)
+      );
+      leadLoader = this.getLeads(String(currentUser.id));
     } else if (currentRole === 'Team Leader') {
       if (!currentTeamId) {
         visibleUsers = [currentUser].filter(Boolean);
-        filteredLeads = [];
+        leadLoader = Promise.resolve([]);
       } else {
-        visibleUsers = allUsers.filter((u: any) => String(u.teamId || '') === String(currentTeamId));
-        const teamMemberIds = new Set(
-          visibleUsers
-            .filter((u: any) => ['Agent', 'Team Leader'].includes(u.role))
-            .map((u: any) => String(u.id))
+        visibleUsers = allUsers.filter(
+          (u: any) => String(u.teamId || '') === currentTeamId
         );
-        filteredLeads = allLeads.filter((l: any) =>
-          teamMemberIds.has(String(l.assigned_to || ''))
+
+        const allowedUserIds = Array.from(
+          new Set(
+            visibleUsers
+              .filter((member: any) =>
+                ['Agent', 'Team Leader'].includes(String(member.role || ''))
+              )
+              .map((member: any) => String(member.id))
+              .filter(Boolean)
+          )
         );
+
+        leadLoader = (async () => {
+          if (allowedUserIds.length === 0) return [];
+
+          const snapshots = await Promise.all(
+            allowedUserIds.map(memberId =>
+              getDocs(
+                query(
+                  collection(db, LEADS_COL),
+                  where("assigned_to", "==", memberId)
+                )
+              )
+            )
+          );
+
+          const seen = new Set<string>();
+          const rows: any[] = [];
+
+          snapshots.forEach(snapshot => {
+            snapshot.docs.forEach(docSnap => {
+              if (seen.has(docSnap.id)) return;
+              seen.add(docSnap.id);
+
+              const data = docSnap.data();
+              rows.push({
+                id: docSnap.id,
+                name: data.name || '',
+                email: data.email || '',
+                phone: data.phone || '',
+                country: data.country || '',
+                status: data.status || 'New',
+                source: data.source || '',
+                assigned_to: data.assigned_to || '',
+                importId: data.importId || '',
+                importFileName: data.importFileName || '',
+                callbackAt: data.callbackAt || null,
+                createdBy: data.createdBy || '',
+                createdAt: data.createdAt || null,
+                updatedAt: data.updatedAt || null
+              });
+            });
+          });
+
+          return rows;
+        })();
       }
+    } else {
+      // Administrator / Manager preserve organization-wide visibility.
+      leadLoader = this.getLeads();
     }
+
+    const todayKey = this._getLocalDateKey();
+
+    // Independent dashboard resources are loaded in parallel so the additional
+    // analytics do not serialize extra network waits.
+    const [scopedLeads, historySnap, todayShiftsSnap, importsSnap] = await Promise.all([
+      leadLoader,
+      getDocs(query(collection(db, "history"), orderBy("createdAt", "desc"), limit(100))),
+      getDocs(query(collection(db, SHIFT_SESSIONS_COL), where("dateKey", "==", todayKey))),
+      getDocs(collection(db, IMPORTS_COL))
+    ]);
+
+    const allLeads = scopedLeads as any[];
+
+    const normalizeStatus = (value: any) => {
+      const raw = String(value || 'New').trim();
+      const key = raw.toLowerCase().replace(/\s+/g, ' ');
+
+      const canonical: Record<string, string> = {
+        'new': 'New',
+        'vm': 'VM',
+        'no answer': 'No answer',
+        'deposit': 'Deposit',
+        'callback': 'Callback',
+        'low potential': 'Low Potential',
+        'high potential': 'High Potential',
+        'no potential': 'No Potential',
+        'language barrier': 'Language Barrier',
+        'wrong person': 'Wrong Person',
+        'underage': 'Underage',
+        'no experience': 'No Experience',
+        'not interested': 'Not Interested',
+        'hung up': 'Hung Up',
+        'hang up': 'Hung Up',
+        'wrong number': 'Wrong Number',
+        'drop': 'Drop',
+        'jor': 'JOR',
+        'lost': 'Lost'
+      };
+
+      return canonical[key] || raw;
+    };
+
+    const toDate = (value: any) => {
+      if (!value) return null;
+      const date = value?.toDate ? value.toDate() : new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+
+    const normalizedLeads = allLeads.map((lead: any) => ({
+      ...lead,
+      status: normalizeStatus(lead.status)
+    }));
 
     const now = new Date();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
 
     let startDate = new Date(0);
     let prevStartDate = new Date(0);
@@ -2434,24 +2557,46 @@ export const firestoreService = {
       prevEndDate = new Date(startDate);
     }
 
-    const getLeadsInPeriod = (leadsList: any[], start: Date, end: Date = new Date()) => {
-      return leadsList.filter(l => {
-        const created = l.createdAt?.toDate ? l.createdAt.toDate() : new Date(l.createdAt || 0);
-        return created >= start && created < end;
+    const getLeadsInPeriod = (
+      leadsList: any[],
+      start: Date,
+      end: Date = new Date()
+    ) => {
+      return leadsList.filter((lead: any) => {
+        const created = toDate(lead.createdAt);
+        return !!created && created >= start && created < end;
       });
     };
 
-    const currentLeads = timeRange === 'all' ? filteredLeads : getLeadsInPeriod(filteredLeads, startDate);
-    const previousLeads = timeRange === 'all' ? [] : getLeadsInPeriod(filteredLeads, prevStartDate, prevEndDate);
+    const currentLeads =
+      timeRange === 'all'
+        ? normalizedLeads
+        : getLeadsInPeriod(normalizedLeads, startDate);
 
-    const calculateStats = (leadsList: any[]) => {
-      return {
-        total: leadsList.length,
-        active: leadsList.filter(l => !['Deposit', 'Lost', 'No Potential'].includes(l.status)).length,
-        converted: leadsList.filter(l => l.status === 'Deposit').length,
-        lost: leadsList.filter(l => ['Lost', 'No Potential'].includes(l.status)).length,
-      };
-    };
+    const previousLeads =
+      timeRange === 'all'
+        ? []
+        : getLeadsInPeriod(normalizedLeads, prevStartDate, prevEndDate);
+
+    const terminalStatuses = new Set([
+      'Deposit',
+      'Lost',
+      'No Potential',
+      'JOR'
+    ]);
+
+    const calculateStats = (leadsList: any[]) => ({
+      total: leadsList.length,
+      active: leadsList.filter(
+        (lead: any) => !terminalStatuses.has(lead.status)
+      ).length,
+      converted: leadsList.filter(
+        (lead: any) => lead.status === 'Deposit'
+      ).length,
+      lost: leadsList.filter(
+        (lead: any) => ['Lost', 'No Potential'].includes(lead.status)
+      ).length
+    });
 
     const currentStats = calculateStats(currentLeads);
     const previousStats = calculateStats(previousLeads);
@@ -2461,12 +2606,43 @@ export const firestoreService = {
       return Math.round(((current - previous) / previous) * 100);
     };
 
-    const stats = {
+    const callbacksToday = normalizedLeads.filter((lead: any) => {
+      const callback = toDate(lead.callbackAt);
+      return !!callback && callback >= today && callback < tomorrow;
+    }).length;
+
+    const overdueCallbacks = normalizedLeads.filter((lead: any) => {
+      const callback = toDate(lead.callbackAt);
+      return !!callback && callback < now && lead.status === 'Callback';
+    }).length;
+
+    const unassigned = normalizedLeads.filter(
+      (lead: any) => !String(lead.assigned_to || '').trim()
+    ).length;
+
+    const untouched24h = normalizedLeads.filter((lead: any) => {
+      if (terminalStatuses.has(lead.status)) return false;
+      const updated = toDate(lead.updatedAt) || toDate(lead.createdAt);
+      return !!updated && now.getTime() - updated.getTime() >= 24 * 60 * 60 * 1000;
+    }).length;
+
+    const stale7d = normalizedLeads.filter((lead: any) => {
+      if (terminalStatuses.has(lead.status)) return false;
+      const updated = toDate(lead.updatedAt) || toDate(lead.createdAt);
+      return !!updated && now.getTime() - updated.getTime() >= 7 * 24 * 60 * 60 * 1000;
+    }).length;
+
+    const jor = currentLeads.filter((lead: any) => lead.status === 'JOR').length;
+    const highPotential = currentLeads.filter(
+      (lead: any) => lead.status === 'High Potential'
+    ).length;
+
+    const stats: any = {
       total: currentStats.total,
       totalChange: getChange(currentStats.total, previousStats.total),
-      newToday: filteredLeads.filter(l => {
-        const created = l.createdAt?.toDate ? l.createdAt.toDate() : new Date(l.createdAt || 0);
-        return created >= today;
+      newToday: normalizedLeads.filter((lead: any) => {
+        const created = toDate(lead.createdAt);
+        return !!created && created >= today;
       }).length,
       active: currentStats.active,
       activeChange: getChange(currentStats.active, previousStats.active),
@@ -2475,71 +2651,322 @@ export const firestoreService = {
       lost: currentStats.lost,
       lostChange: getChange(currentStats.lost, previousStats.lost),
       duplicates: 0,
-      leadsByStatus: [] as any[],
-      usersByRole: [] as any[],
-      topSources: [] as any[],
-      workload: [] as any[],
-      teamMembers: [] as any[]
+      jor,
+      highPotential,
+      callbacksToday,
+      overdueCallbacks,
+      unassigned,
+      untouched24h,
+      stale7d,
+      leadsByStatus: [],
+      usersByRole: [],
+      topSources: [],
+      sourceAnalytics: [],
+      agentPerformance: [],
+      teamPerformance: [],
+      teamMembers: [],
+      dailyFlow: [],
+      criticalAlerts: [],
+      attendance: {
+        totalAgents: 0,
+        ready: 0,
+        break: 0,
+        ended: 0,
+        notStarted: 0
+      },
+      financeReady: false
     };
 
-    const statusMap: any = {};
-    currentLeads.forEach(l => {
-      statusMap[l.status] = (statusMap[l.status] || 0) + 1;
+    // -------------------------
+    // Status normalization / distribution.
+    // -------------------------
+    const statusMap: Record<string, number> = {};
+    currentLeads.forEach((lead: any) => {
+      statusMap[lead.status] = (statusMap[lead.status] || 0) + 1;
     });
+
     stats.leadsByStatus = Object.entries(statusMap)
       .map(([status, count]) => ({ status, count }))
       .sort((a: any, b: any) => b.count - a.count);
 
-    // Team Leader sees only roles inside their own team.
-    const roleMap: any = {};
+    // -------------------------
+    // Role quality / configuration.
+    // -------------------------
+    const roleMap: Record<string, number> = {};
     visibleUsers.forEach((u: any) => {
-      const role = u.role || 'Undefined';
+      const role = String(u.role || 'Undefined').trim() || 'Undefined';
       roleMap[role] = (roleMap[role] || 0) + 1;
     });
+
     stats.usersByRole = Object.entries(roleMap)
       .map(([role, count]) => ({ role, count }))
       .sort((a: any, b: any) => b.count - a.count);
 
-    const sourceMap: any = {};
-    currentLeads.forEach(l => {
-      if (l.source) {
-        sourceMap[l.source] = (sourceMap[l.source] || 0) + 1;
+    stats.misconfiguredUsers = Number(roleMap['Undefined'] || 0);
+
+    // -------------------------
+    // Import filename resolution.
+    // New imports carry importFileName directly. Old imports are resolved
+    // from the already-parallelized imports snapshot without extra requests.
+    // -------------------------
+    const importNameMap = new Map<string, string>();
+    importsSnap.docs.forEach(importDoc => {
+      const data = importDoc.data() as any;
+      importNameMap.set(
+        String(importDoc.id),
+        String(data.fileName || `Import ${importDoc.id}`)
+      );
+    });
+
+    const fileNameForLead = (lead: any) => {
+      if (lead.importFileName) return String(lead.importFileName);
+      if (lead.importId && importNameMap.has(String(lead.importId))) {
+        return String(importNameMap.get(String(lead.importId)));
+      }
+      return 'Manual / Legacy';
+    };
+
+    // -------------------------
+    // Source -> File -> Status analytics.
+    // -------------------------
+    const sourceBuckets = new Map<string, any>();
+
+    currentLeads.forEach((lead: any) => {
+      const source = String(lead.source || 'Unknown').trim() || 'Unknown';
+      const fileName = fileNameForLead(lead);
+
+      if (!sourceBuckets.has(source)) {
+        sourceBuckets.set(source, {
+          source,
+          count: 0,
+          statuses: {} as Record<string, number>,
+          files: new Map<string, any>()
+        });
+      }
+
+      const sourceBucket = sourceBuckets.get(source);
+      sourceBucket.count++;
+      sourceBucket.statuses[lead.status] =
+        (sourceBucket.statuses[lead.status] || 0) + 1;
+
+      if (!sourceBucket.files.has(fileName)) {
+        sourceBucket.files.set(fileName, {
+          fileName,
+          count: 0,
+          statuses: {} as Record<string, number>,
+          leadIds: [] as string[]
+        });
+      }
+
+      const fileBucket = sourceBucket.files.get(fileName);
+      fileBucket.count++;
+      fileBucket.statuses[lead.status] =
+        (fileBucket.statuses[lead.status] || 0) + 1;
+      fileBucket.leadIds.push(String(lead.id));
+    });
+
+    const qualityScore = (statuses: Record<string, number>, total: number) => {
+      if (!total) return 0;
+
+      const positive =
+        Number(statuses['Deposit'] || 0) * 3 +
+        Number(statuses['High Potential'] || 0) * 2 +
+        Number(statuses['Callback'] || 0);
+
+      const negative =
+        Number(statuses['Wrong Number'] || 0) * 2 +
+        Number(statuses['No answer'] || 0) +
+        Number(statuses['Hung Up'] || 0) +
+        Number(statuses['Drop'] || 0);
+
+      const raw = 50 + ((positive - negative) / total) * 50;
+      return Math.max(0, Math.min(100, Math.round(raw)));
+    };
+
+    stats.sourceAnalytics = Array.from(sourceBuckets.values())
+      .map((bucket: any) => {
+        const files = Array.from(bucket.files.values())
+          .map((file: any) => ({
+            fileName: file.fileName,
+            count: file.count,
+            qualityScore: qualityScore(file.statuses, file.count),
+            statuses: Object.entries(file.statuses)
+              .map(([status, count]) => ({ status, count }))
+              .sort((a: any, b: any) => b.count - a.count),
+            leadIds: file.leadIds
+          }))
+          .sort((a: any, b: any) => b.count - a.count);
+
+        return {
+          source: bucket.source,
+          count: bucket.count,
+          qualityScore: qualityScore(bucket.statuses, bucket.count),
+          statuses: Object.entries(bucket.statuses)
+            .map(([status, count]) => ({ status, count }))
+            .sort((a: any, b: any) => b.count - a.count),
+          files
+        };
+      })
+      .sort((a: any, b: any) => b.count - a.count);
+
+    stats.topSources = stats.sourceAnalytics.slice(0, 5);
+
+    // -------------------------
+    // Agent operational performance.
+    // Revenue ranking will replace/extend this after Finance module is added.
+    // -------------------------
+    const agents = visibleUsers.filter(
+      (u: any) => String(u.role || '') === 'Agent'
+    );
+
+    stats.agentPerformance = agents
+      .map((agent: any) => {
+        const agentLeads = currentLeads.filter(
+          (lead: any) => String(lead.assigned_to) === String(agent.id)
+        );
+
+        const deposits = agentLeads.filter(
+          (lead: any) => lead.status === 'Deposit'
+        ).length;
+
+        const high = agentLeads.filter(
+          (lead: any) => lead.status === 'High Potential'
+        ).length;
+
+        const callbacks = agentLeads.filter(
+          (lead: any) => lead.status === 'Callback'
+        ).length;
+
+        return {
+          id: agent.id,
+          name: agent.name || agent.email || 'Agent',
+          avatar: agent.avatar || `https://i.pravatar.cc/150?u=${agent.id}`,
+          teamId: agent.teamId || '',
+          teamName: agent.teamName || '',
+          total: agentLeads.length,
+          deposits,
+          highPotential: high,
+          callbacks,
+          conversionRate: agentLeads.length
+            ? Math.round((deposits / agentLeads.length) * 1000) / 10
+            : 0,
+          revenue: null
+        };
+      })
+      .sort((a: any, b: any) => {
+        if (b.deposits !== a.deposits) return b.deposits - a.deposits;
+        if (b.conversionRate !== a.conversionRate) {
+          return b.conversionRate - a.conversionRate;
+        }
+        return b.highPotential - a.highPotential;
+      })
+      .slice(0, 10);
+
+    // Backward-compatible field: existing UI/code that still reads workload
+    // will continue working until Dashboard.tsx is updated.
+    stats.workload = stats.agentPerformance.map((agent: any) => ({
+      name: agent.name,
+      new_leads: 0,
+      in_progress: Math.max(0, agent.total - agent.deposits),
+      completed: agent.deposits,
+      total: agent.total
+    }));
+
+    // -------------------------
+    // Team performance.
+    // -------------------------
+    const teams = new Map<string, any>();
+
+    visibleUsers
+      .filter((u: any) => ['Agent', 'Team Leader'].includes(String(u.role || '')))
+      .forEach((member: any) => {
+        const teamId = String(member.teamId || 'unassigned-team');
+        const teamName = String(member.teamName || 'No Team');
+
+        if (!teams.has(teamId)) {
+          teams.set(teamId, {
+            teamId,
+            teamName,
+            memberIds: new Set<string>(),
+            agentCount: 0
+          });
+        }
+
+        const bucket = teams.get(teamId);
+        bucket.memberIds.add(String(member.id));
+        if (member.role === 'Agent') bucket.agentCount++;
+      });
+
+    stats.teamPerformance = Array.from(teams.values())
+      .map((team: any) => {
+        const teamLeads = currentLeads.filter((lead: any) =>
+          team.memberIds.has(String(lead.assigned_to || ''))
+        );
+
+        const deposits = teamLeads.filter(
+          (lead: any) => lead.status === 'Deposit'
+        ).length;
+
+        const high = teamLeads.filter(
+          (lead: any) => lead.status === 'High Potential'
+        ).length;
+
+        const lostCount = teamLeads.filter((lead: any) =>
+          ['Lost', 'No Potential'].includes(lead.status)
+        ).length;
+
+        return {
+          teamId: team.teamId,
+          teamName: team.teamName,
+          agents: team.agentCount,
+          leads: teamLeads.length,
+          deposits,
+          highPotential: high,
+          lost: lostCount,
+          conversionRate: teamLeads.length
+            ? Math.round((deposits / teamLeads.length) * 1000) / 10
+            : 0
+        };
+      })
+      .sort((a: any, b: any) => {
+        if (b.deposits !== a.deposits) return b.deposits - a.deposits;
+        return b.conversionRate - a.conversionRate;
+      });
+
+    // -------------------------
+    // Attendance snapshot.
+    // -------------------------
+    const shiftMap = new Map<string, any>();
+    todayShiftsSnap.docs.forEach(shiftDoc => {
+      const shift = { id: shiftDoc.id, ...shiftDoc.data() } as any;
+      shiftMap.set(String(shift.userId), shift);
+    });
+
+    const visibleAgents = visibleUsers.filter(
+      (u: any) => String(u.role || '') === 'Agent'
+    );
+
+    stats.attendance.totalAgents = visibleAgents.length;
+
+    visibleAgents.forEach((agent: any) => {
+      const shift = shiftMap.get(String(agent.id));
+
+      if (!shift) {
+        stats.attendance.notStarted++;
+      } else if (shift.status === 'ready') {
+        stats.attendance.ready++;
+      } else if (shift.status === 'break') {
+        stats.attendance.break++;
+      } else if (shift.status === 'ended') {
+        stats.attendance.ended++;
+      } else {
+        stats.attendance.notStarted++;
       }
     });
-    stats.topSources = Object.entries(sourceMap)
-      .map(([source, count]) => ({ source, count }))
-      .sort((a: any, b: any) => b.count - a.count)
-      .slice(0, 5);
 
-    // "Top Agent Workload" stays agent-only; Team Leader sees only agents in their team.
-    const agents = visibleUsers.filter((u: any) => u.role === 'Agent');
-    stats.workload = agents.map((agent: any) => {
-      const agentLeads = currentLeads.filter(l => String(l.assigned_to) === String(agent.id));
-      return {
-        name: agent.name,
-        new_leads: agentLeads.filter(l => l.status === 'New').length,
-        in_progress: agentLeads.filter(l => !['New', 'Deposit', 'Lost', 'No Potential'].includes(l.status)).length,
-        completed: agentLeads.filter(l => l.status === 'Deposit').length,
-        total: agentLeads.length
-      };
-    })
-    .sort((a: any, b: any) => b.total - a.total)
-    .slice(0, 5);
-
-    // Team Leader gets a concrete list of their own agents for the dashboard.
-    // Administrators/Managers keep the existing dashboard behaviour.
+    // Keep existing Team Leader agent cards.
     if (currentRole === 'Team Leader') {
-      const todayKey = this._getLocalDateKey();
-      const todayShiftsSnap = await getDocs(collection(db, SHIFT_SESSIONS_COL));
-      const todayShifts = new Map(
-        todayShiftsSnap.docs
-          .map(d => ({ id: d.id, ...d.data() } as any))
-          .filter((shift: any) => shift.dateKey === todayKey)
-          .map((shift: any) => [String(shift.userId), shift])
-      );
-
-      stats.teamMembers = visibleUsers
-        .filter((member: any) => member.role === 'Agent')
+      stats.teamMembers = visibleAgents
         .map((member: any) => ({
           id: member.id,
           name: member.name || member.email || 'Agent',
@@ -2547,19 +2974,126 @@ export const firestoreService = {
           avatar: member.avatar || `https://i.pravatar.cc/150?u=${member.id}`,
           isOnline: !!member.isOnline,
           lastSeen: member.lastSeen || null,
-          shift: todayShifts.get(String(member.id)) || null
+          shift: shiftMap.get(String(member.id)) || null
         }))
-        .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)));
+        .sort((a: any, b: any) =>
+          String(a.name).localeCompare(String(b.name))
+        );
     }
 
-    const historySnap = await getDocs(query(collection(db, "history"), orderBy("createdAt", "desc"), limit(100)));
-    const visibleUserIds = new Set(visibleUsers.map((u: any) => String(u.id)));
-    const visibleLeadIds = new Set(filteredLeads.map((l: any) => String(l.id)));
+    // -------------------------
+    // Daily lead flow. Limit graph cardinality to a practical recent window.
+    // -------------------------
+    const flowStart = new Date(now);
+
+    if (timeRange === '1d') {
+      flowStart.setHours(0, 0, 0, 0);
+    } else if (timeRange === '1w') {
+      flowStart.setDate(flowStart.getDate() - 6);
+      flowStart.setHours(0, 0, 0, 0);
+    } else if (timeRange === '1m') {
+      flowStart.setDate(flowStart.getDate() - 29);
+      flowStart.setHours(0, 0, 0, 0);
+    } else {
+      flowStart.setDate(flowStart.getDate() - 13);
+      flowStart.setHours(0, 0, 0, 0);
+    }
+
+    const flowMap = new Map<string, number>();
+    const cursor = new Date(flowStart);
+
+    while (cursor <= now) {
+      flowMap.set(this._getLocalDateKey(cursor), 0);
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    normalizedLeads.forEach((lead: any) => {
+      const created = toDate(lead.createdAt);
+      if (!created || created < flowStart) return;
+
+      const key = this._getLocalDateKey(created);
+      if (flowMap.has(key)) {
+        flowMap.set(key, Number(flowMap.get(key) || 0) + 1);
+      }
+    });
+
+    stats.dailyFlow = Array.from(flowMap.entries()).map(([date, count]) => ({
+      date,
+      label: date.slice(5),
+      count
+    }));
+
+    // -------------------------
+    // Critical alerts.
+    // -------------------------
+    if (unassigned > 0) {
+      stats.criticalAlerts.push({
+        type: 'unassigned',
+        severity: 'high',
+        label: 'Unassigned Leads',
+        count: unassigned,
+        detail: 'Leads currently have no assigned user.'
+      });
+    }
+
+    if (overdueCallbacks > 0) {
+      stats.criticalAlerts.push({
+        type: 'overdue-callbacks',
+        severity: 'high',
+        label: 'Overdue Callbacks',
+        count: overdueCallbacks,
+        detail: 'Callback time has passed while status is still Callback.'
+      });
+    }
+
+    if (untouched24h > 0) {
+      stats.criticalAlerts.push({
+        type: 'untouched',
+        severity: 'medium',
+        label: 'Untouched 24h+',
+        count: untouched24h,
+        detail: 'Active leads have not been updated for at least 24 hours.'
+      });
+    }
+
+    if (stats.attendance.notStarted > 0) {
+      stats.criticalAlerts.push({
+        type: 'shift-not-started',
+        severity: 'medium',
+        label: 'Shift Not Started',
+        count: stats.attendance.notStarted,
+        detail: 'Visible Agents have no shift record for today.'
+      });
+    }
+
+    if (stats.misconfiguredUsers > 0) {
+      stats.criticalAlerts.push({
+        type: 'user-config',
+        severity: 'medium',
+        label: 'User Configuration',
+        count: stats.misconfiguredUsers,
+        detail: 'Users have an undefined role and should be reviewed.'
+      });
+    }
+
+    // -------------------------
+    // Recent CRM activity with existing visibility rules.
+    // -------------------------
+    const visibleUserIds = new Set(
+      visibleUsers.map((u: any) => String(u.id))
+    );
+
+    const visibleLeadIds = new Set(
+      normalizedLeads.map((lead: any) => String(lead.id))
+    );
 
     const recentActivity = historySnap.docs
       .map(d => {
         const data = d.data();
-        const activityUser = allUsers.find((u: any) => String(u.id) === String(data.user_id)) as any;
+        const activityUser = allUsers.find(
+          (u: any) => String(u.id) === String(data.user_id)
+        ) as any;
+
         return {
           id: d.id,
           ...data,
@@ -2567,25 +3101,42 @@ export const firestoreService = {
         };
       })
       .filter((activity: any) => {
-        if (currentRole === 'Administrator' || currentRole === 'Manager') return true;
+        if (currentRole === 'Administrator' || currentRole === 'Manager') {
+          return true;
+        }
+
         if (currentRole === 'Agent') {
-          return String(activity.user_id || '') === String(currentUser.id) ||
-            (activity.lead_id && visibleLeadIds.has(String(activity.lead_id)));
+          return (
+            String(activity.user_id || '') === String(currentUser.id) ||
+            (activity.lead_id &&
+              visibleLeadIds.has(String(activity.lead_id)))
+          );
         }
+
         if (currentRole === 'Team Leader') {
-          return visibleUserIds.has(String(activity.user_id || '')) ||
-            (activity.lead_id && visibleLeadIds.has(String(activity.lead_id)));
+          return (
+            visibleUserIds.has(String(activity.user_id || '')) ||
+            (activity.lead_id &&
+              visibleLeadIds.has(String(activity.lead_id)))
+          );
         }
+
         return false;
       })
       .slice(0, 10);
 
-    (stats as any).recentActivity = recentActivity;
-    (stats as any).scope = currentRole === 'Team Leader'
-      ? { type: 'team', teamId: currentTeamId, teamName: currentUser.teamName || '' }
-      : currentRole === 'Agent'
-        ? { type: 'agent', userId: currentUser.id }
-        : { type: 'organization' };
+    stats.recentActivity = recentActivity;
+
+    stats.scope =
+      currentRole === 'Team Leader'
+        ? {
+            type: 'team',
+            teamId: currentTeamId,
+            teamName: currentUser.teamName || ''
+          }
+        : currentRole === 'Agent'
+          ? { type: 'agent', userId: currentUser.id }
+          : { type: 'organization' };
 
     return stats;
   }
