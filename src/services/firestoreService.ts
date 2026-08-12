@@ -13,7 +13,8 @@ import {
   serverTimestamp,
   Timestamp,
   setDoc,
-  writeBatch
+  writeBatch,
+  runTransaction
 } from "firebase/firestore";
 import { 
   signInWithEmailAndPassword,
@@ -35,6 +36,9 @@ const IMPORTS_COL = "imports";
 const TEAMS_COL = "teams";
 const SHIFT_SESSIONS_COL = "shift_sessions";
 const WORK_EVENTS_COL = "work_events";
+const FINANCE_DEPOSITS_COL = "finance_deposits";
+const FINANCE_AUDIT_COL = "finance_audit_logs";
+const FINANCE_CELEBRATIONS_COL = "finance_celebrations";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const sanitizeData = (data: any) => {
@@ -1737,6 +1741,414 @@ export const firestoreService = {
       console.error('deleteAllLeads error:', error);
       throw error;
     }
+  },
+
+
+  // Finance / Deposit workflow
+  async submitFinanceDeposit(payload: any, userId: string) {
+    if (!userId) throw new Error('Current user is required.');
+
+    const submitter = await this.getUser(String(userId));
+    if (!submitter) throw new Error('Current CRM user was not found.');
+    if (String(submitter.role || '') !== 'Agent') {
+      throw new Error('Only Agents can submit deposits from the Agent portfolio form.');
+    }
+
+    const amount = Number(payload?.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('Amount must be greater than 0.');
+    }
+
+    const allUsers = await this.getUsers();
+    const userMap = new Map(allUsers.map((user: any) => [String(user.id), user]));
+    const rawSplits = Array.isArray(payload?.splits) ? payload.splits : [];
+    const splitMap = new Map<string, number>();
+
+    rawSplits.forEach((split: any) => {
+      const splitUserId = String(split?.userId || '').trim();
+      const percentage = Number(split?.percentage || 0);
+
+      if (!splitUserId || splitUserId === String(userId) || percentage <= 0) return;
+      if (!userMap.has(splitUserId)) {
+        throw new Error('One of the selected Split With users no longer exists.');
+      }
+
+      splitMap.set(splitUserId, Number(splitMap.get(splitUserId) || 0) + percentage);
+    });
+
+    const totalSplitPercentage = Array.from(splitMap.values()).reduce((sum, value) => sum + value, 0);
+    if (totalSplitPercentage > 100.0001) {
+      throw new Error('Split percentages cannot exceed 100%.');
+    }
+
+    const submitterPercentage = Math.max(0, 100 - totalSplitPercentage);
+    const creditedAgentName =
+      String(payload?.agentName || submitter.name || '').trim() ||
+      submitter.name ||
+      submitter.email ||
+      'Agent';
+
+    const allocations: any[] = [{
+      userId: String(userId),
+      userName: creditedAgentName,
+      systemUserName: submitter.name || submitter.email || 'Agent',
+      role: submitter.role || 'Agent',
+      percentage: Number(submitterPercentage.toFixed(4)),
+      amount: Number(((amount * submitterPercentage) / 100).toFixed(2)),
+      type: 'owner'
+    }];
+
+    splitMap.forEach((percentage, splitUserId) => {
+      const splitUser: any = userMap.get(splitUserId);
+      allocations.push({
+        userId: splitUserId,
+        userName: splitUser?.name || splitUser?.email || splitUserId,
+        systemUserName: splitUser?.name || splitUser?.email || splitUserId,
+        role: splitUser?.role || 'Agent',
+        percentage: Number(Number(percentage).toFixed(4)),
+        amount: Number(((amount * Number(percentage)) / 100).toFixed(2)),
+        type: 'split'
+      });
+    });
+
+    const participantIds = Array.from(new Set(allocations.map(allocation => String(allocation.userId))));
+
+    const financePayload = sanitizeData({
+      clientFullName: String(payload?.clientFullName || '').trim(),
+      country: String(payload?.country || '').trim(),
+      email: String(payload?.email || '').trim(),
+      phoneNumber: String(payload?.phoneNumber || '').trim(),
+      walletAddress: String(payload?.walletAddress || '').trim(),
+      amount,
+      crypto: String(payload?.crypto || '').trim(),
+      cryptoOther: String(payload?.cryptoOther || '').trim(),
+      depositDate: String(payload?.depositDate || '').trim(),
+      leadSourceId: String(payload?.leadSourceId || '').trim(),
+      retName: String(payload?.retName || '').trim(),
+      agentName: creditedAgentName,
+
+      submittedBy: String(userId),
+      submittedByName: submitter.name || submitter.email || 'Agent',
+      submittedByEmail: submitter.email || '',
+      submittedByRole: submitter.role || 'Agent',
+      teamId: submitter.teamId || '',
+      teamName: submitter.teamName || '',
+
+      allocations,
+      participantIds,
+      totalSplitPercentage: Number(totalSplitPercentage.toFixed(4)),
+      submitterPercentage: Number(submitterPercentage.toFixed(4)),
+
+      status: 'Pending',
+      approvedBy: '',
+      approvedByName: '',
+      approvedAt: null,
+      rejectedBy: '',
+      rejectedByName: '',
+      rejectedAt: null,
+      rejectReason: '',
+
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      submittedAt: serverTimestamp()
+    });
+
+    const depositRef = await addDoc(collection(db, FINANCE_DEPOSITS_COL), financePayload);
+
+    await addDoc(collection(db, FINANCE_AUDIT_COL), {
+      depositId: depositRef.id,
+      action: 'Created',
+      changedBy: String(userId),
+      changedByName: submitter.name || submitter.email || 'Agent',
+      oldValue: null,
+      newValue: { status: 'Pending', amount, allocations },
+      createdAt: serverTimestamp()
+    });
+
+    const approvers = allUsers.filter((candidate: any) => {
+      const role = String(candidate.role || '');
+      if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) return true;
+
+      return (
+        role === 'Team Leader' &&
+        !!submitter.teamId &&
+        String(candidate.teamId || '') === String(submitter.teamId)
+      );
+    });
+
+    const uniqueApprovers = Array.from(
+      new Map(approvers.map((approver: any) => [String(approver.id), approver])).values()
+    );
+
+    await Promise.all(
+      uniqueApprovers
+        .filter((approver: any) => String(approver.id) !== String(userId))
+        .map((approver: any) =>
+          addDoc(collection(db, NOTIFICATIONS_COL), {
+            user_id: String(approver.id),
+            type: 'finance_deposit_pending',
+            title: 'Deposit Approval Required',
+            message: `${submitter.name || 'Agent'} submitted $${amount.toLocaleString()} for approval.`,
+            finance_deposit_id: depositRef.id,
+            read: false,
+            createdAt: serverTimestamp()
+          })
+        )
+    );
+
+    return { id: depositRef.id, ...financePayload };
+  },
+
+  async getFinanceDepositsForUser(user: any) {
+    const currentUserId = String(user?.id || '');
+    if (!currentUserId) return [];
+
+    const currentUser = await this.getUser(currentUserId);
+    if (!currentUser) return [];
+
+    const role = String(currentUser.role || '');
+    if (!['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(role)) {
+      return [];
+    }
+
+    let snap;
+
+    if (role === 'Team Leader') {
+      if (!currentUser.teamId) return [];
+      snap = await getDocs(
+        query(
+          collection(db, FINANCE_DEPOSITS_COL),
+          where('teamId', '==', String(currentUser.teamId)),
+          limit(300)
+        )
+      );
+    } else {
+      snap = await getDocs(query(collection(db, FINANCE_DEPOSITS_COL), limit(300)));
+    }
+
+    return snap.docs
+      .map(depositDoc => ({ id: depositDoc.id, ...depositDoc.data() } as any))
+      .sort((a: any, b: any) => {
+        const aDate = a.submittedAt?.toDate ? a.submittedAt.toDate() : new Date(a.submittedAt || 0);
+        const bDate = b.submittedAt?.toDate ? b.submittedAt.toDate() : new Date(b.submittedAt || 0);
+        return bDate.getTime() - aDate.getTime();
+      });
+  },
+
+  async getFinancePortfolio(userId: string) {
+    const empty = {
+      submittedApprovedGross: 0,
+      approvedAttributed: 0,
+      splitEarnings: 0,
+      pendingAttributed: 0,
+      rejectedAttributed: 0,
+      approvedCount: 0,
+      pendingCount: 0,
+      rejectedCount: 0
+    };
+
+    if (!userId) return empty;
+
+    const snap = await getDocs(
+      query(
+        collection(db, FINANCE_DEPOSITS_COL),
+        where('participantIds', 'array-contains', String(userId)),
+        limit(300)
+      )
+    );
+
+    const totals = { ...empty };
+
+    snap.docs.forEach(d => {
+      const deposit = d.data() as any;
+      const allocation = (Array.isArray(deposit.allocations) ? deposit.allocations : [])
+        .find((item: any) => String(item.userId) === String(userId));
+
+      const attributedAmount = Number(allocation?.amount || 0);
+      const status = String(deposit.status || 'Pending');
+
+      if (status === 'Approved') {
+        totals.approvedAttributed += attributedAmount;
+        totals.approvedCount++;
+
+        if (String(deposit.submittedBy || '') === String(userId)) {
+          totals.submittedApprovedGross += Number(deposit.amount || 0);
+        } else {
+          totals.splitEarnings += attributedAmount;
+        }
+      } else if (status === 'Rejected') {
+        totals.rejectedAttributed += attributedAmount;
+        totals.rejectedCount++;
+      } else {
+        totals.pendingAttributed += attributedAmount;
+        totals.pendingCount++;
+      }
+    });
+
+    Object.keys(totals).forEach(key => {
+      if (key.endsWith('Count')) return;
+      (totals as any)[key] = Number(Number((totals as any)[key] || 0).toFixed(2));
+    });
+
+    return totals;
+  },
+
+  async reviewFinanceDeposit(
+    depositId: string,
+    reviewerId: string,
+    decision: 'Approved' | 'Rejected',
+    rejectReason = ''
+  ) {
+    if (!depositId || !reviewerId) throw new Error('Deposit and reviewer are required.');
+    if (!['Approved', 'Rejected'].includes(decision)) throw new Error('Invalid finance decision.');
+
+    const reviewer = await this.getUser(String(reviewerId));
+    if (!reviewer) throw new Error('Reviewer was not found.');
+
+    const role = String(reviewer.role || '');
+    if (!['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(role)) {
+      throw new Error('You do not have permission to approve or reject deposits.');
+    }
+
+    if (decision === 'Rejected' && !String(rejectReason || '').trim()) {
+      throw new Error('Reject reason is required.');
+    }
+
+    const depositRef = doc(db, FINANCE_DEPOSITS_COL, String(depositId));
+    const auditRef = doc(collection(db, FINANCE_AUDIT_COL));
+    const celebrationRef = doc(collection(db, FINANCE_CELEBRATIONS_COL));
+    let reviewedDeposit: any = null;
+
+    await runTransaction(db, async transaction => {
+      const depositSnap = await transaction.get(depositRef);
+      if (!depositSnap.exists()) throw new Error('Deposit was not found.');
+
+      const deposit = depositSnap.data() as any;
+
+      if (String(deposit.status || 'Pending') !== 'Pending') {
+        throw new Error(`This deposit is already ${deposit.status}.`);
+      }
+
+      if (
+        role === 'Team Leader' &&
+        String(deposit.teamId || '') !== String(reviewer.teamId || '')
+      ) {
+        throw new Error('Team Leaders can review deposits only for their own team.');
+      }
+
+      const before = {
+        status: deposit.status || 'Pending',
+        approvedBy: deposit.approvedBy || '',
+        rejectedBy: deposit.rejectedBy || ''
+      };
+
+      const updatePayload =
+        decision === 'Approved'
+          ? {
+              status: 'Approved',
+              approvedBy: String(reviewerId),
+              approvedByName: reviewer.name || reviewer.email || role,
+              approvedAt: serverTimestamp(),
+              rejectedBy: '',
+              rejectedByName: '',
+              rejectedAt: null,
+              rejectReason: '',
+              updatedAt: serverTimestamp()
+            }
+          : {
+              status: 'Rejected',
+              rejectedBy: String(reviewerId),
+              rejectedByName: reviewer.name || reviewer.email || role,
+              rejectedAt: serverTimestamp(),
+              rejectReason: String(rejectReason || '').trim(),
+              approvedBy: '',
+              approvedByName: '',
+              approvedAt: null,
+              updatedAt: serverTimestamp()
+            };
+
+      transaction.update(depositRef, updatePayload);
+
+      transaction.set(auditRef, {
+        depositId: String(depositId),
+        action: decision,
+        changedBy: String(reviewerId),
+        changedByName: reviewer.name || reviewer.email || role,
+        oldValue: before,
+        newValue: {
+          status: decision,
+          rejectReason: decision === 'Rejected' ? String(rejectReason || '').trim() : ''
+        },
+        createdAt: serverTimestamp()
+      });
+
+      if (decision === 'Approved') {
+        transaction.set(celebrationRef, {
+          depositId: String(depositId),
+          teamId: deposit.teamId || '',
+          teamName: deposit.teamName || '',
+          agentName: deposit.agentName || deposit.submittedByName || 'Agent',
+          amount: Number(deposit.amount || 0),
+          createdAt: serverTimestamp()
+        });
+      }
+
+      reviewedDeposit = {
+        id: depositSnap.id,
+        ...deposit,
+        ...updatePayload,
+        status: decision
+      };
+    });
+
+    if (!reviewedDeposit) throw new Error('Finance review failed.');
+
+    const participantIds = Array.from(
+      new Set(
+        [
+          String(reviewedDeposit.submittedBy || ''),
+          ...(Array.isArray(reviewedDeposit.participantIds)
+            ? reviewedDeposit.participantIds.map((id: any) => String(id))
+            : [])
+        ].filter(Boolean)
+      )
+    );
+
+    await Promise.all(
+      participantIds.map(participantId =>
+        addDoc(collection(db, NOTIFICATIONS_COL), {
+          user_id: participantId,
+          type: decision === 'Approved' ? 'finance_deposit_approved' : 'finance_deposit_rejected',
+          title: decision === 'Approved' ? 'Deposit Approved 🎉' : 'Deposit Rejected',
+          message:
+            decision === 'Approved'
+              ? `$${Number(reviewedDeposit.amount || 0).toLocaleString()} deposit was approved by ${reviewer.name || role}.`
+              : `$${Number(reviewedDeposit.amount || 0).toLocaleString()} deposit was rejected. Reason: ${String(rejectReason || '').trim()}`,
+          finance_deposit_id: String(depositId),
+          read: false,
+          createdAt: serverTimestamp()
+        })
+      )
+    );
+
+    return reviewedDeposit;
+  },
+
+  async getFinanceAuditLogs(userId: string) {
+    if (!userId) return [];
+
+    const currentUser = await this.getUser(String(userId));
+    if (!currentUser || currentUser.role !== 'Administrator') return [];
+
+    const snap = await getDocs(
+      query(
+        collection(db, FINANCE_AUDIT_COL),
+        orderBy('createdAt', 'desc'),
+        limit(100)
+      )
+    );
+
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   },
 
   async resetSystem(userId: string) {
