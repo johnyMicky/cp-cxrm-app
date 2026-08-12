@@ -179,6 +179,7 @@ export default function LeadForm({ onClose, onSuccess, initialData }: LeadFormPr
                 <option value="Hung Up">Hung Up</option>
                 <option value="Wrong Number">Wrong Number</option>
                 <option value="Drop">Drop</option>
+                <option value="JOR">JOR</option>
               </select>
             </div>
 
