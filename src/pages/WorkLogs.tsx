@@ -87,7 +87,7 @@ export default function WorkLogs() {
     setEvents({});
   }, [dateKey]);
 
-  if (!['Administrator', 'Manager', 'Team Leader'].includes(currentUser.role)) {
+  if (!['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(currentUser.role)) {
     return (
       <div className="p-8 text-slate-400">
         You do not have permission to view Work Logs.
