@@ -7,9 +7,14 @@ import {
   Plus,
   Route,
   Power,
-  PowerOff
+  PowerOff,
+  SlidersHorizontal,
+  Percent,
+  BadgeDollarSign
 } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
+
+const moneyLabel = (value: number) => `$${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 
 export default function Settings() {
   const [isResetting, setIsResetting] = useState(false);
@@ -22,6 +27,11 @@ export default function Settings() {
   const [solutionName, setSolutionName] = useState('');
   const [solutionLoading, setSolutionLoading] = useState(false);
   const [solutionError, setSolutionError] = useState('');
+
+  const [financeCatalog, setFinanceCatalog] = useState<any[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogForm, setCatalogForm] = useState({ type: 'Expense', name: '', calculationType: 'Fixed', defaultValue: '', recurring: false, frequency: 'Monthly', dueDay: '1', description: '' });
 
   const currentUserId = localStorage.getItem('userId');
   const userRole = localStorage.getItem('userRole');
@@ -40,8 +50,15 @@ export default function Settings() {
     }
   };
 
+  const loadFinanceCatalog = async () => {
+    if (userRole !== 'Administrator') return;
+    try { setFinanceCatalog(await firestoreService.getFinanceCatalog(true) as any[]); }
+    catch (err: any) { setCatalogError(err?.message || 'Failed to load finance catalog.'); }
+  };
+
   useEffect(() => {
     loadSolutions();
+    loadFinanceCatalog();
   }, [userRole]);
 
   const handleAddSolution = async () => {
@@ -87,6 +104,39 @@ export default function Settings() {
       );
     } finally {
       setSolutionLoading(false);
+    }
+  };
+
+  const handleAddCatalogItem = async () => {
+    if (!currentUserId || !catalogForm.name.trim()) return;
+    try {
+      setCatalogLoading(true);
+      setCatalogError('');
+      await firestoreService.createFinanceCatalogItem({
+        ...catalogForm,
+        defaultValue: Number(catalogForm.defaultValue || 0),
+        dueDay: Number(catalogForm.dueDay || 1)
+      }, currentUserId);
+      setCatalogForm({ type: 'Expense', name: '', calculationType: 'Fixed', defaultValue: '', recurring: false, frequency: 'Monthly', dueDay: '1', description: '' });
+      await loadFinanceCatalog();
+    } catch (err: any) {
+      setCatalogError(err?.message || 'Failed to add finance item.');
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
+
+  const toggleCatalogItem = async (item: any) => {
+    if (!currentUserId) return;
+    try {
+      setCatalogLoading(true);
+      setCatalogError('');
+      await firestoreService.setFinanceCatalogItemActive(item.id, item.isActive === false, currentUserId);
+      await loadFinanceCatalog();
+    } catch (err: any) {
+      setCatalogError(err?.message || 'Failed to update finance item.');
+    } finally {
+      setCatalogLoading(false);
     }
   };
 
@@ -247,6 +297,50 @@ export default function Settings() {
                 No Finance Solutions added yet.
               </p>
             )}
+          </div>
+        </div>
+
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4 mb-6">
+            <div>
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-5 h-5 text-violet-400" />
+                <h2 className="text-xl font-semibold text-white">Finance Configuration Catalog</h2>
+              </div>
+              <p className="text-sm text-slate-400 mt-1">Create selectable Expenses, Salaries, Commissions, Taxes, Bonuses and Penalties for Finance users.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            <select value={catalogForm.type} onChange={e => setCatalogForm(p => ({...p, type:e.target.value}))} className="bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white">
+              {['Expense','Salary','Commission','Tax','Bonus','Penalty'].map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+            <input value={catalogForm.name} onChange={e => setCatalogForm(p => ({...p, name:e.target.value}))} placeholder="Name, e.g. Office Rent" className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" />
+            <select value={catalogForm.calculationType} onChange={e => setCatalogForm(p => ({...p, calculationType:e.target.value}))} className="bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white">
+              <option value="Fixed">Fixed $</option><option value="Percentage">Percentage %</option>
+            </select>
+            <input type="number" min="0" step="0.01" value={catalogForm.defaultValue} onChange={e => setCatalogForm(p => ({...p, defaultValue:e.target.value}))} placeholder={catalogForm.calculationType === 'Percentage' ? 'Default %' : 'Default $'} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-[auto_160px_120px_1fr_auto] gap-3 mt-3 items-center">
+            <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={catalogForm.recurring} onChange={e=>setCatalogForm(p=>({...p,recurring:e.target.checked}))}/> Recurring</label>
+            <select disabled={!catalogForm.recurring} value={catalogForm.frequency} onChange={e=>setCatalogForm(p=>({...p,frequency:e.target.value}))} className="bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white disabled:opacity-40"><option>Monthly</option><option>Weekly</option><option>Yearly</option></select>
+            <input disabled={!catalogForm.recurring} type="number" min="1" max="31" value={catalogForm.dueDay} onChange={e=>setCatalogForm(p=>({...p,dueDay:e.target.value}))} placeholder="Due day" className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white disabled:opacity-40" />
+            <input value={catalogForm.description} onChange={e=>setCatalogForm(p=>({...p,description:e.target.value}))} placeholder="Description / rule" className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" />
+            <button onClick={handleAddCatalogItem} disabled={catalogLoading || !catalogForm.name.trim()} className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold">Add Item</button>
+          </div>
+          {catalogError && <div className="mt-3 text-sm text-rose-400">{catalogError}</div>}
+
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-2">
+            {financeCatalog.map(item => (
+              <div key={item.id} className="rounded-xl border border-white/5 bg-white/[0.02] p-4 flex items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2"><BadgeDollarSign className="w-4 h-4 text-violet-400"/><p className="text-sm font-semibold text-white">{item.name}</p><span className="text-[9px] uppercase text-slate-500">{item.type}</span></div>
+                  <p className="text-xs text-slate-500 mt-1">{item.calculationType === 'Percentage' ? `${item.defaultValue}%` : moneyLabel(item.defaultValue)}{item.recurring ? ` • ${item.frequency} • due day ${item.dueDay}` : ''}</p>
+                </div>
+                <button onClick={()=>toggleCatalogItem(item)} disabled={catalogLoading} className={`px-3 py-2 rounded-lg text-xs font-semibold ${item.isActive !== false ? 'bg-rose-500/10 text-rose-400' : 'bg-emerald-500/10 text-emerald-400'}`}>{item.isActive !== false ? 'Disable' : 'Enable'}</button>
+              </div>
+            ))}
+            {financeCatalog.length === 0 && <p className="text-sm text-slate-600 py-5">No finance configuration items yet.</p>}
           </div>
         </div>
 
