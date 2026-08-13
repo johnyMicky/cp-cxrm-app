@@ -40,6 +40,8 @@ const FINANCE_DEPOSITS_COL = "finance_deposits";
 const FINANCE_AUDIT_COL = "finance_audit_logs";
 const FINANCE_CELEBRATIONS_COL = "finance_celebrations";
 const FINANCE_SOLUTIONS_COL = "finance_solutions";
+const FINANCE_CATALOG_COL = "finance_catalog";
+const FINANCE_EXPENSES_COL = "finance_expenses";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const sanitizeData = (data: any) => {
@@ -1809,6 +1811,199 @@ export const firestoreService = {
     });
   },
 
+  async getFinanceCatalog(includeInactive = false) {
+    const snap = await getDocs(collection(db, FINANCE_CATALOG_COL));
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter((item: any) => includeInactive || item.isActive !== false)
+      .sort((a: any, b: any) => {
+        const typeCmp = String(a.type || '').localeCompare(String(b.type || ''));
+        return typeCmp || String(a.name || '').localeCompare(String(b.name || ''));
+      });
+  },
+
+  async createFinanceCatalogItem(payload: any, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can create finance configuration items.');
+    }
+
+    const name = String(payload?.name || '').trim();
+    const type = String(payload?.type || '').trim();
+    const calculationType = String(payload?.calculationType || 'Fixed') === 'Percentage' ? 'Percentage' : 'Fixed';
+    const defaultValue = Number(payload?.defaultValue || 0);
+    if (!name || !type) throw new Error('Name and type are required.');
+    if (!Number.isFinite(defaultValue) || defaultValue < 0) throw new Error('Default value must be 0 or greater.');
+
+    const existing = await this.getFinanceCatalog(true);
+    const duplicate = existing.find((item: any) =>
+      String(item.type || '').toLowerCase() === type.toLowerCase() &&
+      String(item.name || '').toLowerCase() === name.toLowerCase()
+    );
+    if (duplicate) throw new Error('This finance configuration item already exists.');
+
+    const ref = await addDoc(collection(db, FINANCE_CATALOG_COL), sanitizeData({
+      name,
+      type,
+      calculationType,
+      defaultValue,
+      recurring: !!payload?.recurring,
+      frequency: payload?.recurring ? String(payload?.frequency || 'Monthly') : '',
+      dueDay: payload?.recurring ? Math.min(31, Math.max(1, Number(payload?.dueDay || 1))) : 0,
+      description: String(payload?.description || '').trim(),
+      isActive: true,
+      createdBy: String(userId),
+      createdByName: currentUser.name || currentUser.email || 'Administrator',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }));
+    return { id: ref.id, name, type, calculationType, defaultValue, isActive: true };
+  },
+
+  async setFinanceCatalogItemActive(itemId: string, isActive: boolean, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can manage finance configuration items.');
+    }
+    await updateDoc(doc(db, FINANCE_CATALOG_COL, String(itemId)), {
+      isActive: !!isActive,
+      updatedBy: String(userId),
+      updatedAt: serverTimestamp()
+    });
+  },
+
+  async getFinanceOperationalEntries(user: any, monthKey?: string) {
+    const currentUser = await this.getUser(String(user?.id || ''));
+    if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
+      return [];
+    }
+    const snap = await getDocs(query(collection(db, FINANCE_EXPENSES_COL), limit(500)));
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter((entry: any) => !monthKey || String(entry.monthKey || '') === String(monthKey))
+      .sort((a: any, b: any) => {
+        const aDate = String(a.dueDate || a.entryDate || '');
+        const bDate = String(b.dueDate || b.entryDate || '');
+        return aDate.localeCompare(bDate);
+      });
+  },
+
+  async createFinanceOperationalEntry(payload: any, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
+      throw new Error('You do not have permission to create finance entries.');
+    }
+
+    const catalogId = String(payload?.catalogId || '').trim();
+    if (!catalogId) throw new Error('Choose a finance item from the Administrator catalog.');
+    const catalogSnap = await getDoc(doc(db, FINANCE_CATALOG_COL, catalogId));
+    if (!catalogSnap.exists()) throw new Error('Selected finance item does not exist.');
+    const catalog = { id: catalogSnap.id, ...catalogSnap.data() } as any;
+    if (catalog.isActive === false) throw new Error('Selected finance item is disabled.');
+
+    const baseAmount = Number(payload?.baseAmount || 0);
+    const manualAmount = Number(payload?.amount || 0);
+    const amount = catalog.calculationType === 'Percentage'
+      ? Number(((baseAmount * Number(catalog.defaultValue || 0)) / 100).toFixed(2))
+      : Number((manualAmount || Number(catalog.defaultValue || 0)).toFixed(2));
+    if (!Number.isFinite(amount) || amount < 0) throw new Error('Calculated amount is invalid.');
+
+    const entryDate = String(payload?.entryDate || '').trim();
+    const dueDate = String(payload?.dueDate || entryDate).trim();
+    const monthKey = String(payload?.monthKey || (dueDate ? dueDate.slice(0, 7) : '')).trim();
+    if (!monthKey) throw new Error('Month is required.');
+
+    const allUsers = await this.getUsers();
+    const assignedUserId = String(payload?.assignedUserId || '').trim();
+    const assignedUser: any = assignedUserId
+      ? allUsers.find((u: any) => String(u.id) === assignedUserId)
+      : null;
+
+    const ref = await addDoc(collection(db, FINANCE_EXPENSES_COL), sanitizeData({
+      catalogId,
+      catalogName: catalog.name || '',
+      type: catalog.type || 'Expense',
+      calculationType: catalog.calculationType || 'Fixed',
+      defaultValue: Number(catalog.defaultValue || 0),
+      baseAmount,
+      amount,
+      assignedUserId,
+      assignedUserName: assignedUser?.name || assignedUser?.email || '',
+      entryDate,
+      dueDate,
+      monthKey,
+      status: String(payload?.status || 'Expected') === 'Paid' ? 'Paid' : 'Expected',
+      notes: String(payload?.notes || '').trim(),
+      createdBy: String(userId),
+      createdByName: currentUser.name || currentUser.email || currentUser.role,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }));
+
+    await addDoc(collection(db, FINANCE_AUDIT_COL), {
+      action: 'Finance Entry Created',
+      entryId: ref.id,
+      changedBy: String(userId),
+      changedByName: currentUser.name || currentUser.email || currentUser.role,
+      oldValue: null,
+      newValue: { catalogName: catalog.name || '', type: catalog.type || '', amount, status: payload?.status || 'Expected' },
+      createdAt: serverTimestamp()
+    });
+
+    return { id: ref.id, catalogName: catalog.name || '', type: catalog.type || '', amount };
+  },
+
+  async updateFinanceOperationalEntryStatus(entryId: string, status: 'Expected' | 'Paid', userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
+      throw new Error('You do not have permission to update finance entries.');
+    }
+    const ref = doc(db, FINANCE_EXPENSES_COL, String(entryId));
+    const snap = await getDoc(ref);
+    if (!snap.exists()) throw new Error('Finance entry was not found.');
+    const before = snap.data() as any;
+    await updateDoc(ref, { status, paidAt: status === 'Paid' ? serverTimestamp() : null, updatedAt: serverTimestamp(), updatedBy: String(userId) });
+    await addDoc(collection(db, FINANCE_AUDIT_COL), {
+      action: 'Finance Entry Status Changed',
+      entryId: String(entryId),
+      changedBy: String(userId),
+      changedByName: currentUser.name || currentUser.email || currentUser.role,
+      oldValue: { status: before.status || 'Expected' },
+      newValue: { status },
+      createdAt: serverTimestamp()
+    });
+  },
+
+  async getFinanceManagerOverview(user: any, monthKey?: string) {
+    const currentUser = await this.getUser(String(user?.id || ''));
+    if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
+      return null;
+    }
+    const month = monthKey || format(new Date(), 'yyyy-MM');
+    const [deposits, entries] = await Promise.all([
+      this.getFinanceDepositsForUser(currentUser),
+      this.getFinanceOperationalEntries(currentUser, month)
+    ]);
+    const approvedRevenue = (deposits as any[])
+      .filter((d: any) => d.status === 'Approved' && String(d.depositDate || '').startsWith(month))
+      .reduce((sum: number, d: any) => sum + Number(d.amount || 0), 0);
+    const onSolution = (deposits as any[])
+      .filter((d: any) => ['On Solution', 'Arrival Pending'].includes(String(d.status || '')) && String(d.depositDate || '').startsWith(month))
+      .reduce((sum: number, d: any) => sum + Number(d.amount || 0), 0);
+    const paidExpenses = (entries as any[]).filter((e: any) => e.status === 'Paid').reduce((s: number, e: any) => s + Number(e.amount || 0), 0);
+    const expectedExpenses = (entries as any[]).filter((e: any) => e.status !== 'Paid').reduce((s: number, e: any) => s + Number(e.amount || 0), 0);
+    return {
+      monthKey: month,
+      approvedRevenue: Number(approvedRevenue.toFixed(2)),
+      onSolution: Number(onSolution.toFixed(2)),
+      paidExpenses: Number(paidExpenses.toFixed(2)),
+      expectedExpenses: Number(expectedExpenses.toFixed(2)),
+      currentNet: Number((approvedRevenue - paidExpenses).toFixed(2)),
+      projectedMonthEnd: Number((approvedRevenue + onSolution - paidExpenses - expectedExpenses).toFixed(2)),
+      entries
+    };
+  },
+
   async submitFinanceDeposit(payload: any, userId: string) {
     if (!userId) throw new Error('Current user is required.');
 
@@ -2310,7 +2505,7 @@ export const firestoreService = {
     const celebrationRef = doc(collection(db, FINANCE_CELEBRATIONS_COL));
     let reviewedDeposit: any = null;
     let shouldCelebrate = false;
-    let reviewAction = decision;
+    let reviewAction: string = decision;
 
     await runTransaction(db, async transaction => {
       const depositSnap = await transaction.get(depositRef);
@@ -3153,7 +3348,7 @@ export const firestoreService = {
       allowedUsers = allowedUsers.filter(
         (u: any) => u.role === 'Agent' && String(u.teamId || '') === String(effectiveViewer.teamId || '')
       );
-    } else if (!['Administrator', 'Manager'].includes(role)) {
+    } else if (!['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
       return [];
     }
 
