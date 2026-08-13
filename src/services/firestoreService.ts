@@ -39,6 +39,7 @@ const WORK_EVENTS_COL = "work_events";
 const FINANCE_DEPOSITS_COL = "finance_deposits";
 const FINANCE_AUDIT_COL = "finance_audit_logs";
 const FINANCE_CELEBRATIONS_COL = "finance_celebrations";
+const FINANCE_SOLUTIONS_COL = "finance_solutions";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const sanitizeData = (data: any) => {
@@ -1745,6 +1746,69 @@ export const firestoreService = {
 
 
   // Finance / Deposit workflow
+  async getFinanceSolutions(includeInactive = false) {
+    const snap = await getDocs(collection(db, FINANCE_SOLUTIONS_COL));
+
+    return snap.docs
+      .map(solutionDoc => ({ id: solutionDoc.id, ...solutionDoc.data() } as any))
+      .filter((solution: any) => includeInactive || solution.isActive !== false)
+      .sort((a: any, b: any) =>
+        String(a.name || '').localeCompare(String(b.name || ''))
+      );
+  },
+
+  async createFinanceSolution(name: string, userId: string) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) throw new Error('Solution name is required.');
+
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can create finance solutions.');
+    }
+
+    const existing = await this.getFinanceSolutions(true);
+    const duplicate = existing.find(
+      (solution: any) =>
+        String(solution.name || '').trim().toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (duplicate) {
+      if (duplicate.isActive === false) {
+        await updateDoc(doc(db, FINANCE_SOLUTIONS_COL, duplicate.id), {
+          isActive: true,
+          updatedAt: serverTimestamp(),
+          updatedBy: String(userId)
+        });
+        return { ...duplicate, isActive: true };
+      }
+      throw new Error('A solution with this name already exists.');
+    }
+
+    const ref = await addDoc(collection(db, FINANCE_SOLUTIONS_COL), {
+      name: cleanName,
+      isActive: true,
+      createdBy: String(userId),
+      createdByName: currentUser.name || currentUser.email || 'Administrator',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    return { id: ref.id, name: cleanName, isActive: true };
+  },
+
+  async setFinanceSolutionActive(solutionId: string, isActive: boolean, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can manage finance solutions.');
+    }
+
+    await updateDoc(doc(db, FINANCE_SOLUTIONS_COL, String(solutionId)), {
+      isActive: !!isActive,
+      updatedBy: String(userId),
+      updatedAt: serverTimestamp()
+    });
+  },
+
   async submitFinanceDeposit(payload: any, userId: string) {
     if (!userId) throw new Error('Current user is required.');
 
@@ -1757,6 +1821,59 @@ export const firestoreService = {
     const amount = Number(payload?.amount || 0);
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new Error('Amount must be greater than 0.');
+    }
+
+    const depositType =
+      String(payload?.depositType || 'Received') === 'On Solution'
+        ? 'On Solution'
+        : 'Received';
+
+    let selectedSolution: any = null;
+    let expectedArrivalDays = 0;
+    let expectedArrivalDate: any = null;
+
+    if (depositType === 'On Solution') {
+      const solutionId = String(payload?.solutionId || '').trim();
+      if (!solutionId) throw new Error('Please select a solution.');
+
+      const solutionSnap = await getDoc(doc(db, FINANCE_SOLUTIONS_COL, solutionId));
+      if (!solutionSnap.exists()) {
+        throw new Error('Selected solution no longer exists.');
+      }
+
+      selectedSolution = { id: solutionSnap.id, ...solutionSnap.data() } as any;
+      if (selectedSolution.isActive === false) {
+        throw new Error('Selected solution is currently disabled.');
+      }
+
+      if (!String(payload?.solutionFullName || '').trim()) {
+        throw new Error('Solution Full Name is required.');
+      }
+
+      if (!String(payload?.solutionPaymentComment || '').trim()) {
+        throw new Error('Solution payment comment is required.');
+      }
+
+      expectedArrivalDays = Math.max(
+        1,
+        Math.floor(Number(payload?.expectedArrivalDays || 0))
+      );
+
+      if (!expectedArrivalDays) {
+        throw new Error('Expected arrival days must be at least 1.');
+      }
+
+      const baseDate = payload?.depositDate
+        ? new Date(`${String(payload.depositDate)}T12:00:00`)
+        : new Date();
+
+      if (Number.isNaN(baseDate.getTime())) {
+        throw new Error('Invalid deposit date.');
+      }
+
+      const expected = new Date(baseDate);
+      expected.setDate(expected.getDate() + expectedArrivalDays);
+      expectedArrivalDate = Timestamp.fromDate(expected);
     }
 
     const allUsers = await this.getUsers();
@@ -1773,10 +1890,15 @@ export const firestoreService = {
         throw new Error('One of the selected Split With users no longer exists.');
       }
 
-      splitMap.set(splitUserId, Number(splitMap.get(splitUserId) || 0) + percentage);
+      splitMap.set(
+        splitUserId,
+        Number(splitMap.get(splitUserId) || 0) + percentage
+      );
     });
 
-    const totalSplitPercentage = Array.from(splitMap.values()).reduce((sum, value) => sum + value, 0);
+    const totalSplitPercentage = Array.from(splitMap.values())
+      .reduce((sum, value) => sum + value, 0);
+
     if (totalSplitPercentage > 100.0001) {
       throw new Error('Split percentages cannot exceed 100%.');
     }
@@ -1811,7 +1933,12 @@ export const firestoreService = {
       });
     });
 
-    const participantIds = Array.from(new Set(allocations.map(allocation => String(allocation.userId))));
+    const participantIds = Array.from(
+      new Set(allocations.map(allocation => String(allocation.userId)))
+    );
+
+    const initialStatus =
+      depositType === 'On Solution' ? 'Solution Pending' : 'Pending';
 
     const financePayload = sanitizeData({
       clientFullName: String(payload?.clientFullName || '').trim(),
@@ -1827,6 +1954,18 @@ export const firestoreService = {
       retName: String(payload?.retName || '').trim(),
       agentName: creditedAgentName,
 
+      depositType,
+      solutionId: selectedSolution?.id || '',
+      solutionName: selectedSolution?.name || '',
+      solutionFullName: String(payload?.solutionFullName || '').trim(),
+      solutionPaymentComment: String(payload?.solutionPaymentComment || '').trim(),
+      expectedArrivalDays,
+      expectedArrivalDate,
+      arrivalStatus: depositType === 'On Solution' ? 'Not Arrived' : '',
+      arrivalRequestedAt: null,
+      arrivedAt: null,
+      arrivalRejectReason: '',
+
       submittedBy: String(userId),
       submittedByName: submitter.name || submitter.email || 'Agent',
       submittedByEmail: submitter.email || '',
@@ -1839,7 +1978,7 @@ export const firestoreService = {
       totalSplitPercentage: Number(totalSplitPercentage.toFixed(4)),
       submitterPercentage: Number(submitterPercentage.toFixed(4)),
 
-      status: 'Pending',
+      status: initialStatus,
       approvedBy: '',
       approvedByName: '',
       approvedAt: null,
@@ -1853,21 +1992,32 @@ export const firestoreService = {
       submittedAt: serverTimestamp()
     });
 
-    const depositRef = await addDoc(collection(db, FINANCE_DEPOSITS_COL), financePayload);
+    const depositRef = await addDoc(
+      collection(db, FINANCE_DEPOSITS_COL),
+      financePayload
+    );
 
     await addDoc(collection(db, FINANCE_AUDIT_COL), {
       depositId: depositRef.id,
-      action: 'Created',
+      action: depositType === 'On Solution' ? 'Solution Created' : 'Created',
       changedBy: String(userId),
       changedByName: submitter.name || submitter.email || 'Agent',
       oldValue: null,
-      newValue: { status: 'Pending', amount, allocations },
+      newValue: {
+        status: initialStatus,
+        depositType,
+        solutionName: selectedSolution?.name || '',
+        amount,
+        allocations
+      },
       createdAt: serverTimestamp()
     });
 
     const approvers = allUsers.filter((candidate: any) => {
       const role = String(candidate.role || '');
-      if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) return true;
+      if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
+        return true;
+      }
 
       return (
         role === 'Team Leader' &&
@@ -1877,8 +2027,20 @@ export const firestoreService = {
     });
 
     const uniqueApprovers = Array.from(
-      new Map(approvers.map((approver: any) => [String(approver.id), approver])).values()
+      new Map(
+        approvers.map((approver: any) => [String(approver.id), approver])
+      ).values()
     );
+
+    const pendingTitle =
+      depositType === 'On Solution'
+        ? 'Solution Approval Required'
+        : 'Deposit Approval Required';
+
+    const pendingMessage =
+      depositType === 'On Solution'
+        ? `${submitter.name || 'Agent'} sent $${amount.toLocaleString()} through ${selectedSolution?.name || 'a solution'} and requested approval.`
+        : `${submitter.name || 'Agent'} submitted $${amount.toLocaleString()} for approval.`;
 
     await Promise.all(
       uniqueApprovers
@@ -1886,9 +2048,12 @@ export const firestoreService = {
         .map((approver: any) =>
           addDoc(collection(db, NOTIFICATIONS_COL), {
             user_id: String(approver.id),
-            type: 'finance_deposit_pending',
-            title: 'Deposit Approval Required',
-            message: `${submitter.name || 'Agent'} submitted $${amount.toLocaleString()} for approval.`,
+            type:
+              depositType === 'On Solution'
+                ? 'finance_solution_pending'
+                : 'finance_deposit_pending',
+            title: pendingTitle,
+            message: pendingMessage,
             finance_deposit_id: depositRef.id,
             read: false,
             createdAt: serverTimestamp()
@@ -1915,6 +2080,7 @@ export const firestoreService = {
 
     if (role === 'Team Leader') {
       if (!currentUser.teamId) return [];
+
       snap = await getDocs(
         query(
           collection(db, FINANCE_DEPOSITS_COL),
@@ -1923,28 +2089,41 @@ export const firestoreService = {
         )
       );
     } else {
-      snap = await getDocs(query(collection(db, FINANCE_DEPOSITS_COL), limit(300)));
+      snap = await getDocs(
+        query(collection(db, FINANCE_DEPOSITS_COL), limit(300))
+      );
     }
 
     return snap.docs
       .map(depositDoc => ({ id: depositDoc.id, ...depositDoc.data() } as any))
       .sort((a: any, b: any) => {
-        const aDate = a.submittedAt?.toDate ? a.submittedAt.toDate() : new Date(a.submittedAt || 0);
-        const bDate = b.submittedAt?.toDate ? b.submittedAt.toDate() : new Date(b.submittedAt || 0);
+        const aDate = a.submittedAt?.toDate
+          ? a.submittedAt.toDate()
+          : new Date(a.submittedAt || 0);
+        const bDate = b.submittedAt?.toDate
+          ? b.submittedAt.toDate()
+          : new Date(b.submittedAt || 0);
         return bDate.getTime() - aDate.getTime();
       });
   },
 
   async getFinancePortfolio(userId: string) {
-    const empty = {
+    const empty: any = {
       submittedApprovedGross: 0,
       approvedAttributed: 0,
       splitEarnings: 0,
       pendingAttributed: 0,
       rejectedAttributed: 0,
+      onSolutionAttributed: 0,
+      arrivalPendingAttributed: 0,
+      solutionPendingAttributed: 0,
       approvedCount: 0,
       pendingCount: 0,
-      rejectedCount: 0
+      rejectedCount: 0,
+      onSolutionCount: 0,
+      arrivalPendingCount: 0,
+      solutionPendingCount: 0,
+      records: []
     };
 
     if (!userId) return empty;
@@ -1957,12 +2136,24 @@ export const firestoreService = {
       )
     );
 
-    const totals = { ...empty };
+    const totals: any = { ...empty };
 
-    snap.docs.forEach(d => {
-      const deposit = d.data() as any;
-      const allocation = (Array.isArray(deposit.allocations) ? deposit.allocations : [])
-        .find((item: any) => String(item.userId) === String(userId));
+    const records = snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .sort((a: any, b: any) => {
+        const aDate = a.submittedAt?.toDate
+          ? a.submittedAt.toDate()
+          : new Date(a.submittedAt || 0);
+        const bDate = b.submittedAt?.toDate
+          ? b.submittedAt.toDate()
+          : new Date(b.submittedAt || 0);
+        return bDate.getTime() - aDate.getTime();
+      });
+
+    records.forEach((deposit: any) => {
+      const allocation = (
+        Array.isArray(deposit.allocations) ? deposit.allocations : []
+      ).find((item: any) => String(item.userId) === String(userId));
 
       const attributedAmount = Number(allocation?.amount || 0);
       const status = String(deposit.status || 'Pending');
@@ -1979,18 +2170,113 @@ export const firestoreService = {
       } else if (status === 'Rejected') {
         totals.rejectedAttributed += attributedAmount;
         totals.rejectedCount++;
+      } else if (status === 'On Solution') {
+        totals.onSolutionAttributed += attributedAmount;
+        totals.onSolutionCount++;
+      } else if (status === 'Arrival Pending') {
+        totals.arrivalPendingAttributed += attributedAmount;
+        totals.arrivalPendingCount++;
+      } else if (status === 'Solution Pending') {
+        totals.solutionPendingAttributed += attributedAmount;
+        totals.solutionPendingCount++;
       } else {
         totals.pendingAttributed += attributedAmount;
         totals.pendingCount++;
       }
     });
 
-    Object.keys(totals).forEach(key => {
-      if (key.endsWith('Count')) return;
-      (totals as any)[key] = Number(Number((totals as any)[key] || 0).toFixed(2));
+    [
+      'submittedApprovedGross',
+      'approvedAttributed',
+      'splitEarnings',
+      'pendingAttributed',
+      'rejectedAttributed',
+      'onSolutionAttributed',
+      'arrivalPendingAttributed',
+      'solutionPendingAttributed'
+    ].forEach(key => {
+      totals[key] = Number(Number(totals[key] || 0).toFixed(2));
     });
 
+    totals.records = records.slice(0, 100);
     return totals;
+  },
+
+  async markFinanceSolutionArrived(depositId: string, userId: string) {
+    if (!depositId || !userId) throw new Error('Deposit and Agent are required.');
+
+    const currentUser = await this.getUser(String(userId));
+    if (!currentUser || currentUser.role !== 'Agent') {
+      throw new Error('Only the submitting Agent can mark a solution as arrived.');
+    }
+
+    const depositRef = doc(db, FINANCE_DEPOSITS_COL, String(depositId));
+    const depositSnap = await getDoc(depositRef);
+
+    if (!depositSnap.exists()) throw new Error('Finance record was not found.');
+
+    const deposit = depositSnap.data() as any;
+
+    if (String(deposit.submittedBy || '') !== String(userId)) {
+      throw new Error('Only the Agent who submitted this record can mark it as arrived.');
+    }
+
+    if (String(deposit.status || '') !== 'On Solution') {
+      throw new Error('Only an approved On Solution record can be marked as arrived.');
+    }
+
+    await updateDoc(depositRef, {
+      status: 'Arrival Pending',
+      arrivalStatus: 'Pending',
+      arrivalRequestedAt: serverTimestamp(),
+      arrivalRejectReason: '',
+      updatedAt: serverTimestamp()
+    });
+
+    await addDoc(collection(db, FINANCE_AUDIT_COL), {
+      depositId: String(depositId),
+      action: 'Marked Arrived',
+      changedBy: String(userId),
+      changedByName: currentUser.name || currentUser.email || 'Agent',
+      oldValue: { status: 'On Solution' },
+      newValue: { status: 'Arrival Pending' },
+      createdAt: serverTimestamp()
+    });
+
+    const allUsers = await this.getUsers();
+    const approvers = allUsers.filter((candidate: any) => {
+      const role = String(candidate.role || '');
+
+      if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
+        return true;
+      }
+
+      return (
+        role === 'Team Leader' &&
+        !!deposit.teamId &&
+        String(candidate.teamId || '') === String(deposit.teamId)
+      );
+    });
+
+    const uniqueApprovers = Array.from(
+      new Map(
+        approvers.map((approver: any) => [String(approver.id), approver])
+      ).values()
+    );
+
+    await Promise.all(
+      uniqueApprovers.map((approver: any) =>
+        addDoc(collection(db, NOTIFICATIONS_COL), {
+          user_id: String(approver.id),
+          type: 'finance_arrival_pending',
+          title: 'Solution Arrival Confirmation',
+          message: `${currentUser.name || 'Agent'} marked $${Number(deposit.amount || 0).toLocaleString()} from ${deposit.solutionName || 'solution'} as arrived. Please confirm.`,
+          finance_deposit_id: String(depositId),
+          read: false,
+          createdAt: serverTimestamp()
+        })
+      )
+    );
   },
 
   async reviewFinanceDeposit(
@@ -1999,8 +2285,13 @@ export const firestoreService = {
     decision: 'Approved' | 'Rejected',
     rejectReason = ''
   ) {
-    if (!depositId || !reviewerId) throw new Error('Deposit and reviewer are required.');
-    if (!['Approved', 'Rejected'].includes(decision)) throw new Error('Invalid finance decision.');
+    if (!depositId || !reviewerId) {
+      throw new Error('Deposit and reviewer are required.');
+    }
+
+    if (!['Approved', 'Rejected'].includes(decision)) {
+      throw new Error('Invalid finance decision.');
+    }
 
     const reviewer = await this.getUser(String(reviewerId));
     if (!reviewer) throw new Error('Reviewer was not found.');
@@ -2018,15 +2309,18 @@ export const firestoreService = {
     const auditRef = doc(collection(db, FINANCE_AUDIT_COL));
     const celebrationRef = doc(collection(db, FINANCE_CELEBRATIONS_COL));
     let reviewedDeposit: any = null;
+    let shouldCelebrate = false;
+    let reviewAction = decision;
 
     await runTransaction(db, async transaction => {
       const depositSnap = await transaction.get(depositRef);
       if (!depositSnap.exists()) throw new Error('Deposit was not found.');
 
       const deposit = depositSnap.data() as any;
+      const currentStatus = String(deposit.status || 'Pending');
 
-      if (String(deposit.status || 'Pending') !== 'Pending') {
-        throw new Error(`This deposit is already ${deposit.status}.`);
+      if (!['Pending', 'Solution Pending', 'Arrival Pending'].includes(currentStatus)) {
+        throw new Error(`This finance record is already ${currentStatus}.`);
       }
 
       if (
@@ -2037,52 +2331,116 @@ export const firestoreService = {
       }
 
       const before = {
-        status: deposit.status || 'Pending',
+        status: currentStatus,
         approvedBy: deposit.approvedBy || '',
-        rejectedBy: deposit.rejectedBy || ''
+        rejectedBy: deposit.rejectedBy || '',
+        arrivalStatus: deposit.arrivalStatus || ''
       };
 
-      const updatePayload =
-        decision === 'Approved'
-          ? {
-              status: 'Approved',
-              approvedBy: String(reviewerId),
-              approvedByName: reviewer.name || reviewer.email || role,
-              approvedAt: serverTimestamp(),
-              rejectedBy: '',
-              rejectedByName: '',
-              rejectedAt: null,
-              rejectReason: '',
-              updatedAt: serverTimestamp()
-            }
-          : {
-              status: 'Rejected',
-              rejectedBy: String(reviewerId),
-              rejectedByName: reviewer.name || reviewer.email || role,
-              rejectedAt: serverTimestamp(),
-              rejectReason: String(rejectReason || '').trim(),
-              approvedBy: '',
-              approvedByName: '',
-              approvedAt: null,
-              updatedAt: serverTimestamp()
-            };
+      let updatePayload: any = {};
+
+      if (currentStatus === 'Pending') {
+        reviewAction = decision;
+
+        updatePayload =
+          decision === 'Approved'
+            ? {
+                status: 'Approved',
+                approvedBy: String(reviewerId),
+                approvedByName: reviewer.name || reviewer.email || role,
+                approvedAt: serverTimestamp(),
+                rejectedBy: '',
+                rejectedByName: '',
+                rejectedAt: null,
+                rejectReason: '',
+                updatedAt: serverTimestamp()
+              }
+            : {
+                status: 'Rejected',
+                rejectedBy: String(reviewerId),
+                rejectedByName: reviewer.name || reviewer.email || role,
+                rejectedAt: serverTimestamp(),
+                rejectReason: String(rejectReason || '').trim(),
+                approvedBy: '',
+                approvedByName: '',
+                approvedAt: null,
+                updatedAt: serverTimestamp()
+              };
+
+        shouldCelebrate = decision === 'Approved';
+      } else if (currentStatus === 'Solution Pending') {
+        reviewAction =
+          decision === 'Approved' ? 'Solution Approved' : 'Solution Rejected';
+
+        updatePayload =
+          decision === 'Approved'
+            ? {
+                status: 'On Solution',
+                solutionApprovedBy: String(reviewerId),
+                solutionApprovedByName: reviewer.name || reviewer.email || role,
+                solutionApprovedAt: serverTimestamp(),
+                rejectedBy: '',
+                rejectedByName: '',
+                rejectedAt: null,
+                rejectReason: '',
+                updatedAt: serverTimestamp()
+              }
+            : {
+                status: 'Rejected',
+                rejectedBy: String(reviewerId),
+                rejectedByName: reviewer.name || reviewer.email || role,
+                rejectedAt: serverTimestamp(),
+                rejectReason: String(rejectReason || '').trim(),
+                updatedAt: serverTimestamp()
+              };
+      } else {
+        reviewAction =
+          decision === 'Approved' ? 'Arrival Approved' : 'Arrival Rejected';
+
+        updatePayload =
+          decision === 'Approved'
+            ? {
+                status: 'Approved',
+                arrivalStatus: 'Approved',
+                arrivedAt: serverTimestamp(),
+                approvedBy: String(reviewerId),
+                approvedByName: reviewer.name || reviewer.email || role,
+                approvedAt: serverTimestamp(),
+                arrivalRejectReason: '',
+                rejectReason: '',
+                updatedAt: serverTimestamp()
+              }
+            : {
+                status: 'On Solution',
+                arrivalStatus: 'Rejected',
+                arrivalRejectReason: String(rejectReason || '').trim(),
+                arrivalRejectedBy: String(reviewerId),
+                arrivalRejectedByName: reviewer.name || reviewer.email || role,
+                arrivalRejectedAt: serverTimestamp(),
+                updatedAt: serverTimestamp()
+              };
+
+        shouldCelebrate = decision === 'Approved';
+      }
 
       transaction.update(depositRef, updatePayload);
 
       transaction.set(auditRef, {
         depositId: String(depositId),
-        action: decision,
+        action: reviewAction,
         changedBy: String(reviewerId),
         changedByName: reviewer.name || reviewer.email || role,
         oldValue: before,
         newValue: {
-          status: decision,
-          rejectReason: decision === 'Rejected' ? String(rejectReason || '').trim() : ''
+          status: updatePayload.status,
+          arrivalStatus: updatePayload.arrivalStatus || '',
+          rejectReason:
+            decision === 'Rejected' ? String(rejectReason || '').trim() : ''
         },
         createdAt: serverTimestamp()
       });
 
-      if (decision === 'Approved') {
+      if (shouldCelebrate) {
         transaction.set(celebrationRef, {
           depositId: String(depositId),
           teamId: deposit.teamId || '',
@@ -2096,8 +2454,7 @@ export const firestoreService = {
       reviewedDeposit = {
         id: depositSnap.id,
         ...deposit,
-        ...updatePayload,
-        status: decision
+        ...updatePayload
       };
     });
 
@@ -2114,16 +2471,42 @@ export const firestoreService = {
       )
     );
 
+    const statusAfter = String(reviewedDeposit.status || '');
+    const isSolutionApproval = reviewAction === 'Solution Approved';
+    const isSolutionReject = reviewAction === 'Solution Rejected';
+    const isArrivalApproval = reviewAction === 'Arrival Approved';
+    const isArrivalReject = reviewAction === 'Arrival Rejected';
+
+    let title = 'Deposit Updated';
+    let message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} finance record was updated.`;
+
+    if (isSolutionApproval) {
+      title = 'Solution Approved';
+      message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} on ${reviewedDeposit.solutionName || 'solution'} is now On Solution.`;
+    } else if (isSolutionReject) {
+      title = 'Solution Rejected';
+      message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} solution request was rejected. Reason: ${String(rejectReason || '').trim()}`;
+    } else if (isArrivalApproval) {
+      title = 'Arrival Approved 🎉';
+      message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} from ${reviewedDeposit.solutionName || 'solution'} was confirmed as received.`;
+    } else if (isArrivalReject) {
+      title = 'Arrival Not Confirmed';
+      message = `Arrival confirmation for $${Number(reviewedDeposit.amount || 0).toLocaleString()} was rejected. It remains On Solution. Reason: ${String(rejectReason || '').trim()}`;
+    } else if (statusAfter === 'Approved') {
+      title = 'Deposit Approved 🎉';
+      message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} deposit was approved by ${reviewer.name || role}.`;
+    } else if (statusAfter === 'Rejected') {
+      title = 'Deposit Rejected';
+      message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} deposit was rejected. Reason: ${String(rejectReason || '').trim()}`;
+    }
+
     await Promise.all(
       participantIds.map(participantId =>
         addDoc(collection(db, NOTIFICATIONS_COL), {
           user_id: participantId,
-          type: decision === 'Approved' ? 'finance_deposit_approved' : 'finance_deposit_rejected',
-          title: decision === 'Approved' ? 'Deposit Approved 🎉' : 'Deposit Rejected',
-          message:
-            decision === 'Approved'
-              ? `$${Number(reviewedDeposit.amount || 0).toLocaleString()} deposit was approved by ${reviewer.name || role}.`
-              : `$${Number(reviewedDeposit.amount || 0).toLocaleString()} deposit was rejected. Reason: ${String(rejectReason || '').trim()}`,
+          type: 'finance_status_update',
+          title,
+          message,
           finance_deposit_id: String(depositId),
           read: false,
           createdAt: serverTimestamp()
