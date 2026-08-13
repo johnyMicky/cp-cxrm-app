@@ -42,6 +42,8 @@ const FINANCE_CELEBRATIONS_COL = "finance_celebrations";
 const FINANCE_SOLUTIONS_COL = "finance_solutions";
 const FINANCE_CATALOG_COL = "finance_catalog";
 const FINANCE_EXPENSES_COL = "finance_expenses";
+const FINANCE_PAYROLL_CONFIG_COL = "finance_payroll_config";
+const FINANCE_PAYROLL_MONTHLY_COL = "finance_payroll_monthly";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const sanitizeData = (data: any) => {
@@ -1809,6 +1811,383 @@ export const firestoreService = {
       updatedBy: String(userId),
       updatedAt: serverTimestamp()
     });
+  },
+
+
+  // Simple Finance Manager workspace
+  // Admin configures expense names + employee salary/bonus once.
+  // Finance Manager / Manager / Admin only fill monthly amounts, fines and not-worked days.
+
+  async createSimpleExpenseCategory(name: string, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can create expense categories.');
+    }
+
+    const cleanName = String(name || '').trim();
+    if (!cleanName) throw new Error('Expense name is required.');
+
+    const existing = await this.getFinanceCatalog(true);
+    const duplicate = existing.find((item: any) =>
+      String(item.type || '').toLowerCase() === 'expense' &&
+      String(item.name || '').trim().toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (duplicate) {
+      if (duplicate.isActive === false) {
+        await updateDoc(doc(db, FINANCE_CATALOG_COL, duplicate.id), {
+          isActive: true,
+          updatedAt: serverTimestamp(),
+          updatedBy: String(userId)
+        });
+        return { ...duplicate, isActive: true };
+      }
+      throw new Error('This expense already exists.');
+    }
+
+    const ref = await addDoc(collection(db, FINANCE_CATALOG_COL), {
+      type: 'Expense',
+      name: cleanName,
+      calculationType: 'Fixed',
+      defaultValue: 0,
+      recurring: true,
+      frequency: 'Monthly',
+      dueDay: 1,
+      description: '',
+      isActive: true,
+      createdBy: String(userId),
+      createdByName: currentUser.name || currentUser.email || 'Administrator',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    return { id: ref.id, type: 'Expense', name: cleanName, isActive: true };
+  },
+
+  async getSimpleExpenseCategories(includeInactive = false) {
+    const items = await this.getFinanceCatalog(true);
+    return (items as any[])
+      .filter((item: any) =>
+        String(item.type || '').toLowerCase() === 'expense' &&
+        (includeInactive || item.isActive !== false)
+      )
+      .sort((a: any, b: any) =>
+        String(a.name || '').localeCompare(String(b.name || ''))
+      );
+  },
+
+  async getPayrollConfigs() {
+    const snap = await getDocs(collection(db, FINANCE_PAYROLL_CONFIG_COL));
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .sort((a: any, b: any) =>
+        String(a.employeeName || '').localeCompare(String(b.employeeName || ''))
+      );
+  },
+
+  async savePayrollConfig(payload: any, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can configure payroll.');
+    }
+
+    const employeeId = String(payload?.employeeId || '').trim();
+    if (!employeeId) throw new Error('Employee is required.');
+
+    const employee = await this.getUser(employeeId);
+    if (!employee) throw new Error('Employee was not found.');
+
+    const fixedSalary = Number(payload?.fixedSalary || 0);
+    const bonusPercent = Number(payload?.bonusPercent || 0);
+
+    if (!Number.isFinite(fixedSalary) || fixedSalary < 0) {
+      throw new Error('Fixed salary must be 0 or greater.');
+    }
+
+    if (!Number.isFinite(bonusPercent) || bonusPercent < 0 || bonusPercent > 100) {
+      throw new Error('Bonus percentage must be between 0 and 100.');
+    }
+
+    await setDoc(
+      doc(db, FINANCE_PAYROLL_CONFIG_COL, employeeId),
+      {
+        employeeId,
+        employeeName: employee.name || employee.email || employeeId,
+        employeeRole: employee.role || '',
+        teamId: employee.teamId || '',
+        teamName: employee.teamName || '',
+        fixedSalary: Number(fixedSalary.toFixed(2)),
+        bonusPercent: Number(bonusPercent.toFixed(4)),
+        isActive: payload?.isActive !== false,
+        updatedBy: String(userId),
+        updatedByName: currentUser.name || currentUser.email || 'Administrator',
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+  },
+
+  async setPayrollConfigActive(employeeId: string, isActive: boolean, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can configure payroll.');
+    }
+
+    await setDoc(
+      doc(db, FINANCE_PAYROLL_CONFIG_COL, String(employeeId)),
+      {
+        employeeId: String(employeeId),
+        isActive: !!isActive,
+        updatedBy: String(userId),
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+  },
+
+  async saveMonthlyExpense(payload: any, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
+      throw new Error('You do not have permission to edit monthly expenses.');
+    }
+
+    const monthKey = String(payload?.monthKey || '').trim();
+    const categoryId = String(payload?.categoryId || '').trim();
+    if (!monthKey || !categoryId) throw new Error('Month and expense category are required.');
+
+    const categorySnap = await getDoc(doc(db, FINANCE_CATALOG_COL, categoryId));
+    if (!categorySnap.exists()) throw new Error('Expense category was not found.');
+    const category = categorySnap.data() as any;
+
+    const amount = Number(payload?.amount || 0);
+    if (!Number.isFinite(amount) || amount < 0) throw new Error('Expense amount must be 0 or greater.');
+
+    const status = String(payload?.status || 'Expected') === 'Paid' ? 'Paid' : 'Expected';
+    const entryId = `simple_${monthKey}_${categoryId}`;
+
+    await setDoc(
+      doc(db, FINANCE_EXPENSES_COL, entryId),
+      {
+        simpleWorkspace: true,
+        catalogId: categoryId,
+        catalogName: category.name || '',
+        type: 'Expense',
+        calculationType: 'Fixed',
+        amount: Number(amount.toFixed(2)),
+        monthKey,
+        entryDate: `${monthKey}-01`,
+        dueDate: `${monthKey}-01`,
+        status,
+        notes: String(payload?.notes || '').trim(),
+        updatedBy: String(userId),
+        updatedByName: currentUser.name || currentUser.email || currentUser.role,
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    return { id: entryId, categoryId, amount, status };
+  },
+
+  async saveMonthlyPayrollAdjustment(payload: any, userId: string) {
+    const currentUser = await this.getUser(String(userId || ''));
+    if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
+      throw new Error('You do not have permission to edit payroll adjustments.');
+    }
+
+    const monthKey = String(payload?.monthKey || '').trim();
+    const employeeId = String(payload?.employeeId || '').trim();
+    if (!monthKey || !employeeId) throw new Error('Month and employee are required.');
+
+    const fines = Number(payload?.fines || 0);
+    const notWorkedDays = Number(payload?.notWorkedDays || 0);
+
+    if (!Number.isFinite(fines) || fines < 0) throw new Error('Fines must be 0 or greater.');
+    if (!Number.isFinite(notWorkedDays) || notWorkedDays < 0) throw new Error('Not worked days must be 0 or greater.');
+
+    const id = `${monthKey}_${employeeId}`;
+
+    await setDoc(
+      doc(db, FINANCE_PAYROLL_MONTHLY_COL, id),
+      {
+        monthKey,
+        employeeId,
+        fines: Number(fines.toFixed(2)),
+        notWorkedDays: Number(notWorkedDays.toFixed(2)),
+        notes: String(payload?.notes || '').trim(),
+        updatedBy: String(userId),
+        updatedByName: currentUser.name || currentUser.email || currentUser.role,
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    return { id, monthKey, employeeId, fines, notWorkedDays };
+  },
+
+  async getSimpleFinanceWorkspace(user: any, monthKey?: string) {
+    const currentUser = await this.getUser(String(user?.id || ''));
+    if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
+      return null;
+    }
+
+    const month = String(monthKey || format(new Date(), 'yyyy-MM'));
+    const [deposits, categories, expenseSnap, payrollConfigs, payrollMonthSnap, allUsers] = await Promise.all([
+      this.getFinanceDepositsForUser(currentUser),
+      this.getSimpleExpenseCategories(),
+      getDocs(query(collection(db, FINANCE_EXPENSES_COL), limit(500))),
+      this.getPayrollConfigs(),
+      getDocs(query(collection(db, FINANCE_PAYROLL_MONTHLY_COL), where('monthKey', '==', month))),
+      this.getUsers()
+    ]);
+
+    const monthDeposits = (deposits as any[]).filter((deposit: any) =>
+      String(deposit.depositDate || '').startsWith(month)
+    );
+
+    const approvedDeposits = monthDeposits.filter((deposit: any) => deposit.status === 'Approved');
+    const approvedRevenue = approvedDeposits.reduce(
+      (sum: number, deposit: any) => sum + Number(deposit.amount || 0),
+      0
+    );
+
+    const onSolution = monthDeposits
+      .filter((deposit: any) => ['On Solution', 'Arrival Pending'].includes(String(deposit.status || '')))
+      .reduce((sum: number, deposit: any) => sum + Number(deposit.amount || 0), 0);
+
+    const revenueByUser: Record<string, number> = {};
+
+    approvedDeposits.forEach((deposit: any) => {
+      const allocations = Array.isArray(deposit.allocations) ? deposit.allocations : [];
+
+      if (allocations.length > 0) {
+        allocations.forEach((allocation: any) => {
+          const uid = String(allocation.userId || '');
+          if (!uid) return;
+          revenueByUser[uid] = Number(revenueByUser[uid] || 0) + Number(allocation.amount || 0);
+        });
+      } else if (deposit.submittedBy) {
+        const uid = String(deposit.submittedBy);
+        revenueByUser[uid] = Number(revenueByUser[uid] || 0) + Number(deposit.amount || 0);
+      }
+    });
+
+    const allExpenseEntries = expenseSnap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter((entry: any) =>
+        String(entry.monthKey || '') === month &&
+        entry.simpleWorkspace === true
+      );
+
+    const expenseRows = (categories as any[]).map((category: any) => {
+      const saved = allExpenseEntries.find((entry: any) => String(entry.catalogId) === String(category.id));
+      return {
+        categoryId: category.id,
+        name: category.name || 'Expense',
+        amount: Number(saved?.amount || 0),
+        status: saved?.status === 'Paid' ? 'Paid' : 'Expected',
+        notes: saved?.notes || '',
+        entryId: saved?.id || ''
+      };
+    });
+
+    const totalExpenses = expenseRows.reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
+    const paidExpenses = expenseRows
+      .filter((row: any) => row.status === 'Paid')
+      .reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
+    const expectedExpenses = expenseRows
+      .filter((row: any) => row.status !== 'Paid')
+      .reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
+
+    const payrollMonthly = payrollMonthSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    const userMap = new Map((allUsers as any[]).map((u: any) => [String(u.id), u]));
+
+    const [yearText, monthText] = month.split('-');
+    const year = Number(yearText);
+    const monthIndex = Number(monthText) - 1;
+    let workDays = 0;
+
+    if (Number.isFinite(year) && Number.isFinite(monthIndex)) {
+      const cursor = new Date(year, monthIndex, 1);
+      while (cursor.getMonth() === monthIndex) {
+        const day = cursor.getDay();
+        if (day !== 0 && day !== 6) workDays++;
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    }
+    if (!workDays) workDays = 22;
+
+    const payrollRows = (payrollConfigs as any[])
+      .filter((config: any) => config.isActive !== false)
+      .map((config: any) => {
+        const employeeId = String(config.employeeId || config.id || '');
+        const user: any = userMap.get(employeeId);
+        const adjustment = payrollMonthly.find((row: any) => String(row.employeeId) === employeeId);
+
+        const fixedSalary = Number(config.fixedSalary || 0);
+        const bonusPercent = Number(config.bonusPercent || 0);
+        const revenue = Number(revenueByUser[employeeId] || 0);
+        const bonus = Number(((revenue * bonusPercent) / 100).toFixed(2));
+        const oneDaySalary = Number((fixedSalary / workDays).toFixed(2));
+        const fines = Number(adjustment?.fines || 0);
+        const notWorkedDays = Number(adjustment?.notWorkedDays || 0);
+        const notWorkedDeduction = Number((oneDaySalary * notWorkedDays).toFixed(2));
+        const finalSalary = Number(
+          Math.max(0, fixedSalary + bonus - fines - notWorkedDeduction).toFixed(2)
+        );
+
+        return {
+          employeeId,
+          employeeName: config.employeeName || user?.name || user?.email || employeeId,
+          employeeRole: config.employeeRole || user?.role || '',
+          teamName: config.teamName || user?.teamName || '',
+          fixedSalary,
+          bonusPercent,
+          revenue,
+          bonus,
+          oneDaySalary,
+          workDays,
+          fines,
+          notWorkedDays,
+          notWorkedDeduction,
+          finalSalary,
+          notes: adjustment?.notes || ''
+        };
+      })
+      .sort((a: any, b: any) =>
+        String(a.employeeName || '').localeCompare(String(b.employeeName || ''))
+      );
+
+    const totalFixedSalary = payrollRows.reduce((sum: number, row: any) => sum + Number(row.fixedSalary || 0), 0);
+    const totalBonus = payrollRows.reduce((sum: number, row: any) => sum + Number(row.bonus || 0), 0);
+    const totalFines = payrollRows.reduce((sum: number, row: any) => sum + Number(row.fines || 0), 0);
+    const totalNotWorkedDeduction = payrollRows.reduce((sum: number, row: any) => sum + Number(row.notWorkedDeduction || 0), 0);
+    const totalPayroll = payrollRows.reduce((sum: number, row: any) => sum + Number(row.finalSalary || 0), 0);
+
+    const netProfit = Number((approvedRevenue - totalExpenses - totalPayroll).toFixed(2));
+    const projectedMonthEnd = Number((approvedRevenue + onSolution - totalExpenses - totalPayroll).toFixed(2));
+
+    return {
+      monthKey: month,
+      approvedRevenue: Number(approvedRevenue.toFixed(2)),
+      onSolution: Number(onSolution.toFixed(2)),
+      totalExpenses: Number(totalExpenses.toFixed(2)),
+      paidExpenses: Number(paidExpenses.toFixed(2)),
+      expectedExpenses: Number(expectedExpenses.toFixed(2)),
+      totalFixedSalary: Number(totalFixedSalary.toFixed(2)),
+      totalBonus: Number(totalBonus.toFixed(2)),
+      totalFines: Number(totalFines.toFixed(2)),
+      totalNotWorkedDeduction: Number(totalNotWorkedDeduction.toFixed(2)),
+      totalPayroll: Number(totalPayroll.toFixed(2)),
+      netProfit,
+      projectedMonthEnd,
+      workDays,
+      expenseRows,
+      payrollRows
+    };
   },
 
   async getFinanceCatalog(includeInactive = false) {
