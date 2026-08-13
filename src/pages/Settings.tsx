@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ShieldAlert,
   RefreshCw,
@@ -8,77 +8,104 @@ import {
   Route,
   Power,
   PowerOff,
-  SlidersHorizontal,
-  Percent,
-  BadgeDollarSign
+  ReceiptText,
+  Users,
+  Save
 } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
 
-const moneyLabel = (value: number) => `$${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+const money = (value: number) =>
+  `$${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
 
 export default function Settings() {
+  const currentUserId = localStorage.getItem('userId') || '';
+  const userRole = localStorage.getItem('userRole') || 'Agent';
+
+  // Existing system reset logic.
   const [isResetting, setIsResetting] = useState(false);
-  const [resetStatus, setResetStatus] = useState<
-    'idle' | 'success' | 'error'
-  >('idle');
+  const [resetStatus, setResetStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
 
+  // Existing Finance Solutions logic.
   const [solutions, setSolutions] = useState<any[]>([]);
   const [solutionName, setSolutionName] = useState('');
   const [solutionLoading, setSolutionLoading] = useState(false);
   const [solutionError, setSolutionError] = useState('');
 
-  const [financeCatalog, setFinanceCatalog] = useState<any[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(false);
-  const [catalogError, setCatalogError] = useState('');
-  const [catalogForm, setCatalogForm] = useState({ type: 'Expense', name: '', calculationType: 'Fixed', defaultValue: '', recurring: false, frequency: 'Monthly', dueDay: '1', description: '' });
-
-  const currentUserId = localStorage.getItem('userId');
-  const userRole = localStorage.getItem('userRole');
+  // Simplified finance configuration.
+  const [expenseCategories, setExpenseCategories] = useState<any[]>([]);
+  const [expenseName, setExpenseName] = useState('');
+  const [financeUsers, setFinanceUsers] = useState<any[]>([]);
+  const [payrollConfigs, setPayrollConfigs] = useState<any[]>([]);
+  const [payrollDrafts, setPayrollDrafts] = useState<Record<string, { fixedSalary: string; bonusPercent: string }>>({});
+  const [financeConfigBusy, setFinanceConfigBusy] = useState(false);
+  const [financeConfigError, setFinanceConfigError] = useState('');
 
   const loadSolutions = async () => {
     if (userRole !== 'Administrator') return;
-
     try {
-      const data = await firestoreService.getFinanceSolutions(true);
-      setSolutions(data as any[]);
+      setSolutions(await firestoreService.getFinanceSolutions(true) as any[]);
     } catch (err: any) {
-      console.error('Failed to load finance solutions:', err);
-      setSolutionError(
-        err?.message || 'Failed to load Solutions.'
-      );
+      setSolutionError(err?.message || 'Failed to load Solutions.');
     }
   };
 
-  const loadFinanceCatalog = async () => {
+  const loadSimpleFinanceConfig = async () => {
     if (userRole !== 'Administrator') return;
-    try { setFinanceCatalog(await firestoreService.getFinanceCatalog(true) as any[]); }
-    catch (err: any) { setCatalogError(err?.message || 'Failed to load finance catalog.'); }
+
+    try {
+      const [categories, users, configs] = await Promise.all([
+        firestoreService.getSimpleExpenseCategories(true),
+        firestoreService.getUsers(),
+        firestoreService.getPayrollConfigs()
+      ]);
+
+      setExpenseCategories(categories as any[]);
+
+      const employees = (users as any[])
+        .filter((user: any) => String(user.role || '') !== 'Administrator')
+        .sort((a: any, b: any) =>
+          String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''))
+        );
+
+      setFinanceUsers(employees);
+      setPayrollConfigs(configs as any[]);
+
+      const nextDrafts: Record<string, { fixedSalary: string; bonusPercent: string }> = {};
+      employees.forEach((employee: any) => {
+        const existing = (configs as any[]).find(
+          (config: any) => String(config.employeeId || config.id) === String(employee.id)
+        );
+
+        nextDrafts[String(employee.id)] = {
+          fixedSalary: String(existing?.fixedSalary ?? ''),
+          bonusPercent: String(existing?.bonusPercent ?? '')
+        };
+      });
+      setPayrollDrafts(nextDrafts);
+    } catch (err: any) {
+      setFinanceConfigError(err?.message || 'Failed to load finance configuration.');
+    }
   };
 
   useEffect(() => {
     loadSolutions();
-    loadFinanceCatalog();
+    loadSimpleFinanceConfig();
   }, [userRole]);
 
   const handleAddSolution = async () => {
     if (!currentUserId || !solutionName.trim()) return;
-
     try {
       setSolutionLoading(true);
       setSolutionError('');
-
-      await firestoreService.createFinanceSolution(
-        solutionName,
-        currentUserId
-      );
-
+      await firestoreService.createFinanceSolution(solutionName, currentUserId);
       setSolutionName('');
       await loadSolutions();
     } catch (err: any) {
-      setSolutionError(
-        err?.message || 'Failed to create Solution.'
-      );
+      setSolutionError(err?.message || 'Failed to create Solution.');
     } finally {
       setSolutionLoading(false);
     }
@@ -86,57 +113,77 @@ export default function Settings() {
 
   const toggleSolution = async (solution: any) => {
     if (!currentUserId) return;
-
     try {
       setSolutionLoading(true);
       setSolutionError('');
-
       await firestoreService.setFinanceSolutionActive(
         solution.id,
         solution.isActive === false,
         currentUserId
       );
-
       await loadSolutions();
     } catch (err: any) {
-      setSolutionError(
-        err?.message || 'Failed to update Solution.'
-      );
+      setSolutionError(err?.message || 'Failed to update Solution.');
     } finally {
       setSolutionLoading(false);
     }
   };
 
-  const handleAddCatalogItem = async () => {
-    if (!currentUserId || !catalogForm.name.trim()) return;
+  const addExpenseCategory = async () => {
+    if (!expenseName.trim()) return;
+
     try {
-      setCatalogLoading(true);
-      setCatalogError('');
-      await firestoreService.createFinanceCatalogItem({
-        ...catalogForm,
-        defaultValue: Number(catalogForm.defaultValue || 0),
-        dueDay: Number(catalogForm.dueDay || 1)
-      }, currentUserId);
-      setCatalogForm({ type: 'Expense', name: '', calculationType: 'Fixed', defaultValue: '', recurring: false, frequency: 'Monthly', dueDay: '1', description: '' });
-      await loadFinanceCatalog();
+      setFinanceConfigBusy(true);
+      setFinanceConfigError('');
+      await firestoreService.createSimpleExpenseCategory(expenseName, currentUserId);
+      setExpenseName('');
+      await loadSimpleFinanceConfig();
     } catch (err: any) {
-      setCatalogError(err?.message || 'Failed to add finance item.');
+      setFinanceConfigError(err?.message || 'Failed to add expense.');
     } finally {
-      setCatalogLoading(false);
+      setFinanceConfigBusy(false);
     }
   };
 
-  const toggleCatalogItem = async (item: any) => {
-    if (!currentUserId) return;
+  const toggleExpense = async (item: any) => {
     try {
-      setCatalogLoading(true);
-      setCatalogError('');
-      await firestoreService.setFinanceCatalogItemActive(item.id, item.isActive === false, currentUserId);
-      await loadFinanceCatalog();
+      setFinanceConfigBusy(true);
+      setFinanceConfigError('');
+      await firestoreService.setFinanceCatalogItemActive(
+        item.id,
+        item.isActive === false,
+        currentUserId
+      );
+      await loadSimpleFinanceConfig();
     } catch (err: any) {
-      setCatalogError(err?.message || 'Failed to update finance item.');
+      setFinanceConfigError(err?.message || 'Failed to update expense.');
     } finally {
-      setCatalogLoading(false);
+      setFinanceConfigBusy(false);
+    }
+  };
+
+  const saveEmployeePayroll = async (employee: any) => {
+    const draft = payrollDrafts[String(employee.id)] || { fixedSalary: '', bonusPercent: '' };
+
+    try {
+      setFinanceConfigBusy(true);
+      setFinanceConfigError('');
+
+      await firestoreService.savePayrollConfig(
+        {
+          employeeId: employee.id,
+          fixedSalary: Number(draft.fixedSalary || 0),
+          bonusPercent: Number(draft.bonusPercent || 0),
+          isActive: true
+        },
+        currentUserId
+      );
+
+      await loadSimpleFinanceConfig();
+    } catch (err: any) {
+      setFinanceConfigError(err?.message || 'Failed to save payroll configuration.');
+    } finally {
+      setFinanceConfigBusy(false);
     }
   };
 
@@ -167,9 +214,7 @@ export default function Settings() {
     } catch (err: any) {
       console.error('Reset failed:', err);
       setResetStatus('error');
-      setErrorMessage(
-        err.message || 'An unknown error occurred during reset.'
-      );
+      setErrorMessage(err.message || 'An unknown error occurred during reset.');
     } finally {
       setIsResetting(false);
     }
@@ -179,42 +224,31 @@ export default function Settings() {
     return (
       <div className="p-8 text-center">
         <ShieldAlert className="w-16 h-16 text-rose-500 mx-auto mb-4" />
-        <h1 className="text-2xl font-bold text-white mb-2">
-          Access Denied
-        </h1>
-        <p className="text-slate-400">
-          Only Administrators can access this page.
-        </p>
+        <h1 className="text-2xl font-bold text-white mb-2">Access Denied</h1>
+        <p className="text-slate-400">Only Administrators can access this page.</p>
       </div>
     );
   }
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
+    <div className="p-8 max-w-6xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">
-          System Settings
-        </h1>
+        <h1 className="text-3xl font-bold text-white mb-2">System Settings</h1>
         <p className="text-slate-400">
-          Manage global system configuration and data maintenance.
+          Administrator configures Finance once. Finance users only fill monthly values.
         </p>
       </div>
 
       <div className="space-y-6">
+        {/* Existing Solution management — preserved */}
         <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-6">
-            <div>
-              <div className="flex items-center gap-2">
-                <Route className="w-5 h-5 text-blue-400" />
-                <h2 className="text-xl font-semibold text-white">
-                  Finance Solutions
-                </h2>
-              </div>
-              <p className="text-sm text-slate-400 mt-1">
-                Add the Solution names Agents can select when funds are sent through an external payment route.
-              </p>
-            </div>
+          <div className="flex items-center gap-2 mb-1">
+            <Route className="w-5 h-5 text-blue-400" />
+            <h2 className="text-xl font-semibold text-white">Finance Solutions</h2>
           </div>
+          <p className="text-sm text-slate-400 mb-5">
+            Add the Solution names Agents can select when funds are sent through an external payment route.
+          </p>
 
           <div className="flex flex-col sm:flex-row gap-3">
             <input
@@ -227,14 +261,11 @@ export default function Settings() {
                 }
               }}
               placeholder="Example: Safe, JOR..."
-              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white"
             />
-
             <button
               onClick={handleAddSolution}
-              disabled={
-                solutionLoading || !solutionName.trim()
-              }
+              disabled={solutionLoading || !solutionName.trim()}
               className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
             >
               <Plus className="w-4 h-4" />
@@ -248,30 +279,17 @@ export default function Settings() {
             </div>
           )}
 
-          <div className="mt-5 space-y-2">
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-2">
             {solutions.map(solution => {
               const active = solution.isActive !== false;
-
               return (
-                <div
-                  key={solution.id}
-                  className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 flex items-center justify-between gap-4"
-                >
+                <div key={solution.id} className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 flex items-center justify-between gap-4">
                   <div>
-                    <p className="text-sm font-semibold text-white">
-                      {solution.name}
-                    </p>
-                    <p
-                      className={`text-[10px] uppercase tracking-wider mt-1 ${
-                        active
-                          ? 'text-emerald-400'
-                          : 'text-slate-600'
-                      }`}
-                    >
+                    <p className="text-sm font-semibold text-white">{solution.name}</p>
+                    <p className={`text-[10px] uppercase mt-1 ${active ? 'text-emerald-400' : 'text-slate-600'}`}>
                       {active ? 'Active' : 'Disabled'}
                     </p>
                   </div>
-
                   <button
                     onClick={() => toggleSolution(solution)}
                     disabled={solutionLoading}
@@ -281,78 +299,192 @@ export default function Settings() {
                         : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
                     }`}
                   >
-                    {active ? (
-                      <PowerOff className="w-4 h-4" />
-                    ) : (
-                      <Power className="w-4 h-4" />
-                    )}
+                    {active ? <PowerOff className="w-4 h-4" /> : <Power className="w-4 h-4" />}
+                    {active ? 'Disable' : 'Enable'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Simplified expense names */}
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-1">
+            <ReceiptText className="w-5 h-5 text-violet-400" />
+            <h2 className="text-xl font-semibold text-white">Company Expense Names</h2>
+          </div>
+          <p className="text-sm text-slate-400 mb-5">
+            Create the rows Finance Manager will fill every month: Rent, Fees, VOIP, Servers, etc.
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              value={expenseName}
+              onChange={e => setExpenseName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addExpenseCategory();
+                }
+              }}
+              placeholder="Example: Rent"
+              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white"
+            />
+            <button
+              onClick={addExpenseCategory}
+              disabled={financeConfigBusy || !expenseName.trim()}
+              className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold"
+            >
+              <Plus className="w-4 h-4" />
+              Add Expense
+            </button>
+          </div>
+
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-2">
+            {expenseCategories.map(item => {
+              const active = item.isActive !== false;
+              return (
+                <div key={item.id} className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-white">{item.name}</p>
+                    <p className={`text-[10px] uppercase mt-1 ${active ? 'text-emerald-400' : 'text-slate-600'}`}>
+                      {active ? 'Active' : 'Disabled'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => toggleExpense(item)}
+                    disabled={financeConfigBusy}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold ${
+                      active
+                        ? 'bg-rose-500/10 text-rose-400'
+                        : 'bg-emerald-500/10 text-emerald-400'
+                    }`}
+                  >
                     {active ? 'Disable' : 'Enable'}
                   </button>
                 </div>
               );
             })}
 
-            {solutions.length === 0 && (
-              <p className="text-sm text-slate-600 py-6 text-center">
-                No Finance Solutions added yet.
-              </p>
+            {expenseCategories.length === 0 && (
+              <p className="text-sm text-slate-600 py-5">No expense names configured yet.</p>
             )}
           </div>
         </div>
 
+        {/* Payroll setup */}
         <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4 mb-6">
-            <div>
-              <div className="flex items-center gap-2">
-                <SlidersHorizontal className="w-5 h-5 text-violet-400" />
-                <h2 className="text-xl font-semibold text-white">Finance Configuration Catalog</h2>
-              </div>
-              <p className="text-sm text-slate-400 mt-1">Create selectable Expenses, Salaries, Commissions, Taxes, Bonuses and Penalties for Finance users.</p>
+          <div className="flex items-center gap-2 mb-1">
+            <Users className="w-5 h-5 text-emerald-400" />
+            <h2 className="text-xl font-semibold text-white">Employee Payroll Configuration</h2>
+          </div>
+          <p className="text-sm text-slate-400 mb-5">
+            Set each employee's fixed monthly salary and bonus percentage. Finance Manager cannot change these rules.
+          </p>
+
+          {financeConfigError && (
+            <div className="mb-4 rounded-lg bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-300">
+              {financeConfigError}
             </div>
-          </div>
+          )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-            <select value={catalogForm.type} onChange={e => setCatalogForm(p => ({...p, type:e.target.value}))} className="bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white">
-              {['Expense','Salary','Commission','Tax','Bonus','Penalty'].map(v => <option key={v} value={v}>{v}</option>)}
-            </select>
-            <input value={catalogForm.name} onChange={e => setCatalogForm(p => ({...p, name:e.target.value}))} placeholder="Name, e.g. Office Rent" className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" />
-            <select value={catalogForm.calculationType} onChange={e => setCatalogForm(p => ({...p, calculationType:e.target.value}))} className="bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white">
-              <option value="Fixed">Fixed $</option><option value="Percentage">Percentage %</option>
-            </select>
-            <input type="number" min="0" step="0.01" value={catalogForm.defaultValue} onChange={e => setCatalogForm(p => ({...p, defaultValue:e.target.value}))} placeholder={catalogForm.calculationType === 'Percentage' ? 'Default %' : 'Default $'} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-[auto_160px_120px_1fr_auto] gap-3 mt-3 items-center">
-            <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={catalogForm.recurring} onChange={e=>setCatalogForm(p=>({...p,recurring:e.target.checked}))}/> Recurring</label>
-            <select disabled={!catalogForm.recurring} value={catalogForm.frequency} onChange={e=>setCatalogForm(p=>({...p,frequency:e.target.value}))} className="bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white disabled:opacity-40"><option>Monthly</option><option>Weekly</option><option>Yearly</option></select>
-            <input disabled={!catalogForm.recurring} type="number" min="1" max="31" value={catalogForm.dueDay} onChange={e=>setCatalogForm(p=>({...p,dueDay:e.target.value}))} placeholder="Due day" className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white disabled:opacity-40" />
-            <input value={catalogForm.description} onChange={e=>setCatalogForm(p=>({...p,description:e.target.value}))} placeholder="Description / rule" className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white" />
-            <button onClick={handleAddCatalogItem} disabled={catalogLoading || !catalogForm.name.trim()} className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold">Add Item</button>
-          </div>
-          {catalogError && <div className="mt-3 text-sm text-rose-400">{catalogError}</div>}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
+                  <th className="py-3">Employee</th>
+                  <th>Role</th>
+                  <th>Fixed Salary $</th>
+                  <th>Bonus %</th>
+                  <th className="text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {financeUsers.map(employee => {
+                  const draft = payrollDrafts[String(employee.id)] || {
+                    fixedSalary: '',
+                    bonusPercent: ''
+                  };
 
-          <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-2">
-            {financeCatalog.map(item => (
-              <div key={item.id} className="rounded-xl border border-white/5 bg-white/[0.02] p-4 flex items-center justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2"><BadgeDollarSign className="w-4 h-4 text-violet-400"/><p className="text-sm font-semibold text-white">{item.name}</p><span className="text-[9px] uppercase text-slate-500">{item.type}</span></div>
-                  <p className="text-xs text-slate-500 mt-1">{item.calculationType === 'Percentage' ? `${item.defaultValue}%` : moneyLabel(item.defaultValue)}{item.recurring ? ` • ${item.frequency} • due day ${item.dueDay}` : ''}</p>
-                </div>
-                <button onClick={()=>toggleCatalogItem(item)} disabled={catalogLoading} className={`px-3 py-2 rounded-lg text-xs font-semibold ${item.isActive !== false ? 'bg-rose-500/10 text-rose-400' : 'bg-emerald-500/10 text-emerald-400'}`}>{item.isActive !== false ? 'Disable' : 'Enable'}</button>
-              </div>
-            ))}
-            {financeCatalog.length === 0 && <p className="text-sm text-slate-600 py-5">No finance configuration items yet.</p>}
+                  return (
+                    <tr key={employee.id}>
+                      <td className="py-3">
+                        <p className="text-sm font-semibold text-white">{employee.name || employee.email}</p>
+                        <p className="text-[10px] text-slate-500">{employee.teamName || 'No Team'}</p>
+                      </td>
+                      <td className="text-xs text-slate-400">{employee.role}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={draft.fixedSalary}
+                          onChange={e =>
+                            setPayrollDrafts(prev => ({
+                              ...prev,
+                              [String(employee.id)]: {
+                                ...draft,
+                                fixedSalary: e.target.value
+                              }
+                            }))
+                          }
+                          className="w-36 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                          placeholder="0.00"
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={draft.bonusPercent}
+                          onChange={e =>
+                            setPayrollDrafts(prev => ({
+                              ...prev,
+                              [String(employee.id)]: {
+                                ...draft,
+                                bonusPercent: e.target.value
+                              }
+                            }))
+                          }
+                          className="w-28 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                          placeholder="0"
+                        />
+                      </td>
+                      <td className="text-right">
+                        <button
+                          onClick={() => saveEmployeePayroll(employee)}
+                          disabled={financeConfigBusy}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          Save
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {financeUsers.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-sm text-slate-600">
+                      No employees found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
 
+        {/* Existing reset / danger zone — preserved */}
         <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
           <div className="flex items-start justify-between mb-6">
             <div>
-              <h2 className="text-xl font-semibold text-white mb-1">
-                Data Maintenance
-              </h2>
-              <p className="text-sm text-slate-400">
-                Tools for managing and resetting system data.
-              </p>
+              <h2 className="text-xl font-semibold text-white mb-1">Data Maintenance</h2>
+              <p className="text-sm text-slate-400">Tools for managing and resetting system data.</p>
             </div>
             <ShieldAlert className="w-6 h-6 text-amber-500" />
           </div>
@@ -361,15 +493,10 @@ export default function Settings() {
             <div className="flex items-start space-x-3">
               <AlertTriangle className="w-5 h-5 text-rose-500 mt-0.5" />
               <div>
-                <h3 className="text-sm font-bold text-rose-500 uppercase tracking-wider mb-1">
-                  Danger Zone
-                </h3>
+                <h3 className="text-sm font-bold text-rose-500 uppercase tracking-wider mb-1">Danger Zone</h3>
                 <p className="text-xs text-rose-400/80 leading-relaxed">
-                  Resetting the system will permanently delete all leads,
-                  users, history, notes, and imports. Only the account{' '}
-                  <span className="font-bold text-rose-400">
-                    c.morgan@ghost.com
-                  </span>{' '}
+                  Resetting the system will permanently delete all leads, users, history, notes, and imports. Only the account
+                  <span className="font-bold text-rose-400"> c.morgan@ghost.com </span>
                   will be preserved. This action cannot be undone.
                 </p>
               </div>
@@ -378,12 +505,8 @@ export default function Settings() {
 
           <div className="flex items-center justify-between">
             <div className="flex-1 mr-8">
-              <h3 className="text-sm font-medium text-white mb-1">
-                Reset Entire System
-              </h3>
-              <p className="text-xs text-slate-500">
-                Wipe all data and start fresh with a clean database.
-              </p>
+              <h3 className="text-sm font-medium text-white mb-1">Reset Entire System</h3>
+              <p className="text-xs text-slate-500">Wipe all data and start fresh with a clean database.</p>
             </div>
 
             <button
@@ -395,35 +518,22 @@ export default function Settings() {
                   : 'bg-rose-600 hover:bg-rose-700 text-white shadow-lg shadow-rose-600/20'
               }`}
             >
-              {isResetting ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Resetting...</span>
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="w-4 h-4" />
-                  <span>Reset All Data</span>
-                </>
-              )}
+              <RefreshCw className={`w-4 h-4 ${isResetting ? 'animate-spin' : ''}`} />
+              <span>{isResetting ? 'Resetting...' : 'Reset All Data'}</span>
             </button>
           </div>
 
           {resetStatus === 'success' && (
-            <div className="mt-6 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center space-x-3 animate-in fade-in slide-in-from-top-2">
+            <div className="mt-6 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center space-x-3">
               <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-              <p className="text-sm text-emerald-400">
-                System reset successful! Logging out...
-              </p>
+              <p className="text-sm text-emerald-400">System reset successful! Logging out...</p>
             </div>
           )}
 
           {resetStatus === 'error' && (
-            <div className="mt-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center space-x-3 animate-in fade-in slide-in-from-top-2">
+            <div className="mt-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center space-x-3">
               <AlertTriangle className="w-5 h-5 text-rose-500" />
-              <p className="text-sm text-rose-400">
-                Error: {errorMessage}
-              </p>
+              <p className="text-sm text-rose-400">Error: {errorMessage}</p>
             </div>
           )}
         </div>
