@@ -130,7 +130,7 @@ function Sidebar({
     { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
     { name: 'Activity', path: '/activity', icon: Activity, roles: ['Administrator', 'Manager'] },
-    { name: 'Work Logs', path: '/work-logs', icon: Clock3, roles: ['Administrator', 'Manager', 'Team Leader'] },
+    { name: 'Work Logs', path: '/work-logs', icon: Clock3, roles: ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'] },
     { name: 'Security Logs', path: '/security-logs', icon: ShieldCheck, roles: ['Administrator'] },
     { name: 'Settings', path: '/settings', icon: Settings, roles: ['Administrator'] },
   ];
