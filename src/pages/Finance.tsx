@@ -11,7 +11,13 @@ import {
   History,
   Route,
   Truck,
-  AlertTriangle
+  AlertTriangle,
+  ReceiptText,
+  Calculator,
+  WalletCards,
+  TrendingUp,
+  Plus,
+  Check
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
@@ -56,6 +62,13 @@ export default function Finance() {
   const [expandedId, setExpandedId] = useState('');
   const [rejecting, setRejecting] = useState<any>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const fullFinanceAccess = ['Administrator', 'Manager', 'Financial Manager'].includes(currentUser.role);
+  const [financeMonth, setFinanceMonth] = useState(() => format(new Date(), 'yyyy-MM'));
+  const [catalog, setCatalog] = useState<any[]>([]);
+  const [opsOverview, setOpsOverview] = useState<any>(null);
+  const [entryBusy, setEntryBusy] = useState(false);
+  const [entryForm, setEntryForm] = useState({ catalogId:'', assignedUserId:'', baseAmount:'', amount:'', entryDate: format(new Date(), 'yyyy-MM-dd'), dueDate: format(new Date(), 'yyyy-MM-dd'), status:'Expected', notes:'' });
+  const [financeUsers, setFinanceUsers] = useState<any[]>([]);
 
   const loadData = async () => {
     if (!allowed) return;
@@ -63,15 +76,21 @@ export default function Finance() {
     try {
       setLoading(true);
 
-      const [financeData, auditData] = await Promise.all([
+      const [financeData, auditData, catalogData, overviewData, usersData] = await Promise.all([
         firestoreService.getFinanceDepositsForUser(currentUser),
         currentUser.role === 'Administrator'
           ? firestoreService.getFinanceAuditLogs(currentUser.id)
-          : Promise.resolve([])
+          : Promise.resolve([]),
+        fullFinanceAccess ? firestoreService.getFinanceCatalog() : Promise.resolve([]),
+        fullFinanceAccess ? firestoreService.getFinanceManagerOverview(currentUser, financeMonth) : Promise.resolve(null),
+        fullFinanceAccess ? firestoreService.getUsers() : Promise.resolve([])
       ]);
 
       setDeposits(financeData as any[]);
       setAuditLogs(auditData as any[]);
+      setCatalog(catalogData as any[]);
+      setOpsOverview(overviewData);
+      setFinanceUsers(usersData as any[]);
     } catch (err) {
       console.error('Finance load failed:', err);
     } finally {
@@ -81,7 +100,7 @@ export default function Finance() {
 
   useEffect(() => {
     loadData();
-  }, [currentUser.id, currentUser.role]);
+  }, [currentUser.id, currentUser.role, financeMonth]);
 
   const filtered = useMemo(() => {
     if (tab === 'Pending') {
@@ -167,6 +186,37 @@ export default function Finance() {
     return 'Approve';
   };
 
+  const selectedCatalog = catalog.find((item: any) => item.id === entryForm.catalogId);
+  const calculatedEntryAmount = selectedCatalog?.calculationType === 'Percentage'
+    ? (Number(entryForm.baseAmount || 0) * Number(selectedCatalog?.defaultValue || 0)) / 100
+    : Number(entryForm.amount || selectedCatalog?.defaultValue || 0);
+
+  const createFinanceEntry = async () => {
+    if (!entryForm.catalogId) return alert('Choose an Admin-configured finance item.');
+    try {
+      setEntryBusy(true);
+      await firestoreService.createFinanceOperationalEntry({
+        ...entryForm,
+        monthKey: financeMonth,
+        baseAmount: Number(entryForm.baseAmount || 0),
+        amount: Number(entryForm.amount || 0)
+      }, currentUser.id);
+      setEntryForm({ catalogId:'', assignedUserId:'', baseAmount:'', amount:'', entryDate: format(new Date(), 'yyyy-MM-dd'), dueDate: format(new Date(), 'yyyy-MM-dd'), status:'Expected', notes:'' });
+      await loadData();
+    } catch (err: any) {
+      alert(err?.message || 'Failed to create finance entry.');
+    } finally { setEntryBusy(false); }
+  };
+
+  const markEntryPaid = async (entry: any) => {
+    try {
+      setEntryBusy(true);
+      await firestoreService.updateFinanceOperationalEntryStatus(entry.id, entry.status === 'Paid' ? 'Expected' : 'Paid', currentUser.id);
+      await loadData();
+    } catch (err: any) { alert(err?.message || 'Failed to update finance entry.'); }
+    finally { setEntryBusy(false); }
+  };
+
   if (!allowed) {
     return (
       <div className="p-8 text-center">
@@ -211,6 +261,46 @@ export default function Finance() {
           Refresh
         </button>
       </div>
+
+      {fullFinanceAccess && (
+        <div className="space-y-5">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-[#0A0F1C] border border-white/5 rounded-xl p-4">
+            <div>
+              <p className="text-xs uppercase tracking-wider text-violet-400 font-bold">Financial Manager Workspace</p>
+              <p className="text-sm text-slate-400 mt-1">Administrator, Manager and Financial Manager share the same operating finance controls.</p>
+            </div>
+            <input type="month" value={financeMonth} onChange={e=>setFinanceMonth(e.target.value)} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white" />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
+            <OpsMetric label="Approved Revenue" value={opsOverview?.approvedRevenue || 0} cls="text-emerald-400" />
+            <OpsMetric label="On Solution" value={opsOverview?.onSolution || 0} cls="text-blue-400" />
+            <OpsMetric label="Paid Expenses" value={opsOverview?.paidExpenses || 0} cls="text-rose-400" />
+            <OpsMetric label="Expected Expenses" value={opsOverview?.expectedExpenses || 0} cls="text-amber-400" />
+            <OpsMetric label="Current Net" value={opsOverview?.currentNet || 0} cls={(opsOverview?.currentNet || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'} />
+            <OpsMetric label="Projected Month End" value={opsOverview?.projectedMonthEnd || 0} cls={(opsOverview?.projectedMonthEnd || 0) >= 0 ? 'text-cyan-400' : 'text-rose-400'} />
+          </div>
+
+          <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-5">
+            <div className="flex items-center gap-2 mb-4"><ReceiptText className="w-5 h-5 text-violet-400"/><h3 className="text-lg font-semibold text-white">Expenses, Payroll, Taxes & Adjustments</h3></div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <select value={entryForm.catalogId} onChange={e=>setEntryForm(p=>({...p,catalogId:e.target.value, amount:''}))} className="bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"><option value="">Choose configured item...</option>{catalog.map((item:any)=><option key={item.id} value={item.id}>{item.type} — {item.name}</option>)}</select>
+              <select value={entryForm.assignedUserId} onChange={e=>setEntryForm(p=>({...p,assignedUserId:e.target.value}))} className="bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"><option value="">Company / no employee</option>{financeUsers.map((u:any)=><option key={u.id} value={u.id}>{u.name || u.email} — {u.role}</option>)}</select>
+              {selectedCatalog?.calculationType === 'Percentage' ? <input type="number" min="0" step="0.01" placeholder="Base amount $" value={entryForm.baseAmount} onChange={e=>setEntryForm(p=>({...p,baseAmount:e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" /> : <input type="number" min="0" step="0.01" placeholder={`Amount $${selectedCatalog?.defaultValue ? ` (default ${selectedCatalog.defaultValue})` : ''}`} value={entryForm.amount} onChange={e=>setEntryForm(p=>({...p,amount:e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" />}
+              <div className="rounded-lg bg-white/[0.03] border border-white/5 px-3 py-2.5 text-sm"><span className="text-slate-500">Calculated: </span><span className="text-white font-bold">{money(calculatedEntryAmount || 0)}</span></div>
+              <input type="date" value={entryForm.entryDate} onChange={e=>setEntryForm(p=>({...p,entryDate:e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" />
+              <input type="date" value={entryForm.dueDate} onChange={e=>setEntryForm(p=>({...p,dueDate:e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" />
+              <select value={entryForm.status} onChange={e=>setEntryForm(p=>({...p,status:e.target.value}))} className="bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"><option value="Expected">Expected</option><option value="Paid">Paid</option></select>
+              <input value={entryForm.notes} onChange={e=>setEntryForm(p=>({...p,notes:e.target.value}))} placeholder="Comment / reason" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" />
+            </div>
+            <div className="flex justify-end mt-3"><button onClick={createFinanceEntry} disabled={entryBusy || !entryForm.catalogId} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold"><Plus className="w-4 h-4"/>Add Finance Entry</button></div>
+
+            <div className="mt-5 overflow-x-auto">
+              <table className="w-full min-w-[900px] text-left"><thead><tr className="text-[10px] uppercase text-slate-500 border-b border-white/5"><th className="py-3">Type</th><th>Item</th><th>Employee</th><th>Due</th><th className="text-right">Amount</th><th>Status</th><th className="text-right">Action</th></tr></thead><tbody className="divide-y divide-white/5">{(opsOverview?.entries || []).map((entry:any)=><tr key={entry.id}><td className="py-3 text-xs text-violet-400">{entry.type}</td><td className="text-sm text-white">{entry.catalogName}</td><td className="text-xs text-slate-400">{entry.assignedUserName || 'Company'}</td><td className="text-xs text-slate-400">{entry.dueDate || '—'}</td><td className="text-right text-sm font-bold text-white">{money(entry.amount)}</td><td><span className={`text-[10px] font-bold uppercase ${entry.status === 'Paid' ? 'text-emerald-400' : 'text-amber-400'}`}>{entry.status}</span></td><td className="text-right"><button onClick={()=>markEntryPaid(entry)} disabled={entryBusy} className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs text-slate-300">{entry.status === 'Paid' ? 'Mark Expected' : 'Mark Paid'}</button></td></tr>)}{(!opsOverview?.entries || opsOverview.entries.length===0) && <tr><td colSpan={7} className="py-8 text-center text-sm text-slate-600">No finance entries for this month.</td></tr>}</tbody></table>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <Summary
@@ -666,6 +756,10 @@ export default function Finance() {
       )}
     </div>
   );
+}
+
+function OpsMetric({ label, value, cls }: any) {
+  return <div className="rounded-xl bg-[#0A0F1C] border border-white/5 p-4"><p className={`text-xl font-bold ${cls}`}>{money(value)}</p><p className="text-[10px] uppercase text-slate-500 mt-1">{label}</p></div>;
 }
 
 function Summary({
