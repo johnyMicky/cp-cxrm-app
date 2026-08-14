@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2, Calendar } from 'lucide-react';
+import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2, Calendar, DollarSign, Eye, Handshake, TrendingUp, Save } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { firestoreService } from '../services/firestoreService';
@@ -41,6 +41,13 @@ export default function LeadDetail() {
   const [isSchedulingCallback, setIsSchedulingCallback] = useState(false);
   const [callbackDate, setCallbackDate] = useState('');
   const [accessDenied, setAccessDenied] = useState(false);
+  const [amountForm, setAmountForm] = useState({
+    seenAmount: '',
+    agreedAmount: '',
+    potentialAmount: ''
+  });
+  const [isSavingAmounts, setIsSavingAmounts] = useState(false);
+  const [amountMessage, setAmountMessage] = useState('');
   
   const currentUserId = localStorage.getItem('userId');
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
@@ -73,6 +80,20 @@ export default function LeadDetail() {
 
         setLead(leadData);
         setEditForm(leadData);
+        setAmountForm({
+          seenAmount:
+            leadData?.seenAmount !== undefined && leadData?.seenAmount !== null
+              ? String(leadData.seenAmount)
+              : '',
+          agreedAmount:
+            leadData?.agreedAmount !== undefined && leadData?.agreedAmount !== null
+              ? String(leadData.agreedAmount)
+              : '',
+          potentialAmount:
+            leadData?.potentialAmount !== undefined && leadData?.potentialAmount !== null
+              ? String(leadData.potentialAmount)
+              : ''
+        });
         setUsers(usersData);
       } catch (err: any) {
         console.error('Lead Detail Load Error:', err);
@@ -200,6 +221,124 @@ export default function LeadDetail() {
     setNoteContent('');
     const data = await firestoreService.getLeadForUser(id, { id: currentUserId, role: currentUserRole });
     setLead(data);
+  };
+
+  const handleSaveAmounts = async () => {
+    if (!id || !currentUserId) return;
+
+    const parseAmount = (value: string) => {
+      const trimmed = String(value || '').trim();
+      if (!trimmed) return null;
+
+      const numeric = Number(trimmed);
+      if (!Number.isFinite(numeric) || numeric < 0) {
+        throw new Error('Amounts must be valid positive numbers or 0.');
+      }
+
+      return Number(numeric.toFixed(2));
+    };
+
+    const formatMoney = (value: any) => {
+      if (value === null || value === undefined || value === '') return '—';
+
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return '—';
+
+      return `$${numeric.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })}`;
+    };
+
+    try {
+      setIsSavingAmounts(true);
+      setAmountMessage('');
+
+      const nextValues = {
+        seenAmount: parseAmount(amountForm.seenAmount),
+        agreedAmount: parseAmount(amountForm.agreedAmount),
+        potentialAmount: parseAmount(amountForm.potentialAmount)
+      };
+
+      const previousValues = {
+        seenAmount:
+          lead?.seenAmount !== undefined && lead?.seenAmount !== null
+            ? Number(lead.seenAmount)
+            : null,
+        agreedAmount:
+          lead?.agreedAmount !== undefined && lead?.agreedAmount !== null
+            ? Number(lead.agreedAmount)
+            : null,
+        potentialAmount:
+          lead?.potentialAmount !== undefined && lead?.potentialAmount !== null
+            ? Number(lead.potentialAmount)
+            : null
+      };
+
+      const labels: Record<string, string> = {
+        seenAmount: 'Seen Amount',
+        agreedAmount: 'Agreed Amount',
+        potentialAmount: 'Potential'
+      };
+
+      const changedKeys = (
+        Object.keys(nextValues) as Array<keyof typeof nextValues>
+      ).filter(key => {
+        const previous = previousValues[key];
+        const next = nextValues[key];
+
+        if (previous === null && next === null) return false;
+        return Number(previous) !== Number(next);
+      });
+
+      if (changedKeys.length === 0) {
+        setAmountMessage('No amount changes to save.');
+        return;
+      }
+
+      await firestoreService.updateLead(id, nextValues);
+
+      await firestoreService.logActivity({
+        lead_id: id,
+        user_id: currentUserId,
+        action: 'Lead Amounts Updated',
+        details: changedKeys
+          .map(
+            key =>
+              `${labels[key]}: ${formatMoney(previousValues[key])} → ${formatMoney(nextValues[key])}`
+          )
+          .join(' • ')
+      });
+
+      const data = await firestoreService.getLeadForUser(id, {
+        id: currentUserId,
+        role: currentUserRole
+      });
+
+      setLead(data);
+      setEditForm(data);
+      setAmountForm({
+        seenAmount:
+          data?.seenAmount !== undefined && data?.seenAmount !== null
+            ? String(data.seenAmount)
+            : '',
+        agreedAmount:
+          data?.agreedAmount !== undefined && data?.agreedAmount !== null
+            ? String(data.agreedAmount)
+            : '',
+        potentialAmount:
+          data?.potentialAmount !== undefined && data?.potentialAmount !== null
+            ? String(data.potentialAmount)
+            : ''
+      });
+
+      setAmountMessage('Amounts saved successfully.');
+    } catch (err: any) {
+      console.error('Failed to save lead amounts:', err);
+      setAmountMessage(err?.message || 'Failed to save amounts.');
+    } finally {
+      setIsSavingAmounts(false);
+    }
   };
 
   const handleDelete = async () => {
@@ -493,6 +632,113 @@ export default function LeadDetail() {
               </div>
             </div>
             
+            <div className="mb-6 rounded-xl border border-white/5 bg-white/[0.02] p-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <DollarSign className="w-4 h-4 text-emerald-400" />
+                    <h4 className="text-sm font-semibold text-white">
+                      Lead Amounts
+                    </h4>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Track what the client showed, what was agreed, and the expected future potential.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSaveAmounts}
+                  disabled={isSavingAmounts}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+                >
+                  <Save className="w-4 h-4" />
+                  {isSavingAmounts ? 'Saving...' : 'Save Amounts'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="flex items-center gap-1.5 text-[10px] text-slate-500 font-medium uppercase tracking-wider mb-2">
+                    <Eye className="w-3.5 h-3.5 text-blue-400" />
+                    1. Seen Amount $
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={amountForm.seenAmount}
+                    onChange={e =>
+                      setAmountForm(prev => ({
+                        ...prev,
+                        seenAmount: e.target.value
+                      }))
+                    }
+                    placeholder="Example: 5000"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  />
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-1.5 text-[10px] text-slate-500 font-medium uppercase tracking-wider mb-2">
+                    <Handshake className="w-3.5 h-3.5 text-emerald-400" />
+                    2. Agreed Amount $
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={amountForm.agreedAmount}
+                    onChange={e =>
+                      setAmountForm(prev => ({
+                        ...prev,
+                        agreedAmount: e.target.value
+                      }))
+                    }
+                    placeholder="Example: 1000"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                  />
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-1.5 text-[10px] text-slate-500 font-medium uppercase tracking-wider mb-2">
+                    <TrendingUp className="w-3.5 h-3.5 text-violet-400" />
+                    3. Potential $
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={amountForm.potentialAmount}
+                    onChange={e =>
+                      setAmountForm(prev => ({
+                        ...prev,
+                        potentialAmount: e.target.value
+                      }))
+                    }
+                    placeholder="Example: 7000"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
+                  />
+                </div>
+              </div>
+
+              {amountMessage && (
+                <p
+                  className={`text-xs mt-3 ${
+                    amountMessage.toLowerCase().includes('failed') ||
+                    amountMessage.toLowerCase().includes('valid')
+                      ? 'text-rose-400'
+                      : 'text-emerald-400'
+                  }`}
+                >
+                  {amountMessage}
+                </p>
+              )}
+            </div>
+
             <div className="space-y-4">
               {lead.notes.length > 0 ? lead.notes.map((note: any) => {
                 const noteUser = users.find(u => u.id === note.user_id);
