@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle } from 'lucide-react';
+import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall } from 'lucide-react';
 import { format } from 'date-fns';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import LeadForm from '../components/LeadForm';
@@ -107,6 +107,7 @@ export default function Leads() {
   const [toastMessage, setToastMessage] = useState('Lead created successfully');
   
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [callingLeadId, setCallingLeadId] = useState<string | null>(null);
   const [quickNoteId, setQuickNoteId] = useState<string | null>(null);
   const [quickNoteText, setQuickNoteText] = useState('');
   const [isAssigning, setIsAssigning] = useState(false);
@@ -149,6 +150,25 @@ export default function Leads() {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleAtlantCall = async (lead: any) => {
+    if (!lead?.phone || callingLeadId) return;
+
+    const leadId = String(lead.id || '');
+    setCallingLeadId(leadId);
+
+    try {
+      await firestoreService.initiateAtlantCall(lead.phone);
+      showToastMessage(`Call initiated to ${lead.name || lead.phone}`);
+    } catch (err: any) {
+      console.error('Atlant Click2Call failed:', err);
+      showToastMessage(`Call failed: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setTimeout(() => {
+        setCallingLeadId(current => current === leadId ? null : current);
+      }, 2200);
+    }
   };
 
   const handleQuickNote = async (leadId: string) => {
@@ -1052,6 +1072,23 @@ export default function Leads() {
                           </button>
                         ) : (
                           <span className="text-sm text-slate-500 italic">No Phone</span>
+                        )}
+
+
+                        {lead.phone && (
+                          <button
+                            type="button"
+                            onClick={() => handleAtlantCall(lead)}
+                            disabled={callingLeadId !== null}
+                            className={`p-1.5 rounded-lg transition-colors ${
+                              callingLeadId === lead.id
+                                ? 'bg-blue-500/10 text-blue-400'
+                                : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10'
+                            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                            title={callingLeadId === lead.id ? 'Calling...' : 'Call with Atlant'}
+                          >
+                            <PhoneCall className={`w-4 h-4 ${callingLeadId === lead.id ? 'animate-pulse' : ''}`} />
+                          </button>
                         )}
                         
                         <button 
