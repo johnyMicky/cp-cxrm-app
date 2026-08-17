@@ -32,6 +32,8 @@ const LEADS_COL = "leads";
 const USERS_COL = "users";
 const ACTIVITY_COL = "activity";
 const NOTIFICATIONS_COL = "notifications";
+const SECURE_INFO_REQUESTS_COL = "secure_info_requests";
+const SECURE_INFO_AUDIT_COL = "secure_info_audit";
 const IMPORTS_COL = "imports";
 const TEAMS_COL = "teams";
 const SHIFT_SESSIONS_COL = "shift_sessions";
@@ -3424,6 +3426,368 @@ export const firestoreService = {
 
   async markNotificationRead(id: string) {
     await updateDoc(doc(db, NOTIFICATIONS_COL, id), { read: true });
+  },
+
+  async markAllNotificationsRead(userId: string) {
+    if (!userId) return 0;
+
+    const snap = await getDocs(
+      query(collection(db, NOTIFICATIONS_COL), where("user_id", "==", String(userId)))
+    );
+
+    const unreadDocs = snap.docs.filter(notificationDoc => {
+      const data = notificationDoc.data() as any;
+      return data.read !== true;
+    });
+
+    if (unreadDocs.length === 0) return 0;
+
+    const BATCH_SIZE = 450;
+    let updated = 0;
+
+    for (let i = 0; i < unreadDocs.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      const chunk = unreadDocs.slice(i, i + BATCH_SIZE);
+
+      chunk.forEach(notificationDoc => {
+        batch.update(doc(db, NOTIFICATIONS_COL, notificationDoc.id), {
+          read: true,
+          readAt: serverTimestamp()
+        });
+      });
+
+      await batch.commit();
+      updated += chunk.length;
+    }
+
+    return updated;
+  },
+
+
+  // Secure Info Request workflow
+  // Agent requests details. Team Leader (own team), Financial Manager,
+  // Manager, or Administrator can deliver them. Agent has read/copy-only access.
+
+  async createSecureInfoRequest(payload: any, userId: string) {
+    if (!userId) throw new Error('Current user is required.');
+
+    const requester = await this.getUser(String(userId));
+    if (!requester) throw new Error('Current CRM user was not found.');
+
+    if (String(requester.role || '') !== 'Agent') {
+      throw new Error('Only Agents can create Secure Info requests.');
+    }
+
+    const requestType = String(payload?.requestType || '').trim();
+    if (!requestType) throw new Error('Request type is required.');
+
+    const requestPayload = sanitizeData({
+      requestType,
+      clientReference: String(payload?.clientReference || '').trim(),
+      requestComment: String(payload?.requestComment || '').trim(),
+
+      requestedById: String(userId),
+      requestedByName: requester.name || requester.email || 'Agent',
+      requestedByEmail: requester.email || '',
+      teamId: requester.teamId || '',
+      teamName: requester.teamName || '',
+
+      status: 'Pending',
+      deliveredDetails: '',
+      deliveredById: '',
+      deliveredByName: '',
+      deliveredAt: null,
+
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    const requestRef = await addDoc(
+      collection(db, SECURE_INFO_REQUESTS_COL),
+      requestPayload
+    );
+
+    await addDoc(collection(db, SECURE_INFO_AUDIT_COL), {
+      requestId: requestRef.id,
+      action: 'Created',
+      changedBy: String(userId),
+      changedByName: requester.name || requester.email || 'Agent',
+      status: 'Pending',
+      createdAt: serverTimestamp()
+    });
+
+    const allUsers = await this.getUsers();
+
+    const reviewers = (allUsers as any[]).filter((candidate: any) => {
+      const role = String(candidate.role || '');
+
+      if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
+        return true;
+      }
+
+      return (
+        role === 'Team Leader' &&
+        !!requester.teamId &&
+        String(candidate.teamId || '') === String(requester.teamId)
+      );
+    });
+
+    const uniqueReviewers = Array.from(
+      new Map(
+        reviewers.map((reviewer: any) => [String(reviewer.id), reviewer])
+      ).values()
+    );
+
+    await Promise.all(
+      uniqueReviewers.map((reviewer: any) =>
+        addDoc(collection(db, NOTIFICATIONS_COL), {
+          user_id: String(reviewer.id),
+          type: 'secure_info_request',
+          title: 'Secure Info Request',
+          message: `${requester.name || 'Agent'} requested ${requestType}.`,
+          secure_info_request_id: requestRef.id,
+          read: false,
+          createdAt: serverTimestamp()
+        })
+      )
+    );
+
+    return { id: requestRef.id, ...requestPayload };
+  },
+
+  async getSecureInfoRequestsForUser(user: any) {
+    const userId = String(user?.id || '');
+    if (!userId) return [];
+
+    const currentUser = await this.getUser(userId);
+    if (!currentUser) return [];
+
+    const role = String(currentUser.role || '');
+    let snap;
+
+    if (role === 'Agent') {
+      snap = await getDocs(
+        query(
+          collection(db, SECURE_INFO_REQUESTS_COL),
+          where('requestedById', '==', userId),
+          limit(300)
+        )
+      );
+    } else if (role === 'Team Leader') {
+      if (!currentUser.teamId) return [];
+
+      snap = await getDocs(
+        query(
+          collection(db, SECURE_INFO_REQUESTS_COL),
+          where('teamId', '==', String(currentUser.teamId)),
+          limit(300)
+        )
+      );
+    } else if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
+      snap = await getDocs(
+        query(collection(db, SECURE_INFO_REQUESTS_COL), limit(300))
+      );
+    } else {
+      return [];
+    }
+
+    return snap.docs
+      .map(requestDoc => ({
+        id: requestDoc.id,
+        ...requestDoc.data()
+      } as any))
+      .sort((a: any, b: any) => {
+        const aDate = a.createdAt?.toDate
+          ? a.createdAt.toDate()
+          : new Date(a.createdAt || 0);
+        const bDate = b.createdAt?.toDate
+          ? b.createdAt.toDate()
+          : new Date(b.createdAt || 0);
+
+        return bDate.getTime() - aDate.getTime();
+      });
+  },
+
+  async deliverSecureInfoRequest(
+    requestId: string,
+    details: string,
+    userId: string
+  ) {
+    if (!requestId || !userId) {
+      throw new Error('Request and current user are required.');
+    }
+
+    const cleanDetails = String(details || '').trim();
+    if (!cleanDetails) throw new Error('Secure details are required.');
+
+    const reviewer = await this.getUser(String(userId));
+    if (!reviewer) throw new Error('Current CRM user was not found.');
+
+    const role = String(reviewer.role || '');
+
+    if (!['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(role)) {
+      throw new Error('You do not have permission to deliver Secure Info.');
+    }
+
+    const requestRef = doc(db, SECURE_INFO_REQUESTS_COL, String(requestId));
+    const requestSnap = await getDoc(requestRef);
+
+    if (!requestSnap.exists()) throw new Error('Secure Info request was not found.');
+
+    const request = requestSnap.data() as any;
+
+    if (String(request.status || '') !== 'Pending') {
+      throw new Error(`This request is already ${request.status || 'closed'}.`);
+    }
+
+    if (
+      role === 'Team Leader' &&
+      String(request.teamId || '') !== String(reviewer.teamId || '')
+    ) {
+      throw new Error('Team Leaders can deliver details only to Agents in their own team.');
+    }
+
+    await updateDoc(requestRef, {
+      status: 'Delivered',
+      deliveredDetails: cleanDetails,
+      deliveredById: String(userId),
+      deliveredByName: reviewer.name || reviewer.email || role,
+      deliveredAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    await addDoc(collection(db, SECURE_INFO_AUDIT_COL), {
+      requestId: String(requestId),
+      action: 'Delivered',
+      changedBy: String(userId),
+      changedByName: reviewer.name || reviewer.email || role,
+      status: 'Delivered',
+      createdAt: serverTimestamp()
+    });
+
+    if (request.requestedById) {
+      await addDoc(collection(db, NOTIFICATIONS_COL), {
+        user_id: String(request.requestedById),
+        type: 'secure_info_delivered',
+        title: 'Secure Details Delivered',
+        message: `${request.requestType || 'Requested details'} are ready to view and copy.`,
+        secure_info_request_id: String(requestId),
+        read: false,
+        createdAt: serverTimestamp()
+      });
+    }
+  },
+
+  async cancelSecureInfoRequest(requestId: string, userId: string) {
+    if (!requestId || !userId) {
+      throw new Error('Request and current user are required.');
+    }
+
+    const currentUser = await this.getUser(String(userId));
+    if (!currentUser) throw new Error('Current CRM user was not found.');
+
+    const requestRef = doc(db, SECURE_INFO_REQUESTS_COL, String(requestId));
+    const requestSnap = await getDoc(requestRef);
+
+    if (!requestSnap.exists()) throw new Error('Secure Info request was not found.');
+
+    const request = requestSnap.data() as any;
+    const role = String(currentUser.role || '');
+
+    const canCancel =
+      (
+        role === 'Agent' &&
+        String(request.requestedById || '') === String(userId)
+      ) ||
+      ['Administrator', 'Manager', 'Financial Manager'].includes(role) ||
+      (
+        role === 'Team Leader' &&
+        String(request.teamId || '') === String(currentUser.teamId || '')
+      );
+
+    if (!canCancel) throw new Error('You do not have permission to cancel this request.');
+
+    if (String(request.status || '') !== 'Pending') {
+      throw new Error('Only Pending requests can be cancelled.');
+    }
+
+    await updateDoc(requestRef, {
+      status: 'Cancelled',
+      cancelledById: String(userId),
+      cancelledByName: currentUser.name || currentUser.email || role,
+      cancelledAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    await addDoc(collection(db, SECURE_INFO_AUDIT_COL), {
+      requestId: String(requestId),
+      action: 'Cancelled',
+      changedBy: String(userId),
+      changedByName: currentUser.name || currentUser.email || role,
+      status: 'Cancelled',
+      createdAt: serverTimestamp()
+    });
+  },
+
+  async expireSecureInfoRequest(requestId: string, userId: string) {
+    if (!requestId || !userId) {
+      throw new Error('Request and current user are required.');
+    }
+
+    const currentUser = await this.getUser(String(userId));
+    if (!currentUser) throw new Error('Current CRM user was not found.');
+
+    const role = String(currentUser.role || '');
+    if (!['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(role)) {
+      throw new Error('You do not have permission to expire Secure Info.');
+    }
+
+    const requestRef = doc(db, SECURE_INFO_REQUESTS_COL, String(requestId));
+    const requestSnap = await getDoc(requestRef);
+
+    if (!requestSnap.exists()) throw new Error('Secure Info request was not found.');
+
+    const request = requestSnap.data() as any;
+
+    if (
+      role === 'Team Leader' &&
+      String(request.teamId || '') !== String(currentUser.teamId || '')
+    ) {
+      throw new Error('Team Leaders can expire details only for their own team.');
+    }
+
+    if (String(request.status || '') !== 'Delivered') {
+      throw new Error('Only Delivered requests can be expired.');
+    }
+
+    await updateDoc(requestRef, {
+      status: 'Expired',
+      expiredById: String(userId),
+      expiredByName: currentUser.name || currentUser.email || role,
+      expiredAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    await addDoc(collection(db, SECURE_INFO_AUDIT_COL), {
+      requestId: String(requestId),
+      action: 'Expired',
+      changedBy: String(userId),
+      changedByName: currentUser.name || currentUser.email || role,
+      status: 'Expired',
+      createdAt: serverTimestamp()
+    });
+
+    if (request.requestedById) {
+      await addDoc(collection(db, NOTIFICATIONS_COL), {
+        user_id: String(request.requestedById),
+        type: 'secure_info_expired',
+        title: 'Secure Details Expired',
+        message: `${request.requestType || 'Secure details'} are no longer active.`,
+        secure_info_request_id: String(requestId),
+        read: false,
+        createdAt: serverTimestamp()
+      });
+    }
   },
 
   // Role/team-aware lead scope. Existing permissions are preserved.
