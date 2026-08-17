@@ -227,6 +227,112 @@ app.get('/api/security/logs', async (req, res) => {
 });
 
 
+// Atlant Click2Call.
+// API credentials stay server-side; the Agent extension comes from the signed-in CRM user's Firestore profile.
+app.post('/api/atlant/call', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    const userDoc = await db.collection('users').doc(decoded.uid).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ success: false, error: 'CRM user profile was not found.' });
+    }
+
+    const userData = userDoc.data() || {};
+    const agentExtension = String(userData.atlantExtension || '').trim();
+
+    if (!agentExtension) {
+      return res.status(400).json({
+        success: false,
+        error: 'Atlant extension is not configured for your CRM account. Ask an Administrator to configure it in Settings.'
+      });
+    }
+
+    const destination = String(req.body?.number || '').trim();
+    const digitCount = destination.replace(/\D/g, '').length;
+
+    if (!destination || digitCount === 0 || digitCount > 20) {
+      return res.status(400).json({ success: false, error: 'Invalid destination number.' });
+    }
+
+    const apiKey = String(process.env.ATLANT_API_KEY || '').trim();
+    const rawHost = String(process.env.ATLANT_HOST || '').trim();
+
+    if (!apiKey || !rawHost) {
+      console.error('Atlant Click2Call environment variables are missing.');
+      return res.status(503).json({
+        success: false,
+        error: 'Atlant Click2Call is not configured on the server.'
+      });
+    }
+
+    const host = rawHost.replace(/^https?:\/\//i, '').replace(/\/+$/g, '');
+
+    if (!/^[a-z0-9.-]+(?::\d+)?$/i.test(host)) {
+      return res.status(503).json({
+        success: false,
+        error: 'Atlant host configuration is invalid.'
+      });
+    }
+
+    const endpoint = `https://${host}/api/v1/${encodeURIComponent(apiKey)}/click2call`;
+
+    const atlantResponse = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        number: destination,
+        agent: agentExtension,
+        get_call_id: 'true'
+      })
+    });
+
+    const rawBody = await atlantResponse.text();
+    let providerBody: any = {};
+
+    if (rawBody) {
+      try {
+        providerBody = JSON.parse(rawBody);
+      } catch {
+        providerBody = { message: rawBody };
+      }
+    }
+
+    if (!atlantResponse.ok) {
+      const providerMessage = String(
+        providerBody?.error ||
+        providerBody?.message ||
+        `Atlant returned HTTP ${atlantResponse.status}.`
+      );
+
+      console.error(`Atlant Click2Call failed for user ${decoded.uid}:`, providerMessage);
+
+      return res.status(
+        atlantResponse.status === 403 || atlantResponse.status >= 500 ? 502 : 400
+      ).json({
+        success: false,
+        error: providerMessage
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      callId: providerBody?.call_id || null,
+      agent: agentExtension
+    });
+  } catch (error: any) {
+    console.error('Atlant Click2Call server error:', error);
+
+    const unauthorized = /token|auth|firebase id token/i.test(String(error?.message || ''));
+
+    return res.status(unauthorized ? 401 : 500).json({
+      success: false,
+      error: unauthorized ? 'Unauthorized' : 'Unable to initiate Atlant call.'
+    });
+  }
+});
+
+
 // Helper for chunked deletion
 async function deleteInChunks(docRefs: admin.firestore.DocumentReference[]) {
   const CHUNK_SIZE = 200;
