@@ -48,7 +48,6 @@ function Sidebar({
   const notificationsRef = useRef<any[]>([]);
   const [notificationToast, setNotificationToast] = useState<any>(null);
   const notificationToastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const initialNotificationSnapshotRef = useRef(true);
   
   const currentUserId = sessionUser?.id || null;
   const currentUserRole = sessionUser?.role || 'Agent';
@@ -68,87 +67,27 @@ function Sidebar({
   };
 
   useEffect(() => {
-    fetchNotifications();
-    const interval = setInterval(fetchNotifications, 30000);
-    return () => clearInterval(interval);
-  }, [currentUserId]);
-
-  useEffect(() => {
     notificationsRef.current = notifications;
   }, [notifications]);
 
   useEffect(() => {
     if (!currentUserId || currentUserId === '1') return;
 
-    initialNotificationSnapshotRef.current = true;
-
-    const notificationsQuery = query(
-      collection(db, 'notifications'),
-      where('user_id', '==', currentUserId)
-    );
-
-    const unsubscribe = onSnapshot(
-      notificationsQuery,
-      snapshot => {
-        const unread = snapshot.docs
-          .map(notificationDoc => ({
-            id: notificationDoc.id,
-            ...notificationDoc.data()
-          } as any))
-          .filter(notification => notification.read !== true)
-          .sort((a, b) => {
-            const aDate = a.createdAt?.toDate
-              ? a.createdAt.toDate()
-              : new Date(a.createdAt || 0);
-            const bDate = b.createdAt?.toDate
-              ? b.createdAt.toDate()
-              : new Date(b.createdAt || 0);
-            return bDate.getTime() - aDate.getTime();
-          });
-
+    const unsubscribe = firestoreService.subscribeNotifications(
+      currentUserId,
+      unread => {
         setNotifications(unread);
+      },
+      newest => {
+        setNotificationToast(newest);
 
-        if (initialNotificationSnapshotRef.current) {
-          initialNotificationSnapshotRef.current = false;
-          return;
+        if (notificationToastTimeoutRef.current) {
+          clearTimeout(notificationToastTimeoutRef.current);
         }
 
-        const newUnread = snapshot
-          .docChanges()
-          .filter(change => {
-            const data = change.doc.data() as any;
-
-            return (
-              (change.type === 'added' || change.type === 'modified') &&
-              data.read !== true
-            );
-          })
-          .map(change => ({
-            id: change.doc.id,
-            ...change.doc.data()
-          } as any))
-          .sort((a, b) => {
-            const aDate = a.createdAt?.toDate
-              ? a.createdAt.toDate()
-              : new Date(a.createdAt || 0);
-            const bDate = b.createdAt?.toDate
-              ? b.createdAt.toDate()
-              : new Date(b.createdAt || 0);
-            return bDate.getTime() - aDate.getTime();
-          });
-
-        if (newUnread.length > 0) {
-          const newest = newUnread[0];
-          setNotificationToast(newest);
-
-          if (notificationToastTimeoutRef.current) {
-            clearTimeout(notificationToastTimeoutRef.current);
-          }
-
-          notificationToastTimeoutRef.current = setTimeout(() => {
-            setNotificationToast(null);
-          }, 10000);
-        }
+        notificationToastTimeoutRef.current = setTimeout(() => {
+          setNotificationToast(null);
+        }, 10000);
       },
       error => {
         console.error('Real-time notification listener failed:', error);
