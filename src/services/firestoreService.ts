@@ -3111,6 +3111,70 @@ export const firestoreService = {
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   },
 
+  // Atlant Click2Call
+  async setAtlantExtension(userId: string, extension: string, adminUserId: string) {
+    if (!userId || !adminUserId) throw new Error('User and Administrator are required.');
+
+    const adminUser = await this.getUser(String(adminUserId));
+    const adminEmail = normalizeEmail(adminUser?.email || '');
+
+    if (!adminUser || (adminUser.role !== 'Administrator' && !isAdminEmail(adminEmail))) {
+      throw new Error('Only Administrators can configure Atlant extensions.');
+    }
+
+    const cleanExtension = String(extension || '').trim();
+
+    if (cleanExtension && !/^[A-Za-z0-9@._+\-]+$/.test(cleanExtension)) {
+      throw new Error('Atlant extension contains unsupported characters.');
+    }
+
+    await updateDoc(doc(db, USERS_COL, String(userId)), {
+      atlantExtension: cleanExtension,
+      atlantUpdatedAt: serverTimestamp(),
+      atlantUpdatedBy: String(adminUserId)
+    });
+
+    return cleanExtension;
+  },
+
+  async initiateAtlantCall(number: string) {
+    const destination = String(number || '').trim();
+    if (!destination) throw new Error('Phone number is required.');
+
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) {
+      throw new Error('Your session has expired. Please sign in again.');
+    }
+
+    const token = await currentAuthUser.getIdToken();
+
+    const response = await fetch('/api/atlant/call', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ number: destination })
+    });
+
+    let data: any = {};
+    try {
+      data = await response.json();
+    } catch {
+      data = {};
+    }
+
+    if (!response.ok || data?.success === false) {
+      throw new Error(
+        data?.error ||
+        data?.message ||
+        `Unable to initiate call (${response.status}).`
+      );
+    }
+
+    return data;
+  },
+
   async resetSystem(userId: string) {
     try {
       const response = await fetch('/api/admin/reset-all', {
