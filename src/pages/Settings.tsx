@@ -10,7 +10,8 @@ import {
   PowerOff,
   ReceiptText,
   Users,
-  Save
+  Save,
+  PhoneCall
 } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
 
@@ -43,6 +44,12 @@ export default function Settings() {
   const [payrollDrafts, setPayrollDrafts] = useState<Record<string, { fixedSalary: string; bonusPercent: string }>>({});
   const [financeConfigBusy, setFinanceConfigBusy] = useState(false);
   const [financeConfigError, setFinanceConfigError] = useState('');
+  const [atlantUsers, setAtlantUsers] = useState<any[]>([]);
+  const [atlantDrafts, setAtlantDrafts] = useState<Record<string, string>>({});
+  const [atlantBusyId, setAtlantBusyId] = useState('');
+  const [atlantError, setAtlantError] = useState('');
+  const [atlantSuccess, setAtlantSuccess] = useState('');
+
 
   const loadSolutions = async () => {
     if (userRole !== 'Administrator') return;
@@ -91,9 +98,35 @@ export default function Settings() {
     }
   };
 
+  const loadAtlantConfig = async () => {
+    if (userRole !== 'Administrator') return;
+
+    try {
+      setAtlantError('');
+      const users = await firestoreService.getUsers();
+
+      const agents = (users as any[])
+        .filter((user: any) => String(user.role || '') === 'Agent')
+        .sort((a: any, b: any) =>
+          String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''))
+        );
+
+      setAtlantUsers(agents);
+
+      const drafts: Record<string, string> = {};
+      agents.forEach((agent: any) => {
+        drafts[String(agent.id)] = String(agent.atlantExtension || '');
+      });
+      setAtlantDrafts(drafts);
+    } catch (err: any) {
+      setAtlantError(err?.message || 'Failed to load Atlant Agent configuration.');
+    }
+  };
+
   useEffect(() => {
     loadSolutions();
     loadSimpleFinanceConfig();
+    loadAtlantConfig();
   }, [userRole]);
 
   const handleAddSolution = async () => {
@@ -184,6 +217,33 @@ export default function Settings() {
       setFinanceConfigError(err?.message || 'Failed to save payroll configuration.');
     } finally {
       setFinanceConfigBusy(false);
+    }
+  };
+
+  const saveAtlantExtension = async (agent: any) => {
+    const agentId = String(agent?.id || '');
+    if (!agentId || !currentUserId) return;
+
+    try {
+      setAtlantBusyId(agentId);
+      setAtlantError('');
+      setAtlantSuccess('');
+
+      const extension = String(atlantDrafts[agentId] || '').trim();
+
+      await firestoreService.setAtlantExtension(agentId, extension, currentUserId);
+
+      setAtlantSuccess(
+        extension
+          ? `Atlant extension ${extension} saved for ${agent.name || agent.email}.`
+          : `Atlant extension cleared for ${agent.name || agent.email}.`
+      );
+
+      await loadAtlantConfig();
+    } catch (err: any) {
+      setAtlantError(err?.message || 'Failed to save Atlant extension.');
+    } finally {
+      setAtlantBusyId('');
     }
   };
 
@@ -471,6 +531,91 @@ export default function Settings() {
                   <tr>
                     <td colSpan={5} className="py-8 text-center text-sm text-slate-600">
                       No employees found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-1">
+            <PhoneCall className="w-5 h-5 text-blue-400" />
+            <h2 className="text-xl font-semibold text-white">Atlant Click2Call</h2>
+          </div>
+          <p className="text-sm text-slate-400 mb-5">
+            Map each CRM Agent to their Atlant extension. The Atlant API key stays on the server.
+          </p>
+
+          {atlantError && (
+            <div className="mb-4 rounded-lg bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-300">
+              {atlantError}
+            </div>
+          )}
+
+          {atlantSuccess && (
+            <div className="mb-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-sm text-emerald-300">
+              {atlantSuccess}
+            </div>
+          )}
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
+                  <th className="py-3">Agent</th>
+                  <th>Team</th>
+                  <th>Email</th>
+                  <th>Atlant Extension</th>
+                  <th className="text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {atlantUsers.map((agent: any) => {
+                  const agentId = String(agent.id);
+                  return (
+                    <tr key={agentId}>
+                      <td className="py-3 text-sm font-semibold text-white">
+                        {agent.name || agent.email || 'Agent'}
+                      </td>
+                      <td className="text-xs text-slate-400">{agent.teamName || 'No Team'}</td>
+                      <td className="text-xs text-slate-400">{agent.email || '—'}</td>
+                      <td>
+                        <input
+                          value={atlantDrafts[agentId] ?? ''}
+                          onChange={e =>
+                            setAtlantDrafts(prev => ({
+                              ...prev,
+                              [agentId]: e.target.value
+                            }))
+                          }
+                          placeholder="Example: 1005"
+                          className="w-40 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                        />
+                      </td>
+                      <td className="text-right">
+                        <button
+                          onClick={() => saveAtlantExtension(agent)}
+                          disabled={atlantBusyId === agentId}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold"
+                        >
+                          {atlantBusyId === agentId ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Save className="w-3.5 h-3.5" />
+                          )}
+                          Save
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {atlantUsers.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-sm text-slate-600">
+                      No Agent users found.
                     </td>
                   </tr>
                 )}
