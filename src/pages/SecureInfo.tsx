@@ -12,7 +12,9 @@ import {
   ChevronDown,
   ChevronUp,
   Ban,
-  AlertTriangle
+  AlertTriangle,
+  UserPlus,
+  Users
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
@@ -36,7 +38,8 @@ export default function SecureInfo() {
   const currentUser = {
     id: localStorage.getItem('userId') || '',
     role: localStorage.getItem('userRole') || 'Agent',
-    name: localStorage.getItem('userName') || 'User'
+    name: localStorage.getItem('userName') || 'User',
+    teamId: localStorage.getItem('userTeamId') || ''
   };
 
   const isAgent = currentUser.role === 'Agent';
@@ -63,6 +66,17 @@ export default function SecureInfo() {
     requestComment: ''
   });
 
+  const [recipients, setRecipients] = useState<any[]>([]);
+  const [showDirectForm, setShowDirectForm] = useState(false);
+  const [recipientMode, setRecipientMode] = useState<'one' | 'multiple' | 'all'>('one');
+  const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
+  const [directForm, setDirectForm] = useState({
+    requestType: 'Wallet Address',
+    clientReference: '',
+    comment: '',
+    details: ''
+  });
+
   const loadData = async () => {
     if (!currentUser.id) return;
 
@@ -84,8 +98,36 @@ export default function SecureInfo() {
   };
 
   useEffect(() => {
-    loadData();
-  }, [currentUser.id, currentUser.role]);
+    if (!currentUser.id) return;
+
+    setLoading(true);
+
+    const unsubscribe = firestoreService.subscribeSecureInfoRequestsForUser(
+      currentUser,
+      data => {
+        setRecords(data as any[]);
+        setLoading(false);
+      },
+      err => {
+        console.error('Secure Info realtime listener failed:', err);
+        setError(err?.message || 'Failed to listen for Secure Info updates.');
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [currentUser.id, currentUser.role, currentUser.teamId]);
+
+  useEffect(() => {
+    if (!canDeliver || !currentUser.id) return;
+
+    firestoreService
+      .getSecureInfoRecipientsForUser(currentUser)
+      .then(data => setRecipients(data as any[]))
+      .catch(err => {
+        console.error('Failed to load Secure Info recipients:', err);
+      });
+  }, [currentUser.id, currentUser.role, currentUser.teamId]);
 
   const counts = useMemo(() => {
     return records.reduce(
@@ -123,6 +165,56 @@ export default function SecureInfo() {
       await loadData();
     } catch (err: any) {
       setError(err?.message || 'Failed to submit request.');
+    }
+  };
+
+  const submitDirectDelivery = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    let recipientIds = selectedRecipientIds;
+
+    if (recipientMode === 'all') {
+      recipientIds = recipients.map(recipient => String(recipient.id));
+    }
+
+    if (recipientMode === 'one') {
+      recipientIds = selectedRecipientIds.slice(0, 1);
+    }
+
+    if (recipientIds.length === 0) {
+      setError('Select at least one Agent.');
+      return;
+    }
+
+    try {
+      setError('');
+      setSuccess('');
+
+      await firestoreService.createDirectSecureInfoDelivery(
+        {
+          ...directForm,
+          recipientAgentIds: recipientIds
+        },
+        currentUser.id
+      );
+
+      setDirectForm({
+        requestType: 'Wallet Address',
+        clientReference: '',
+        comment: '',
+        details: ''
+      });
+      setSelectedRecipientIds([]);
+      setRecipientMode('one');
+      setShowDirectForm(false);
+
+      setSuccess(
+        recipientIds.length === 1
+          ? 'Secure Info sent to 1 Agent.'
+          : `Secure Info sent to ${recipientIds.length} Agents.`
+      );
+    } catch (err: any) {
+      setError(err?.message || 'Failed to send Secure Info.');
     }
   };
 
@@ -279,6 +371,19 @@ export default function SecureInfo() {
               New Request
             </button>
           )}
+          {canDeliver && (
+            <button
+              onClick={() => {
+                setShowDirectForm(!showDirectForm);
+                setError('');
+                setSuccess('');
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold"
+            >
+              <UserPlus className="w-4 h-4" />
+              Send Secure Info
+            </button>
+          )}
         </div>
       </div>
 
@@ -319,6 +424,214 @@ export default function SecureInfo() {
         <div className="rounded-xl bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-300">
           {error}
         </div>
+      )}
+
+      {canDeliver && showDirectForm && (
+        <form
+          onSubmit={submitDirectDelivery}
+          className="bg-[#0A0F1C] border border-emerald-500/10 rounded-2xl p-6"
+        >
+          <div className="flex items-center gap-2 mb-5">
+            <ShieldCheck className="w-5 h-5 text-emerald-400" />
+            <div>
+              <h2 className="text-lg font-semibold text-white">
+                Send Secure Info
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Send details directly without waiting for an Agent request.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+                Info Type
+              </label>
+              <select
+                value={directForm.requestType}
+                onChange={e =>
+                  setDirectForm(prev => ({
+                    ...prev,
+                    requestType: e.target.value
+                  }))
+                }
+                className="w-full mt-2 bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"
+              >
+                {REQUEST_TYPES.map(type => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+                Client / Reference
+              </label>
+              <input
+                value={directForm.clientReference}
+                onChange={e =>
+                  setDirectForm(prev => ({
+                    ...prev,
+                    clientReference: e.target.value
+                  }))
+                }
+                placeholder="Optional"
+                className="w-full mt-2 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+                Recipients
+              </label>
+
+              <div className="grid grid-cols-3 gap-2 mt-2">
+                {[
+                  ['one', 'One Agent'],
+                  ['multiple', 'Multiple Agents'],
+                  ['all', 'All Agents']
+                ].map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      setRecipientMode(mode as 'one' | 'multiple' | 'all');
+                      if (mode === 'one') {
+                        setSelectedRecipientIds(prev => prev.slice(0, 1));
+                      }
+                    }}
+                    className={`rounded-lg px-3 py-2.5 text-xs font-semibold border ${
+                      recipientMode === mode
+                        ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                        : 'bg-white/[0.02] text-slate-400 border-white/5 hover:text-white'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {recipientMode !== 'all' ? (
+                <div className="mt-3 max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/5 bg-white/[0.02] p-2">
+                  {recipients.map(recipient => {
+                    const recipientId = String(recipient.id);
+                    const selected = selectedRecipientIds.includes(recipientId);
+
+                    return (
+                      <label
+                        key={recipientId}
+                        className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.03] cursor-pointer"
+                      >
+                        <div className="flex items-center gap-3">
+                          <input
+                            type={recipientMode === 'one' ? 'radio' : 'checkbox'}
+                            name={recipientMode === 'one' ? 'secure-recipient' : undefined}
+                            checked={selected}
+                            onChange={() => {
+                              if (recipientMode === 'one') {
+                                setSelectedRecipientIds([recipientId]);
+                              } else {
+                                setSelectedRecipientIds(prev =>
+                                  selected
+                                    ? prev.filter(id => id !== recipientId)
+                                    : [...prev, recipientId]
+                                );
+                              }
+                            }}
+                            className="accent-emerald-500"
+                          />
+
+                          <div>
+                            <p className="text-sm font-medium text-white">
+                              {recipient.name || recipient.email}
+                            </p>
+                            <p className="text-[10px] text-slate-500">
+                              {recipient.teamName || 'No Team'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <span className="text-[10px] uppercase text-slate-600">
+                          Agent
+                        </span>
+                      </label>
+                    );
+                  })}
+
+                  {recipients.length === 0 && (
+                    <p className="text-sm text-slate-600 p-4 text-center">
+                      No Agents available.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-3 rounded-xl bg-emerald-500/5 border border-emerald-500/10 px-4 py-3 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-emerald-400" />
+                  <p className="text-xs text-emerald-300">
+                    This will deliver the information to all {recipients.length} Agent(s) available to you.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+                Secure Details
+              </label>
+              <textarea
+                required
+                value={directForm.details}
+                onChange={e =>
+                  setDirectForm(prev => ({
+                    ...prev,
+                    details: e.target.value
+                  }))
+                }
+                rows={6}
+                placeholder="Enter wallet, bank, IBAN/SWIFT or other details..."
+                className="w-full mt-2 bg-white/5 border border-white/10 rounded-xl px-3 py-3 text-sm text-white"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+                Comment
+              </label>
+              <input
+                value={directForm.comment}
+                onChange={e =>
+                  setDirectForm(prev => ({
+                    ...prev,
+                    comment: e.target.value
+                  }))
+                }
+                placeholder="Optional internal comment"
+                className="w-full mt-2 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3 mt-5">
+            <button
+              type="button"
+              onClick={() => setShowDirectForm(false)}
+              className="px-4 py-2.5 rounded-lg text-sm text-slate-400 hover:bg-white/5"
+            >
+              Cancel
+            </button>
+
+            <button
+              type="submit"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold"
+            >
+              <Send className="w-4 h-4" />
+              Deliver Secure Info
+            </button>
+          </div>
+        </form>
       )}
 
       {isAgent && showRequestForm && (
@@ -439,8 +752,12 @@ export default function SecureInfo() {
                       value={record.requestType || '—'}
                     />
                     <Field
-                      label="Agent"
-                      value={record.requestedByName || '—'}
+                      label={record.requestOrigin === 'Management Delivery' ? 'Recipients' : 'Agent'}
+                      value={
+                        record.requestOrigin === 'Management Delivery'
+                          ? (record.recipientAgentNames || []).join(', ') || '—'
+                          : record.requestedByName || '—'
+                      }
                     />
                     <Field
                       label="Team"
@@ -498,8 +815,12 @@ export default function SecureInfo() {
                   <div className="border-t border-white/5 p-5 bg-white/[0.01] space-y-5">
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                       <Detail
-                        label="Requested by"
-                        value={record.requestedByName}
+                        label={record.requestOrigin === 'Management Delivery' ? 'Sent by' : 'Requested by'}
+                        value={
+                          record.requestOrigin === 'Management Delivery'
+                            ? record.deliveredByName
+                            : record.requestedByName
+                        }
                       />
                       <Detail
                         label="Created"
