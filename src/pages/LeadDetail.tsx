@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2, Calendar, DollarSign, Eye, Handshake, TrendingUp, Save } from 'lucide-react';
+import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2, Calendar, DollarSign, Eye, Handshake, TrendingUp, Save, PhoneCall, Copy } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { firestoreService } from '../services/firestoreService';
@@ -48,6 +48,10 @@ export default function LeadDetail() {
   });
   const [isSavingAmounts, setIsSavingAmounts] = useState(false);
   const [amountMessage, setAmountMessage] = useState('');
+  const [isCalling, setIsCalling] = useState(false);
+  const [phoneCopied, setPhoneCopied] = useState(false);
+  const [callMessage, setCallMessage] = useState('');
+
   
   const currentUserId = localStorage.getItem('userId');
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
@@ -154,6 +158,35 @@ export default function LeadDetail() {
   }
 
   if (!lead) return <div className="p-8 text-slate-400">Loading lead details...</div>;
+
+  const handleCopyPhone = async () => {
+    if (!lead?.phone) return;
+
+    try {
+      await navigator.clipboard.writeText(String(lead.phone));
+      setPhoneCopied(true);
+      setTimeout(() => setPhoneCopied(false), 1800);
+    } catch {
+      setCallMessage('Could not copy the phone number.');
+    }
+  };
+
+  const handleAtlantCall = async () => {
+    if (!lead?.phone || isCalling) return;
+
+    setIsCalling(true);
+    setCallMessage('');
+
+    try {
+      await firestoreService.initiateAtlantCall(lead.phone);
+      setCallMessage('Call initiated successfully.');
+    } catch (err: any) {
+      console.error('Atlant Click2Call failed:', err);
+      setCallMessage(`Call failed: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setTimeout(() => setIsCalling(false), 2200);
+    }
+  };
 
   const handleSave = async () => {
     if (!id) return;
@@ -453,7 +486,47 @@ export default function LeadDetail() {
                       className="w-full bg-white/5 border border-white/10 rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     />
                   ) : (
-                    <p className="text-sm text-slate-200">{lead.phone || '—'}</p>
+                    <div className="flex items-center gap-2">
+                      {lead.phone ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleCopyPhone}
+                            className="group flex items-center gap-1.5 text-sm text-slate-200 hover:text-blue-400 transition-colors"
+                            title="Copy phone number"
+                          >
+                            <span>{lead.phone}</span>
+                            {phoneCopied ? (
+                              <span className="text-[10px] text-emerald-400">Copied!</span>
+                            ) : (
+                              <Copy className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleAtlantCall}
+                            disabled={isCalling}
+                            className="p-1.5 rounded-lg text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            title={isCalling ? 'Calling...' : 'Call with Atlant'}
+                          >
+                            <PhoneCall className={`w-4 h-4 ${isCalling ? 'animate-pulse' : ''}`} />
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-sm text-slate-500">—</span>
+                      )}
+                    </div>
+                  )}
+
+                  {callMessage && (
+                    <p className={`text-[10px] mt-1 ${
+                      callMessage.toLowerCase().startsWith('call failed')
+                        ? 'text-rose-400'
+                        : 'text-emerald-400'
+                    }`}>
+                      {callMessage}
+                    </p>
                   )}
                 </div>
               </div>
