@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -19,6 +19,7 @@ import SettingsPage from './pages/Settings';
 import WorkLogs from './pages/WorkLogs';
 import SecurityLogs from './pages/SecurityLogs';
 import Finance from './pages/Finance';
+import SecureInfo from './pages/SecureInfo';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
 import { auth, db, authPersistenceReady } from './firebase';
@@ -45,6 +46,9 @@ function Sidebar({
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const notificationsRef = useRef<any[]>([]);
+  const [notificationToast, setNotificationToast] = useState<any>(null);
+  const notificationToastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialNotificationSnapshotRef = useRef(true);
   
   const currentUserId = sessionUser?.id || null;
   const currentUserRole = sessionUser?.role || 'Agent';
@@ -72,6 +76,93 @@ function Sidebar({
   useEffect(() => {
     notificationsRef.current = notifications;
   }, [notifications]);
+
+  useEffect(() => {
+    if (!currentUserId || currentUserId === '1') return;
+
+    initialNotificationSnapshotRef.current = true;
+
+    const notificationsQuery = query(
+      collection(db, 'notifications'),
+      where('user_id', '==', currentUserId)
+    );
+
+    const unsubscribe = onSnapshot(
+      notificationsQuery,
+      snapshot => {
+        const unread = snapshot.docs
+          .map(notificationDoc => ({
+            id: notificationDoc.id,
+            ...notificationDoc.data()
+          } as any))
+          .filter(notification => notification.read !== true)
+          .sort((a, b) => {
+            const aDate = a.createdAt?.toDate
+              ? a.createdAt.toDate()
+              : new Date(a.createdAt || 0);
+            const bDate = b.createdAt?.toDate
+              ? b.createdAt.toDate()
+              : new Date(b.createdAt || 0);
+            return bDate.getTime() - aDate.getTime();
+          });
+
+        setNotifications(unread);
+
+        if (initialNotificationSnapshotRef.current) {
+          initialNotificationSnapshotRef.current = false;
+          return;
+        }
+
+        const newUnread = snapshot
+          .docChanges()
+          .filter(change => {
+            const data = change.doc.data() as any;
+
+            return (
+              (change.type === 'added' || change.type === 'modified') &&
+              data.read !== true
+            );
+          })
+          .map(change => ({
+            id: change.doc.id,
+            ...change.doc.data()
+          } as any))
+          .sort((a, b) => {
+            const aDate = a.createdAt?.toDate
+              ? a.createdAt.toDate()
+              : new Date(a.createdAt || 0);
+            const bDate = b.createdAt?.toDate
+              ? b.createdAt.toDate()
+              : new Date(b.createdAt || 0);
+            return bDate.getTime() - aDate.getTime();
+          });
+
+        if (newUnread.length > 0) {
+          const newest = newUnread[0];
+          setNotificationToast(newest);
+
+          if (notificationToastTimeoutRef.current) {
+            clearTimeout(notificationToastTimeoutRef.current);
+          }
+
+          notificationToastTimeoutRef.current = setTimeout(() => {
+            setNotificationToast(null);
+          }, 10000);
+        }
+      },
+      error => {
+        console.error('Real-time notification listener failed:', error);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+
+      if (notificationToastTimeoutRef.current) {
+        clearTimeout(notificationToastTimeoutRef.current);
+      }
+    };
+  }, [currentUserId]);
 
   useEffect(() => {
     const checkCallbacks = async () => {
@@ -120,12 +211,33 @@ function Sidebar({
     fetchNotifications();
   };
 
+  const handleMarkAllRead = async () => {
+    if (!currentUserId || notifications.length === 0) return;
+
+    try {
+      await firestoreService.markAllNotificationsRead(currentUserId);
+      setNotificationToast(null);
+      fetchNotifications();
+    } catch (err) {
+      console.error('Failed to mark all notifications as read:', err);
+    }
+  };
+
+  const closeNotificationToast = () => {
+    setNotificationToast(null);
+
+    if (notificationToastTimeoutRef.current) {
+      clearTimeout(notificationToastTimeoutRef.current);
+    }
+  };
+
   const navItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent', 'Financial Manager'] },
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'JOR', path: '/jor', icon: CheckCircle2, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Finance', path: '/finance', icon: DollarSign, roles: ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'] },
+    { name: 'Secure Info', path: '/secure-info', icon: LockKeyhole, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent', 'Financial Manager'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator', 'Team Leader'] },
     { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Dispatcher', path: '/dispatcher', icon: Inbox, roles: ['Administrator', 'Manager'] },
@@ -204,9 +316,22 @@ function Sidebar({
 
             {showNotifications && (
               <div className="absolute left-0 mt-2 w-80 bg-[#0F172A] border border-white/10 rounded-xl shadow-2xl z-[100] overflow-hidden animate-in fade-in zoom-in duration-200">
-                <div className="p-4 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-white">Notifications</h3>
-                  <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">{notifications.length} Unread</span>
+                <div className="p-4 border-b border-white/5 bg-white/[0.02] flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Notifications</h3>
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">
+                      {notifications.length} Unread
+                    </span>
+                  </div>
+
+                  {notifications.length > 0 && (
+                    <button
+                      onClick={handleMarkAllRead}
+                      className="text-[10px] text-blue-400 hover:text-blue-300 font-semibold transition-colors whitespace-nowrap"
+                    >
+                      Mark all as read
+                    </button>
+                  )}
                 </div>
                 <div className="max-h-96 overflow-y-auto custom-scrollbar">
                   {notifications.length > 0 ? (
@@ -232,6 +357,15 @@ function Sidebar({
                               View Lead
                             </Link>
                           )}
+                          {n.secure_info_request_id && (
+                            <Link
+                              to="/secure-info"
+                              onClick={() => setShowNotifications(false)}
+                              className="text-[10px] text-blue-500 hover:underline font-medium"
+                            >
+                              View Secure Info
+                            </Link>
+                          )}
                           <span className="text-[10px] text-slate-500">
                             {n.createdAt?.toDate ? format(n.createdAt.toDate(), 'h:mm a') : 'Just now'}
                           </span>
@@ -250,6 +384,60 @@ function Sidebar({
           </div>
         </div>
       </div>
+
+      {notificationToast && (
+        <div className="fixed left-6 bottom-6 z-[220] w-[min(390px,calc(100vw-3rem))] bg-[#0F172A] border border-blue-500/25 rounded-2xl shadow-2xl shadow-black/40 overflow-hidden animate-in slide-in-from-left-4 fade-in duration-300">
+          <div className="p-4 flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
+              <Bell className="w-5 h-5 text-blue-400" />
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-blue-400">
+                {notificationToast.title || 'Notification'}
+              </p>
+              <p className="text-sm text-slate-200 mt-1 leading-relaxed">
+                {notificationToast.message || ''}
+              </p>
+
+              <div className="flex items-center gap-3 mt-3">
+                {notificationToast.lead_id && (
+                  <Link
+                    to={`/leads/${notificationToast.lead_id}`}
+                    onClick={closeNotificationToast}
+                    className="text-xs font-semibold text-blue-400 hover:text-blue-300"
+                  >
+                    View Lead
+                  </Link>
+                )}
+
+                {notificationToast.secure_info_request_id && (
+                  <Link
+                    to="/secure-info"
+                    onClick={closeNotificationToast}
+                    className="text-xs font-semibold text-blue-400 hover:text-blue-300"
+                  >
+                    Open Secure Info
+                  </Link>
+                )}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={closeNotificationToast}
+              className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/5 transition-colors shrink-0"
+              title="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="h-0.5 bg-blue-500/20">
+            <div className="h-full bg-blue-500" />
+          </div>
+        </div>
+      )}
 
       {(dbStatus?.db === 'memory' || dbStatus?.isServerless) && (
         <div className={cn(
@@ -657,6 +845,14 @@ export default function App() {
                         element={
                           ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(currentUserRole)
                             ? <Finance />
+                            : <Navigate to="/" replace />
+                        }
+                      />
+                      <Route
+                        path="/secure-info"
+                        element={
+                          ['Administrator', 'Manager', 'Team Leader', 'Agent', 'Financial Manager'].includes(currentUserRole)
+                            ? <SecureInfo />
                             : <Navigate to="/" replace />
                         }
                       />
