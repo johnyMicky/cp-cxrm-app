@@ -14,7 +14,8 @@ import {
   Timestamp,
   setDoc,
   writeBatch,
-  runTransaction
+  runTransaction,
+  onSnapshot
 } from "firebase/firestore";
 import { 
   signInWithEmailAndPassword,
@@ -3489,6 +3490,9 @@ export const firestoreService = {
       requestedById: String(userId),
       requestedByName: requester.name || requester.email || 'Agent',
       requestedByEmail: requester.email || '',
+      recipientAgentIds: [String(userId)],
+      recipientAgentNames: [requester.name || requester.email || 'Agent'],
+      requestOrigin: 'Agent Request',
       teamId: requester.teamId || '',
       teamName: requester.teamName || '',
 
@@ -3555,6 +3559,171 @@ export const firestoreService = {
     return { id: requestRef.id, ...requestPayload };
   },
 
+  async getSecureInfoRecipientsForUser(user: any) {
+    const userId = String(user?.id || '');
+    if (!userId) return [];
+
+    const currentUser = await this.getUser(userId);
+    if (!currentUser) return [];
+
+    const role = String(currentUser.role || '');
+    if (!['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(role)) {
+      return [];
+    }
+
+    const allUsers = await this.getUsers();
+
+    return (allUsers as any[])
+      .filter((candidate: any) => {
+        if (String(candidate.role || '') !== 'Agent') return false;
+
+        if (role === 'Team Leader') {
+          return (
+            !!currentUser.teamId &&
+            String(candidate.teamId || '') === String(currentUser.teamId)
+          );
+        }
+
+        return true;
+      })
+      .sort((a: any, b: any) =>
+        String(a.name || a.email || '').localeCompare(
+          String(b.name || b.email || '')
+        )
+      );
+  },
+
+  async createDirectSecureInfoDelivery(payload: any, userId: string) {
+    if (!userId) throw new Error('Current user is required.');
+
+    const sender = await this.getUser(String(userId));
+    if (!sender) throw new Error('Current CRM user was not found.');
+
+    const role = String(sender.role || '');
+    if (!['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(role)) {
+      throw new Error('You do not have permission to send Secure Info.');
+    }
+
+    const requestType = String(payload?.requestType || '').trim();
+    const details = String(payload?.details || '').trim();
+    const requestedRecipientIds = Array.isArray(payload?.recipientAgentIds)
+      ? Array.from(
+          new Set(
+            payload.recipientAgentIds
+              .map((id: any) => String(id || '').trim())
+              .filter(Boolean)
+          )
+        )
+      : [];
+
+    if (!requestType) throw new Error('Info type is required.');
+    if (!details) throw new Error('Secure details are required.');
+    if (requestedRecipientIds.length === 0) {
+      throw new Error('Select at least one Agent.');
+    }
+
+    const allowedAgents = await this.getSecureInfoRecipientsForUser({
+      id: String(userId)
+    });
+
+    const allowedMap = new Map(
+      (allowedAgents as any[]).map((agent: any) => [String(agent.id), agent])
+    );
+
+    const invalidRecipient = requestedRecipientIds.find(
+      recipientId => !allowedMap.has(recipientId)
+    );
+
+    if (invalidRecipient) {
+      throw new Error(
+        role === 'Team Leader'
+          ? 'Team Leaders can send Secure Info only to Agents in their own team.'
+          : 'One or more selected Agents are not valid recipients.'
+      );
+    }
+
+    const recipientAgents = requestedRecipientIds.map(
+      recipientId => allowedMap.get(recipientId)
+    );
+
+    const teamIds = Array.from(
+      new Set(
+        recipientAgents
+          .map((agent: any) => String(agent?.teamId || ''))
+          .filter(Boolean)
+      )
+    );
+
+    const teamNames = Array.from(
+      new Set(
+        recipientAgents
+          .map((agent: any) => String(agent?.teamName || ''))
+          .filter(Boolean)
+      )
+    );
+
+    const requestPayload = sanitizeData({
+      requestType,
+      clientReference: String(payload?.clientReference || '').trim(),
+      requestComment: String(payload?.comment || '').trim(),
+
+      requestOrigin: 'Management Delivery',
+      requestedById: '',
+      requestedByName: '',
+      requestedByEmail: '',
+
+      recipientAgentIds: requestedRecipientIds,
+      recipientAgentNames: recipientAgents.map(
+        (agent: any) => agent?.name || agent?.email || 'Agent'
+      ),
+
+      teamId: teamIds.length === 1 ? teamIds[0] : '',
+      teamName: teamNames.length === 1 ? teamNames[0] : '',
+      teamIds,
+      teamNames,
+
+      status: 'Delivered',
+      deliveredDetails: details,
+      deliveredById: String(userId),
+      deliveredByName: sender.name || sender.email || role,
+      deliveredAt: serverTimestamp(),
+
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    const requestRef = await addDoc(
+      collection(db, SECURE_INFO_REQUESTS_COL),
+      requestPayload
+    );
+
+    await addDoc(collection(db, SECURE_INFO_AUDIT_COL), {
+      requestId: requestRef.id,
+      action: 'Direct Delivery',
+      changedBy: String(userId),
+      changedByName: sender.name || sender.email || role,
+      recipientAgentIds: requestedRecipientIds,
+      status: 'Delivered',
+      createdAt: serverTimestamp()
+    });
+
+    await Promise.all(
+      requestedRecipientIds.map(recipientId =>
+        addDoc(collection(db, NOTIFICATIONS_COL), {
+          user_id: String(recipientId),
+          type: 'secure_info_delivered',
+          title: 'Secure Details Delivered',
+          message: `${requestType} were sent to you by ${sender.name || role}.`,
+          secure_info_request_id: requestRef.id,
+          read: false,
+          createdAt: serverTimestamp()
+        })
+      )
+    );
+
+    return { id: requestRef.id, ...requestPayload };
+  },
+
   async getSecureInfoRequestsForUser(user: any) {
     const userId = String(user?.id || '');
     if (!userId) return [];
@@ -3563,49 +3732,267 @@ export const firestoreService = {
     if (!currentUser) return [];
 
     const role = String(currentUser.role || '');
-    let snap;
+    let records: any[] = [];
 
     if (role === 'Agent') {
-      snap = await getDocs(
+      const [legacySnap, recipientSnap] = await Promise.all([
+        getDocs(
+          query(
+            collection(db, SECURE_INFO_REQUESTS_COL),
+            where('requestedById', '==', userId),
+            limit(300)
+          )
+        ),
+        getDocs(
+          query(
+            collection(db, SECURE_INFO_REQUESTS_COL),
+            where('recipientAgentIds', 'array-contains', userId),
+            limit(300)
+          )
+        )
+      ]);
+
+      const merged = new Map<string, any>();
+      [...legacySnap.docs, ...recipientSnap.docs].forEach(requestDoc => {
+        merged.set(requestDoc.id, {
+          id: requestDoc.id,
+          ...requestDoc.data()
+        });
+      });
+
+      records = Array.from(merged.values());
+    } else if (role === 'Team Leader') {
+      if (!currentUser.teamId) return [];
+
+      const [legacyTeamSnap, teamArraySnap] = await Promise.all([
+        getDocs(
+          query(
+            collection(db, SECURE_INFO_REQUESTS_COL),
+            where('teamId', '==', String(currentUser.teamId)),
+            limit(300)
+          )
+        ),
+        getDocs(
+          query(
+            collection(db, SECURE_INFO_REQUESTS_COL),
+            where('teamIds', 'array-contains', String(currentUser.teamId)),
+            limit(300)
+          )
+        )
+      ]);
+
+      const merged = new Map<string, any>();
+      [...legacyTeamSnap.docs, ...teamArraySnap.docs].forEach(requestDoc => {
+        merged.set(requestDoc.id, {
+          id: requestDoc.id,
+          ...requestDoc.data()
+        });
+      });
+
+      records = Array.from(merged.values());
+    } else if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
+      const snap = await getDocs(
+        query(collection(db, SECURE_INFO_REQUESTS_COL), limit(300))
+      );
+
+      records = snap.docs.map(requestDoc => ({
+        id: requestDoc.id,
+        ...requestDoc.data()
+      }));
+    } else {
+      return [];
+    }
+
+    return records.sort((a: any, b: any) => {
+      const aDate = a.createdAt?.toDate
+        ? a.createdAt.toDate()
+        : new Date(a.createdAt || 0);
+      const bDate = b.createdAt?.toDate
+        ? b.createdAt.toDate()
+        : new Date(b.createdAt || 0);
+
+      return bDate.getTime() - aDate.getTime();
+    });
+  },
+
+  subscribeSecureInfoRequestsForUser(
+    user: any,
+    callback: (records: any[]) => void,
+    onError?: (error: any) => void
+  ) {
+    const userId = String(user?.id || '');
+    const role = String(user?.role || '');
+    const teamId = String(user?.teamId || '');
+
+    if (!userId) {
+      callback([]);
+      return () => {};
+    }
+
+    const unsubscribers: Array<() => void> = [];
+    const sources = new Map<string, Map<string, any>>();
+
+    const emit = () => {
+      const merged = new Map<string, any>();
+
+      sources.forEach(source => {
+        source.forEach((record, id) => merged.set(id, record));
+      });
+
+      callback(
+        Array.from(merged.values()).sort((a: any, b: any) => {
+          const aDate = a.createdAt?.toDate
+            ? a.createdAt.toDate()
+            : new Date(a.createdAt || 0);
+          const bDate = b.createdAt?.toDate
+            ? b.createdAt.toDate()
+            : new Date(b.createdAt || 0);
+          return bDate.getTime() - aDate.getTime();
+        })
+      );
+    };
+
+    const watch = (key: string, q: any) => {
+      sources.set(key, new Map());
+
+      const unsubscribe = onSnapshot(
+        q,
+        snapshot => {
+          const source = new Map<string, any>();
+
+          snapshot.docs.forEach(requestDoc => {
+            source.set(requestDoc.id, {
+              id: requestDoc.id,
+              ...requestDoc.data()
+            });
+          });
+
+          sources.set(key, source);
+          emit();
+        },
+        error => {
+          console.error(`Secure Info realtime listener failed (${key}):`, error);
+          if (onError) onError(error);
+        }
+      );
+
+      unsubscribers.push(unsubscribe);
+    };
+
+    if (role === 'Agent') {
+      watch(
+        'agent-legacy',
         query(
           collection(db, SECURE_INFO_REQUESTS_COL),
           where('requestedById', '==', userId),
           limit(300)
         )
       );
-    } else if (role === 'Team Leader') {
-      if (!currentUser.teamId) return [];
 
-      snap = await getDocs(
+      watch(
+        'agent-recipient',
         query(
           collection(db, SECURE_INFO_REQUESTS_COL),
-          where('teamId', '==', String(currentUser.teamId)),
+          where('recipientAgentIds', 'array-contains', userId),
+          limit(300)
+        )
+      );
+    } else if (role === 'Team Leader') {
+      if (!teamId) {
+        callback([]);
+        return () => {};
+      }
+
+      watch(
+        'team-legacy',
+        query(
+          collection(db, SECURE_INFO_REQUESTS_COL),
+          where('teamId', '==', teamId),
+          limit(300)
+        )
+      );
+
+      watch(
+        'team-array',
+        query(
+          collection(db, SECURE_INFO_REQUESTS_COL),
+          where('teamIds', 'array-contains', teamId),
           limit(300)
         )
       );
     } else if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
-      snap = await getDocs(
+      watch(
+        'management-all',
         query(collection(db, SECURE_INFO_REQUESTS_COL), limit(300))
       );
     } else {
-      return [];
+      callback([]);
     }
 
-    return snap.docs
-      .map(requestDoc => ({
-        id: requestDoc.id,
-        ...requestDoc.data()
-      } as any))
-      .sort((a: any, b: any) => {
-        const aDate = a.createdAt?.toDate
-          ? a.createdAt.toDate()
-          : new Date(a.createdAt || 0);
-        const bDate = b.createdAt?.toDate
-          ? b.createdAt.toDate()
-          : new Date(b.createdAt || 0);
+    return () => {
+      unsubscribers.forEach(unsubscribe => unsubscribe());
+    };
+  },
 
-        return bDate.getTime() - aDate.getTime();
-      });
+  subscribeNotifications(
+    userId: string,
+    callback: (notifications: any[]) => void,
+    onNew?: (notification: any) => void,
+    onError?: (error: any) => void
+  ) {
+    if (!userId) {
+      callback([]);
+      return () => {};
+    }
+
+    let initialLoad = true;
+    const seenIds = new Set<string>();
+
+    return onSnapshot(
+      query(
+        collection(db, NOTIFICATIONS_COL),
+        where('user_id', '==', String(userId))
+      ),
+      snapshot => {
+        const unread = snapshot.docs
+          .map(notificationDoc => ({
+            id: notificationDoc.id,
+            ...notificationDoc.data()
+          } as any))
+          .filter(notification => notification.read !== true)
+          .sort((a: any, b: any) => {
+            const aDate = a.createdAt?.toDate
+              ? a.createdAt.toDate()
+              : new Date(a.createdAt || 0);
+            const bDate = b.createdAt?.toDate
+              ? b.createdAt.toDate()
+              : new Date(b.createdAt || 0);
+            return bDate.getTime() - aDate.getTime();
+          });
+
+        callback(unread);
+
+        if (initialLoad) {
+          unread.forEach(notification => seenIds.add(notification.id));
+          initialLoad = false;
+          return;
+        }
+
+        const newItems = unread.filter(
+          notification => !seenIds.has(notification.id)
+        );
+
+        unread.forEach(notification => seenIds.add(notification.id));
+
+        if (newItems.length > 0 && onNew) {
+          onNew(newItems[0]);
+        }
+      },
+      error => {
+        console.error('Notification realtime listener failed:', error);
+        if (onError) onError(error);
+      }
+    );
   },
 
   async deliverSecureInfoRequest(
