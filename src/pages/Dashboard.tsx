@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert, MessageSquare, Coffee, PlayCircle, Square, Clock3, AlertTriangle, PhoneCall, UserX, Flame, Timer, FolderOpen, ChevronRight, TrendingUp, Target, CalendarDays, X } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart as RePieChart, Pie } from 'recharts';
 import { format } from 'date-fns';
@@ -7,12 +8,37 @@ import { chatService } from '../services/chatService';
 import AgentFinancePanel from '../components/AgentFinancePanel';
 
 export default function Dashboard() {
+  const navigate = useNavigate();
+  const [alertDetail, setAlertDetail] = useState<any>(null);
+
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<'1d' | '1w' | '1m' | 'all'>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [selectedSource, setSelectedSource] = useState<any>(null);
   const [selectedFile, setSelectedFile] = useState<any>(null);
+
+  const openLeadDrilldown = (params: Record<string, string>) => {
+    const query = new URLSearchParams(params);
+    navigate(`/leads?${query.toString()}`);
+  };
+
+  const openStatusDrilldown = (status: string) => openLeadDrilldown({ status, range: timeRange });
+
+  const handleCriticalAlertClick = (alert: any) => {
+    if (alert.type === 'unassigned') return openLeadDrilldown({ view: 'unassigned' });
+    if (alert.type === 'overdue-callbacks') return openLeadDrilldown({ view: 'overdue-callbacks' });
+    if (alert.type === 'untouched') return openLeadDrilldown({ view: 'untouched24h' });
+
+    if (alert.type === 'shift-not-started') {
+      setAlertDetail({ title: 'Shift Not Started', subtitle: 'Agents without a shift record for today.', rows: data?.attendance?.notStartedAgents || [] });
+      return;
+    }
+
+    if (alert.type === 'user-config') {
+      setAlertDetail({ title: 'User Configuration', subtitle: 'Users with undefined or missing CRM roles.', rows: data?.misconfiguredUserDetails || [] });
+    }
+  };
 
   const loadData = async () => {
     setIsLoading(true);
@@ -232,14 +258,14 @@ export default function Dashboard() {
   if (!data || isLoading) return <div className="p-8 text-slate-400 animate-pulse">Loading dashboard...</div>;
 
   const stats = [
-    { name: 'Total Leads', value: data.total, change: data.totalChange, icon: Users, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-    { name: 'New Today', value: data.newToday, icon: UserPlus, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
-    { name: 'Active Leads', value: data.active, change: data.activeChange, icon: Activity, color: 'text-amber-500', bg: 'bg-amber-500/10' },
-    { name: 'Deposits', value: data.converted, change: data.convertedChange, icon: CheckCircle, color: 'text-cyan-500', bg: 'bg-cyan-500/10' },
-    { name: 'High Potential', value: data.highPotential || 0, icon: Flame, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-    { name: 'JOR', value: data.jor || 0, icon: Target, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
-    { name: 'Callbacks Today', value: data.callbacksToday || 0, icon: PhoneCall, color: 'text-violet-400', bg: 'bg-violet-500/10' },
-    { name: 'Unassigned', value: data.unassigned || 0, icon: UserX, color: 'text-rose-400', bg: 'bg-rose-500/10' },
+    { name: 'Total Leads', value: data.total, change: data.totalChange, icon: Users, color: 'text-blue-500', bg: 'bg-blue-500/10', onClick: () => openLeadDrilldown({ view: 'all', range: timeRange }) },
+    { name: 'New Today', value: data.newToday, icon: UserPlus, color: 'text-emerald-500', bg: 'bg-emerald-500/10', onClick: () => openLeadDrilldown({ view: 'new-today' }) },
+    { name: 'Active Leads', value: data.active, change: data.activeChange, icon: Activity, color: 'text-amber-500', bg: 'bg-amber-500/10', onClick: () => openLeadDrilldown({ view: 'active', range: timeRange }) },
+    { name: 'Deposits', value: data.converted, change: data.convertedChange, icon: CheckCircle, color: 'text-cyan-500', bg: 'bg-cyan-500/10', onClick: () => openStatusDrilldown('Deposit') },
+    { name: 'High Potential', value: data.highPotential || 0, icon: Flame, color: 'text-emerald-400', bg: 'bg-emerald-500/10', onClick: () => openStatusDrilldown('High Potential') },
+    { name: 'JOR', value: data.jor || 0, icon: Target, color: 'text-cyan-400', bg: 'bg-cyan-500/10', onClick: () => openStatusDrilldown('JOR') },
+    { name: 'Callbacks Today', value: data.callbacksToday || 0, icon: PhoneCall, color: 'text-violet-400', bg: 'bg-violet-500/10', onClick: () => openLeadDrilldown({ view: 'callbacks-today' }) },
+    { name: 'Unassigned', value: data.unassigned || 0, icon: UserX, color: 'text-rose-400', bg: 'bg-rose-500/10', onClick: () => openLeadDrilldown({ view: 'unassigned' }) },
   ];
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f43f5e'];
@@ -384,7 +410,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
         {stats.map((stat) => (
-          <div key={stat.name} className="bg-[#0A0F1C] border border-white/5 rounded-xl p-4 shadow-sm">
+          <button key={stat.name} type="button" onClick={stat.onClick} className="bg-[#0A0F1C] border border-white/5 rounded-xl p-4 shadow-sm text-left hover:border-blue-500/25 hover:bg-white/[0.02] transition-all">
             <div className="flex items-center justify-between">
               <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${stat.bg}`}>
                 <stat.icon className={`w-4.5 h-4.5 ${stat.color}`} />
@@ -397,7 +423,7 @@ export default function Dashboard() {
             </div>
             <h3 className="text-2xl font-semibold text-white mt-4">{stat.value}</h3>
             <p className="text-xs text-slate-400 mt-1 font-medium">{stat.name}</p>
-          </div>
+          </button>
         ))}
       </div>
 
@@ -424,6 +450,11 @@ export default function Dashboard() {
                     paddingAngle={3}
                     dataKey="count"
                     nameKey="status"
+                    onClick={(entry: any) => {
+                      const status = entry?.status || entry?.payload?.status;
+                      if (status) openStatusDrilldown(status);
+                    }}
+                    className="cursor-pointer"
                   >
                     {data.leadsByStatus.map((entry: any, index: number) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
@@ -438,7 +469,7 @@ export default function Dashboard() {
 
             <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto custom-scrollbar pr-1">
               {data.leadsByStatus.map((status: any, index: number) => (
-                <div key={status.status} className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02] border border-white/5">
+                <button key={status.status} type="button" onClick={() => openStatusDrilldown(status.status)} className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02] border border-white/5 hover:bg-white/[0.05] hover:border-blue-500/20 transition-colors text-left">
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
                     <span className="text-[11px] text-slate-300 font-medium truncate">{status.status}</span>
@@ -447,7 +478,7 @@ export default function Dashboard() {
                     <div className="text-xs font-bold text-white">{status.count}</div>
                     <div className="text-[9px] text-slate-500">{Math.round((status.count / Math.max(1, data.total)) * 100)}%</div>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -461,9 +492,7 @@ export default function Dashboard() {
 
           <div className="space-y-3">
             {(data.criticalAlerts || []).map((alert: any) => (
-              <div
-                key={alert.type}
-                className={`rounded-xl border p-3 ${
+              <button key={alert.type} type="button" onClick={() => handleCriticalAlertClick(alert)} className={`w-full rounded-xl border p-3 text-left hover:brightness-110 transition-all ${
                   alert.severity === 'high'
                     ? 'bg-rose-500/5 border-rose-500/20'
                     : 'bg-amber-500/5 border-amber-500/20'
@@ -476,7 +505,7 @@ export default function Dashboard() {
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500 mt-1">{alert.detail}</p>
-              </div>
+              </button>
             ))}
 
             {(!data.criticalAlerts || data.criticalAlerts.length === 0) && (
@@ -690,22 +719,22 @@ export default function Dashboard() {
           </h3>
 
           <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4">
+            <button type="button" onClick={() => openLeadDrilldown({ view: 'untouched24h' })} className="w-full flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4 hover:bg-white/[0.05] transition-colors">
               <span className="text-sm text-slate-400">Untouched 24h+</span>
               <span className="text-xl font-bold text-amber-400">{data.untouched24h || 0}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4">
+            </button>
+            <button type="button" onClick={() => openLeadDrilldown({ view: 'stale7d' })} className="w-full flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4 hover:bg-white/[0.05] transition-colors">
               <span className="text-sm text-slate-400">Stale 7d+</span>
               <span className="text-xl font-bold text-rose-400">{data.stale7d || 0}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4">
+            </button>
+            <button type="button" onClick={() => openLeadDrilldown({ view: 'overdue-callbacks' })} className="w-full flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4 hover:bg-white/[0.05] transition-colors">
               <span className="text-sm text-slate-400">Overdue Callbacks</span>
               <span className="text-xl font-bold text-rose-400">{data.overdueCallbacks || 0}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4">
+            </button>
+            <button type="button" onClick={() => setAlertDetail({ title: 'Undefined Roles', subtitle: 'Users with undefined or missing CRM roles.', rows: data.misconfiguredUserDetails || [] })} className="w-full flex items-center justify-between rounded-xl bg-white/[0.02] border border-white/5 p-4 hover:bg-white/[0.05] transition-colors">
               <span className="text-sm text-slate-400">Undefined Roles</span>
               <span className="text-xl font-bold text-violet-400">{data.misconfiguredUsers || 0}</span>
-            </div>
+            </button>
           </div>
         </div>
       </div>
@@ -740,6 +769,25 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      {alertDetail && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden bg-[#0A0F1C] border border-white/10 rounded-2xl shadow-2xl flex flex-col">
+            <div className="p-5 border-b border-white/5 flex items-start justify-between gap-4">
+              <div><h2 className="text-xl font-semibold text-white">{alertDetail.title}</h2><p className="text-xs text-slate-500 mt-1">{alertDetail.subtitle}</p></div>
+              <button onClick={() => setAlertDetail(null)} className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="overflow-y-auto custom-scrollbar p-4 space-y-2">
+              {(alertDetail.rows || []).length > 0 ? alertDetail.rows.map((row: any) => (
+                <div key={row.id || row.email || row.name} className="flex items-center justify-between gap-4 rounded-xl bg-white/[0.02] border border-white/5 px-4 py-3">
+                  <div className="min-w-0"><p className="text-sm font-semibold text-white truncate">{row.name || row.email || 'User'}</p><p className="text-xs text-slate-500 truncate">{row.email || 'No email'}</p></div>
+                  <div className="text-right shrink-0"><p className="text-xs text-slate-300">{row.teamName || 'No Team'}</p>{row.role && <p className="text-[10px] text-violet-400 mt-1">{row.role}</p>}</div>
+                </div>
+              )) : <div className="py-12 text-center text-sm text-slate-500">No matching records.</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedSource && (
         <div className="fixed inset-0 z-[120] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-2xl bg-[#0A0F1C] border border-white/10 shadow-2xl">
