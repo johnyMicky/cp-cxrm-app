@@ -3497,7 +3497,13 @@ export const firestoreService = {
     agentIds: string[],
     userId: string,
     statusFilter: string[],
-    targetStatus?: string
+    targetStatus?: string,
+    onProgress?: (progress: {
+      percent: number;
+      processed: number;
+      total: number;
+      phase: 'preparing' | 'updating' | 'history' | 'complete';
+    }) => void
   ) {
     if (!userId) {
       throw new Error('Current user is required.');
@@ -3699,7 +3705,14 @@ export const firestoreService = {
       });
 
     if (eligibleLeads.length === 0) {
-      return 0;
+      onProgress?.({ percent: 100, processed: 0, total: 0, phase: 'complete' });
+      return {
+        totalEligible: 0,
+        totalChanged: 0,
+        targetStatus: normalizedTargetStatus || '',
+        statusChanges: {} as Record<string, number>,
+        recipientCounts: {} as Record<string, number>
+      };
     }
 
     const shuffle = <T,>(items: T[]): T[] => {
@@ -3764,90 +3777,146 @@ export const firestoreService = {
       return agentChanged || statusChanged;
     });
 
-    if (changedAssignments.length === 0) {
-      return 0;
-    }
+    const statusChanges: Record<string, number> = {};
+    const recipientCounts: Record<string, number> = {};
 
-    const BATCH_SIZE = 450;
-    const commits: Promise<void>[] = [];
-    let batch = writeBatch(db);
-    let batchCount = 0;
-
-    for (const assignment of changedAssignments) {
-      const updatePayload: any = {
-        assigned_to: assignment.agentId,
-        updatedAt: serverTimestamp()
-      };
-
-      if (normalizedTargetStatus) {
-        updatePayload.status = normalizedTargetStatus;
-      }
-
-      batch.update(
-        doc(db, LEADS_COL, String(assignment.lead.id)),
-        updatePayload
-      );
-
-      batchCount++;
-
-      if (batchCount === BATCH_SIZE) {
-        commits.push(batch.commit());
-        batch = writeBatch(db);
-        batchCount = 0;
-      }
-    }
-
-    if (batchCount > 0) {
-      commits.push(batch.commit());
-    }
-
-    await Promise.all(commits);
-
-    // Preserve full per-lead History.
-    let historyBatch = writeBatch(db);
-    let historyBatchCount = 0;
-    const historyCommits: Promise<void>[] = [];
-
-    for (const { lead, oldAgentId, agentId } of changedAssignments) {
+    changedAssignments.forEach(({ lead, agentId }) => {
       const oldStatus = canonicalStatus(lead.status);
-      const historyRef = doc(collection(db, "history"));
+      const finalStatus = normalizedTargetStatus || oldStatus;
+      const transitionKey = oldStatus === finalStatus
+        ? oldStatus
+        : `${oldStatus} → ${finalStatus}`;
 
-      const statusText =
-        normalizedTargetStatus && oldStatus !== normalizedTargetStatus
-          ? ` • Status ${oldStatus} → ${normalizedTargetStatus}`
-          : '';
+      statusChanges[transitionKey] = (statusChanges[transitionKey] || 0) + 1;
 
-      historyBatch.set(historyRef, {
-        lead_id: lead.id,
-        user_id: userId,
-        action: "Reshuffled",
-        details:
-          `Lead reshuffled from ${
-            recipientNameMap[oldAgentId] ||
-            oldAgentId ||
-            'Unassigned'
-          } to ${
-            recipientNameMap[agentId] ||
-            agentId
-          }${statusText}`,
-        createdAt: serverTimestamp()
+      const recipientName = recipientNameMap[agentId] || agentId || 'Unknown';
+      recipientCounts[recipientName] = (recipientCounts[recipientName] || 0) + 1;
+    });
+
+    if (changedAssignments.length === 0) {
+      onProgress?.({
+        percent: 100,
+        processed: 0,
+        total: eligibleLeads.length,
+        phase: 'complete'
       });
 
-      historyBatchCount++;
-      if (historyBatchCount === 450) {
-        historyCommits.push(historyBatch.commit());
-        historyBatch = writeBatch(db);
-        historyBatchCount = 0;
+      return {
+        totalEligible: eligibleLeads.length,
+        totalChanged: 0,
+        targetStatus: normalizedTargetStatus || '',
+        statusChanges,
+        recipientCounts
+      };
+    }
+
+    const totalChanged = changedAssignments.length;
+    onProgress?.({
+      percent: 2,
+      processed: 0,
+      total: totalChanged,
+      phase: 'preparing'
+    });
+
+    const BATCH_SIZE = 450;
+    let processedUpdates = 0;
+
+    for (let i = 0; i < changedAssignments.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      const chunk = changedAssignments.slice(i, i + BATCH_SIZE);
+
+      for (const assignment of chunk) {
+        const updatePayload: any = {
+          assigned_to: assignment.agentId,
+          updatedAt: serverTimestamp()
+        };
+
+        if (normalizedTargetStatus) {
+          updatePayload.status = normalizedTargetStatus;
+        }
+
+        batch.update(
+          doc(db, LEADS_COL, String(assignment.lead.id)),
+          updatePayload
+        );
       }
+
+      await batch.commit();
+      processedUpdates += chunk.length;
+
+      onProgress?.({
+        percent: Math.min(
+          90,
+          Math.max(3, Math.round((processedUpdates / totalChanged) * 90))
+        ),
+        processed: processedUpdates,
+        total: totalChanged,
+        phase: 'updating'
+      });
     }
 
-    if (historyBatchCount > 0) {
-      historyCommits.push(historyBatch.commit());
+    // Preserve full per-lead History.
+    const HISTORY_BATCH_SIZE = 450;
+    let processedHistory = 0;
+
+    for (let i = 0; i < changedAssignments.length; i += HISTORY_BATCH_SIZE) {
+      const historyBatch = writeBatch(db);
+      const chunk = changedAssignments.slice(i, i + HISTORY_BATCH_SIZE);
+
+      for (const { lead, oldAgentId, agentId } of chunk) {
+        const oldStatus = canonicalStatus(lead.status);
+        const historyRef = doc(collection(db, "history"));
+
+        const statusText =
+          normalizedTargetStatus && oldStatus !== normalizedTargetStatus
+            ? ` • Status ${oldStatus} → ${normalizedTargetStatus}`
+            : '';
+
+        historyBatch.set(historyRef, {
+          lead_id: lead.id,
+          user_id: userId,
+          action: "Reshuffled",
+          details:
+            `Lead reshuffled from ${
+              recipientNameMap[oldAgentId] ||
+              oldAgentId ||
+              'Unassigned'
+            } to ${
+              recipientNameMap[agentId] ||
+              agentId
+            }${statusText}`,
+          createdAt: serverTimestamp()
+        });
+      }
+
+      await historyBatch.commit();
+      processedHistory += chunk.length;
+
+      onProgress?.({
+        percent: Math.min(
+          99,
+          90 + Math.round((processedHistory / totalChanged) * 9)
+        ),
+        processed: totalChanged,
+        total: totalChanged,
+        phase: 'history'
+      });
     }
 
-    await Promise.all(historyCommits);
+    onProgress?.({
+      percent: 100,
+      processed: totalChanged,
+      total: totalChanged,
+      phase: 'complete'
+    });
 
-    return changedAssignments.length;
+    return {
+      totalEligible: eligibleLeads.length,
+      totalChanged,
+      targetStatus: normalizedTargetStatus || '',
+      statusChanges,
+      recipientCounts
+    };
   },
 
   // Activity / History
