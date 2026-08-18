@@ -13,7 +13,10 @@ interface ImportSummary {
   valid: number;
   imported: number;
   duplicates: number;
+  databaseDuplicates: number;
+  internalDuplicates: number;
   errors: number;
+  duplicateDetails: any[];
 }
 
 export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
@@ -117,34 +120,26 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
         notes: String(row['Notes'] || '').trim()
       })).filter(lead => lead.name); // Ensure name exists
 
-      // Check for internal duplicates in the file
-      const seenPhones = new Set();
-      const uniqueLeads = [];
-      let internalDuplicates = 0;
-
-      for (const lead of leadsToImport) {
-        const phone = normalizePhone(lead.phone);
-        if (phone && seenPhones.has(phone)) {
-          internalDuplicates++;
-          continue;
-        }
-        if (phone) seenPhones.add(phone);
-        uniqueLeads.push(lead);
-      }
-
-      // Send to firestore
+      // Compare against the full CRM database and the current upload in one service call.
       const currentUserId = localStorage.getItem('userId');
-      setProgress({ current: 0, total: uniqueLeads.length });
-      const result = await firestoreService.bulkCreateLeads(uniqueLeads, currentUserId, file.name, (current, total) => {
-        setProgress({ current, total });
-      });
+      setProgress({ current: 0, total: leadsToImport.length });
+
+      const result = await firestoreService.bulkCreateLeads(
+        leadsToImport,
+        currentUserId,
+        file.name,
+        (current, total) => setProgress({ current, total })
+      );
 
       setSummary({
         total: jsonData.length,
         valid: leadsToImport.length,
         imported: result.imported,
-        duplicates: result.duplicates + internalDuplicates,
-        errors: result.errors
+        duplicates: result.duplicates,
+        databaseDuplicates: result.databaseDuplicates || 0,
+        internalDuplicates: result.internalDuplicates || 0,
+        errors: result.errors,
+        duplicateDetails: result.duplicateDetails || []
       });
 
       if (result.imported > 0) {
@@ -279,9 +274,36 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
                 </div>
               </div>
 
+              {summary.duplicateDetails.length > 0 && (
+                <div className="rounded-xl border border-amber-500/15 bg-amber-500/5 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-amber-500/10 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-amber-300">Duplicate Matches</p>
+                      <p className="text-[10px] text-slate-500">First {Math.min(8, summary.duplicateDetails.length)} shown. Full report is saved in Lead Files.</p>
+                    </div>
+                    <span className="text-sm font-bold text-amber-400">{summary.duplicates}</span>
+                  </div>
+                  <div className="max-h-56 overflow-y-auto custom-scrollbar divide-y divide-white/5">
+                    {summary.duplicateDetails.slice(0, 8).map((duplicate: any, index: number) => (
+                      <div key={`${duplicate.normalizedPhone}-${index}`} className="px-4 py-3">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-white truncate">{duplicate.attemptedName || duplicate.attemptedPhone || 'Duplicate Lead'}</p>
+                            <p className="text-[10px] text-slate-500 mt-1">{duplicate.attemptedPhone || duplicate.normalizedPhone}</p>
+                          </div>
+                          <span className="text-[10px] px-2 py-1 rounded bg-amber-500/10 text-amber-300 whitespace-nowrap">{duplicate.duplicateType}</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-2">Matched file: <span className="text-blue-300">{duplicate.matchedFileName || 'Manual / Legacy'}</span></p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="p-4 bg-white/5 rounded-xl border border-white/10 text-sm text-slate-300">
                 <p>• {summary.imported} new leads added to your database.</p>
-                <p>• {summary.duplicates} leads were skipped as duplicates.</p>
+                <p>• {summary.databaseDuplicates} matched existing Leads anywhere in the CRM.</p>
+                <p>• {summary.internalDuplicates} were duplicates inside this uploaded file.</p>
                 {summary.errors > 0 && <p className="text-rose-400">• {summary.errors} rows failed due to invalid data.</p>}
               </div>
             </div>
