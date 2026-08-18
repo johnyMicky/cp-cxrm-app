@@ -1280,60 +1280,225 @@ export const firestoreService = {
     return { id: docRef.id };
   },
 
-  async bulkCreateLeads(leads: any[], userId: string, fileName: string, onProgress?: (current: number, total: number) => void) {
+  async bulkCreateLeads(
+    leads: any[],
+    userId: string,
+    fileName: string,
+    onProgress?: (current: number, total: number) => void
+  ) {
     let imported = 0;
-    let duplicates = 0;
+    let databaseDuplicates = 0;
+    let internalDuplicates = 0;
     let errors = 0;
+
+    const normalizePhone = (value: any) => String(value || '').replace(/\D/g, '');
 
     const importRef = await addDoc(collection(db, IMPORTS_COL), {
       fileName,
       createdBy: userId,
       createdAt: new Date(),
       totalLeads: leads.length,
+      importedCount: 0,
+      duplicateCount: 0,
+      databaseDuplicateCount: 0,
+      internalDuplicateCount: 0,
+      errorCount: 0,
       status: 'processing'
     });
 
-    const BATCH_SIZE = 500;
-    const now = new Date();
+    try {
+      const [existingLeadSnap, importsSnap] = await Promise.all([
+        getDocs(collection(db, LEADS_COL)),
+        getDocs(collection(db, IMPORTS_COL))
+      ]);
 
-    for (let i = 0; i < leads.length; i += BATCH_SIZE) {
-      const chunk = leads.slice(i, i + BATCH_SIZE);
-      const batch = writeBatch(db);
-      
-      chunk.forEach(lead => {
-        try {
-          const docRef = doc(collection(db, LEADS_COL));
-          const sanitized = sanitizeData({
-            ...lead,
-            createdBy: userId,
-            importId: importRef.id,
-            importFileName: fileName,
-            createdAt: now,
-            updatedAt: now
-          });
-          batch.set(docRef, sanitized);
-          imported++;
-        } catch (err) {
-          console.error('Lead sanitization error:', err);
-          errors++;
-        }
+      const importNameMap = new Map<string, string>();
+      importsSnap.docs.forEach(importDoc => {
+        const data = importDoc.data() as any;
+        importNameMap.set(String(importDoc.id), String(data.fileName || `Import ${importDoc.id}`));
       });
 
-      await batch.commit();
+      const existingByPhone = new Map<string, any>();
+      existingLeadSnap.docs.forEach(existingDoc => {
+        const data = existingDoc.data() as any;
+        const normalizedPhone =
+          String(data.phoneNormalized || '').trim() || normalizePhone(data.phone);
 
-      if (onProgress) {
-        onProgress(Math.min(i + BATCH_SIZE, leads.length), leads.length);
+        if (!normalizedPhone || existingByPhone.has(normalizedPhone)) return;
+
+        existingByPhone.set(normalizedPhone, {
+          id: existingDoc.id,
+          name: data.name || '',
+          email: data.email || '',
+          phone: data.phone || '',
+          status: data.status || 'New',
+          assigned_to: data.assigned_to || '',
+          importId: data.importId || '',
+          importFileName:
+            String(data.importFileName || '').trim() ||
+            (data.importId && importNameMap.get(String(data.importId))) ||
+            'Manual / Legacy'
+        });
+      });
+
+      const seenInCurrentFile = new Map<string, any>();
+      const uniqueLeads: any[] = [];
+      const duplicateDetails: any[] = [];
+
+      leads.forEach((lead: any, rowIndex: number) => {
+        const normalizedPhone = normalizePhone(lead.phone);
+
+        if (!normalizedPhone) {
+          uniqueLeads.push({ ...lead, phoneNormalized: '' });
+          return;
+        }
+
+        const currentFileMatch = seenInCurrentFile.get(normalizedPhone);
+        if (currentFileMatch) {
+          internalDuplicates++;
+          duplicateDetails.push({
+            duplicateType: 'Current File',
+            rowNumber: rowIndex + 2,
+            attemptedName: lead.name || '',
+            attemptedEmail: lead.email || '',
+            attemptedPhone: lead.phone || '',
+            normalizedPhone,
+            matchedLeadId: '',
+            matchedLeadName: currentFileMatch.name || '',
+            matchedLeadEmail: currentFileMatch.email || '',
+            matchedLeadPhone: currentFileMatch.phone || '',
+            matchedStatus: currentFileMatch.status || 'New',
+            matchedAssignedTo: currentFileMatch.assigned_to || '',
+            matchedImportId: importRef.id,
+            matchedFileName: fileName,
+            createdAt: serverTimestamp()
+          });
+          return;
+        }
+
+        seenInCurrentFile.set(normalizedPhone, lead);
+
+        const existingMatch = existingByPhone.get(normalizedPhone);
+        if (existingMatch) {
+          databaseDuplicates++;
+          duplicateDetails.push({
+            duplicateType: 'CRM Database',
+            rowNumber: rowIndex + 2,
+            attemptedName: lead.name || '',
+            attemptedEmail: lead.email || '',
+            attemptedPhone: lead.phone || '',
+            normalizedPhone,
+            matchedLeadId: existingMatch.id || '',
+            matchedLeadName: existingMatch.name || '',
+            matchedLeadEmail: existingMatch.email || '',
+            matchedLeadPhone: existingMatch.phone || '',
+            matchedStatus: existingMatch.status || 'New',
+            matchedAssignedTo: existingMatch.assigned_to || '',
+            matchedImportId: existingMatch.importId || '',
+            matchedFileName: existingMatch.importFileName || 'Manual / Legacy',
+            createdAt: serverTimestamp()
+          });
+          return;
+        }
+
+        uniqueLeads.push({ ...lead, phoneNormalized: normalizedPhone });
+
+        existingByPhone.set(normalizedPhone, {
+          id: '',
+          name: lead.name || '',
+          email: lead.email || '',
+          phone: lead.phone || '',
+          status: lead.status || 'New',
+          assigned_to: lead.assigned_to || '',
+          importId: importRef.id,
+          importFileName: fileName
+        });
+      });
+
+      const BATCH_SIZE = 400;
+      const now = new Date();
+
+      for (let i = 0; i < uniqueLeads.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        uniqueLeads.slice(i, i + BATCH_SIZE).forEach(lead => {
+          try {
+            const docRef = doc(collection(db, LEADS_COL));
+            batch.set(docRef, sanitizeData({
+              ...lead,
+              createdBy: userId,
+              importId: importRef.id,
+              importFileName: fileName,
+              createdAt: now,
+              updatedAt: now
+            }));
+            imported++;
+          } catch (err) {
+            console.error('Lead sanitization error:', err);
+            errors++;
+          }
+        });
+        await batch.commit();
+
+        if (onProgress) {
+          onProgress(
+            Math.min(i + BATCH_SIZE + databaseDuplicates + internalDuplicates, leads.length),
+            leads.length
+          );
+        }
       }
+
+      for (let i = 0; i < duplicateDetails.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        duplicateDetails.slice(i, i + BATCH_SIZE).forEach(detail => {
+          const ref = doc(collection(db, IMPORTS_COL, importRef.id, 'duplicates'));
+          batch.set(ref, sanitizeData(detail));
+        });
+        await batch.commit();
+      }
+
+      const duplicates = databaseDuplicates + internalDuplicates;
+
+      await updateDoc(importRef, {
+        importedCount: imported,
+        duplicateCount: duplicates,
+        databaseDuplicateCount: databaseDuplicates,
+        internalDuplicateCount: internalDuplicates,
+        errorCount: errors,
+        status: 'completed',
+        completedAt: serverTimestamp()
+      });
+
+      if (onProgress) onProgress(leads.length, leads.length);
+
+      return {
+        importId: importRef.id,
+        imported,
+        duplicates,
+        databaseDuplicates,
+        internalDuplicates,
+        errors,
+        duplicateDetails
+      };
+    } catch (error) {
+      await updateDoc(importRef, {
+        importedCount: imported,
+        duplicateCount: databaseDuplicates + internalDuplicates,
+        databaseDuplicateCount: databaseDuplicates,
+        internalDuplicateCount: internalDuplicates,
+        errorCount: errors + 1,
+        status: 'failed',
+        completedAt: serverTimestamp()
+      }).catch(console.error);
+      throw error;
     }
+  },
 
-    await updateDoc(importRef, {
-      importedCount: imported,
-      duplicateCount: duplicates,
-      errorCount: errors,
-      status: 'completed'
-    });
-
-    return { imported, duplicates, errors };
+  async getImportDuplicates(importId: string) {
+    if (!importId) return [];
+    const snap = await getDocs(collection(db, IMPORTS_COL, String(importId), 'duplicates'));
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .sort((a: any, b: any) => Number(a.rowNumber || 0) - Number(b.rowNumber || 0));
   },
 
   async getImports() {
@@ -1581,12 +1746,23 @@ export const firestoreService = {
   },
 
   async deleteImport(importId: string) {
-    const q = query(collection(db, LEADS_COL), where("importId", "==", importId));
-    const snap = await getDocs(q);
-    
-    const deletePromises = snap.docs.map(d => deleteDoc(doc(db, LEADS_COL, d.id)));
-    await Promise.all(deletePromises);
-    
+    const [leadSnap, duplicateSnap] = await Promise.all([
+      getDocs(query(collection(db, LEADS_COL), where("importId", "==", importId))),
+      getDocs(collection(db, IMPORTS_COL, String(importId), 'duplicates'))
+    ]);
+
+    const refs = [
+      ...leadSnap.docs.map(d => d.ref),
+      ...duplicateSnap.docs.map(d => d.ref)
+    ];
+
+    const BATCH_SIZE = 400;
+    for (let i = 0; i < refs.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      refs.slice(i, i + BATCH_SIZE).forEach(ref => batch.delete(ref));
+      await batch.commit();
+    }
+
     await deleteDoc(doc(db, IMPORTS_COL, importId));
   },
 
@@ -4856,8 +5032,10 @@ export const firestoreService = {
         ready: 0,
         break: 0,
         ended: 0,
-        notStarted: 0
+        notStarted: 0,
+        notStartedAgents: [] as any[]
       },
+      misconfiguredUserDetails: [] as any[],
       financeReady: false
     };
 
@@ -4887,6 +5065,18 @@ export const firestoreService = {
       .sort((a: any, b: any) => b.count - a.count);
 
     stats.misconfiguredUsers = Number(roleMap['Undefined'] || 0);
+    stats.misconfiguredUserDetails = visibleUsers
+      .filter((u: any) => {
+        const role = String(u.role || '').trim();
+        return !role || role === 'Undefined';
+      })
+      .map((u: any) => ({
+        id: u.id,
+        name: u.name || u.email || 'User',
+        email: u.email || '',
+        role: u.role || 'Undefined',
+        teamName: u.teamName || ''
+      }));
 
     // -------------------------
     // Import filename resolution.
@@ -5137,6 +5327,12 @@ export const firestoreService = {
 
       if (!shift) {
         stats.attendance.notStarted++;
+        stats.attendance.notStartedAgents.push({
+          id: agent.id,
+          name: agent.name || agent.email || 'Agent',
+          email: agent.email || '',
+          teamName: agent.teamName || ''
+        });
       } else if (shift.status === 'ready') {
         stats.attendance.ready++;
       } else if (shift.status === 'break') {
@@ -5145,6 +5341,12 @@ export const firestoreService = {
         stats.attendance.ended++;
       } else {
         stats.attendance.notStarted++;
+        stats.attendance.notStartedAgents.push({
+          id: agent.id,
+          name: agent.name || agent.email || 'Agent',
+          email: agent.email || '',
+          teamName: agent.teamName || ''
+        });
       }
     });
 
