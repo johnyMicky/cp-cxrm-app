@@ -105,17 +105,16 @@ export default function Settings() {
       setAtlantError('');
       const users = await firestoreService.getUsers();
 
-      const agents = (users as any[])
-        .filter((user: any) => String(user.role || '') === 'Agent')
+      const atlantUsersList = (users as any[])
         .sort((a: any, b: any) =>
           String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''))
         );
 
-      setAtlantUsers(agents);
+      setAtlantUsers(atlantUsersList);
 
       const drafts: Record<string, string> = {};
-      agents.forEach((agent: any) => {
-        drafts[String(agent.id)] = String(agent.atlantExtension || '');
+      atlantUsersList.forEach((user: any) => {
+        drafts[String(user.id)] = String(user.atlantExtension || '');
       });
       setAtlantDrafts(drafts);
     } catch (err: any) {
@@ -220,23 +219,23 @@ export default function Settings() {
     }
   };
 
-  const saveAtlantExtension = async (agent: any) => {
-    const agentId = String(agent?.id || '');
-    if (!agentId || !currentUserId) return;
+  const saveAtlantExtension = async (user: any) => {
+    const userId = String(user?.id || '');
+    if (!userId || !currentUserId) return;
 
     try {
-      setAtlantBusyId(agentId);
+      setAtlantBusyId(userId);
       setAtlantError('');
       setAtlantSuccess('');
 
-      const extension = String(atlantDrafts[agentId] || '').trim();
+      const extension = String(atlantDrafts[userId] || '').trim();
 
-      await firestoreService.setAtlantExtension(agentId, extension, currentUserId);
+      await firestoreService.setAtlantExtension(userId, extension, currentUserId);
 
       setAtlantSuccess(
         extension
-          ? `Atlant extension ${extension} saved for ${agent.name || agent.email}.`
-          : `Atlant extension cleared for ${agent.name || agent.email}.`
+          ? `Atlant extension ${extension} saved for ${user.name || user.email}.`
+          : `Atlant extension cleared for ${user.name || user.email}.`
       );
 
       await loadAtlantConfig();
@@ -545,7 +544,7 @@ export default function Settings() {
             <h2 className="text-xl font-semibold text-white">Atlant Click2Call</h2>
           </div>
           <p className="text-sm text-slate-400 mb-5">
-            Map each CRM Agent to their Atlant extension. The Atlant API key stays on the server.
+            Map every CRM user to their Atlant extension. The Atlant API key stays on the server.
           </p>
 
           {atlantError && (
@@ -561,10 +560,11 @@ export default function Settings() {
           )}
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left">
+            <table className="w-full min-w-[860px] text-left">
               <thead>
                 <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
-                  <th className="py-3">Agent</th>
+                  <th className="py-3">User</th>
+                  <th>Role</th>
                   <th>Team</th>
                   <th>Email</th>
                   <th>Atlant Extension</th>
@@ -572,22 +572,23 @@ export default function Settings() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {atlantUsers.map((agent: any) => {
-                  const agentId = String(agent.id);
+                {atlantUsers.map((user: any) => {
+                  const userId = String(user.id);
                   return (
-                    <tr key={agentId}>
+                    <tr key={userId}>
                       <td className="py-3 text-sm font-semibold text-white">
-                        {agent.name || agent.email || 'Agent'}
+                        {user.name || user.email || 'User'}
                       </td>
-                      <td className="text-xs text-slate-400">{agent.teamName || 'No Team'}</td>
-                      <td className="text-xs text-slate-400">{agent.email || '—'}</td>
+                      <td className="text-xs text-blue-300">{user.role || 'Undefined'}</td>
+                      <td className="text-xs text-slate-400">{user.teamName || 'No Team'}</td>
+                      <td className="text-xs text-slate-400">{user.email || '—'}</td>
                       <td>
                         <input
-                          value={atlantDrafts[agentId] ?? ''}
+                          value={atlantDrafts[userId] ?? ''}
                           onChange={e =>
                             setAtlantDrafts(prev => ({
                               ...prev,
-                              [agentId]: e.target.value
+                              [userId]: e.target.value
                             }))
                           }
                           placeholder="Example: 1005"
@@ -596,11 +597,11 @@ export default function Settings() {
                       </td>
                       <td className="text-right">
                         <button
-                          onClick={() => saveAtlantExtension(agent)}
-                          disabled={atlantBusyId === agentId}
+                          onClick={() => saveAtlantExtension(user)}
+                          disabled={atlantBusyId === userId}
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold"
                         >
-                          {atlantBusyId === agentId ? (
+                          {atlantBusyId === userId ? (
                             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <Save className="w-3.5 h-3.5" />
@@ -614,8 +615,8 @@ export default function Settings() {
 
                 {atlantUsers.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-8 text-center text-sm text-slate-600">
-                      No Agent users found.
+                    <td colSpan={6} className="py-8 text-center text-sm text-slate-600">
+                      No CRM users found.
                     </td>
                   </tr>
                 )}
