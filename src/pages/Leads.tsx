@@ -132,6 +132,14 @@ export default function Leads() {
   const [isAssigning, setIsAssigning] = useState(false);
   const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
   const [isReshuffling, setIsReshuffling] = useState(false);
+  const [isReshuffleConfirmOpen, setIsReshuffleConfirmOpen] = useState(false);
+  const [reshuffleProgress, setReshuffleProgress] = useState({
+    percent: 0,
+    processed: 0,
+    total: 0,
+    phase: 'preparing' as 'preparing' | 'updating' | 'history' | 'complete'
+  });
+  const [reshuffleResult, setReshuffleResult] = useState<any>(null);
   const [visibleLeadCount, setVisibleLeadCount] = useState(100);
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
@@ -496,34 +504,95 @@ export default function Leads() {
     }
   };
 
+  const reshufflePreview = useMemo(() => {
+    const statusCounts: Record<string, number> = {};
+
+    leads.forEach(lead => {
+      const status = normalizeStatus(lead.status);
+      if (reshuffleStatuses.includes(status)) {
+        statusCounts[status] = (statusCounts[status] || 0) + 1;
+      }
+    });
+
+    const total = Object.values(statusCounts).reduce(
+      (sum, count) => sum + Number(count || 0),
+      0
+    );
+
+    const recipientIds =
+      reshuffleAgents.length > 0
+        ? reshuffleAgents
+        : agents.map(agent => agent.id);
+
+    const recipientNames = recipientIds.map(id => {
+      const user = agents.find(agent => String(agent.id) === String(id));
+      return user?.name || user?.email || String(id);
+    });
+
+    return { statusCounts, total, recipientIds, recipientNames };
+  }, [leads, reshuffleStatuses, reshuffleAgents, agents]);
+
+  const openReshuffleConfirmation = () => {
+    if (reshuffleStatuses.length === 0) {
+      alert('Select at least one status to reshuffle.');
+      return;
+    }
+
+    if (reshufflePreview.recipientIds.length === 0) {
+      alert('Select at least one Agent to receive leads.');
+      return;
+    }
+
+    if (reshufflePreview.total === 0) {
+      alert('No matching leads were found for the selected statuses.');
+      return;
+    }
+
+    setIsReshuffleTargetOpen(false);
+    setIsReshuffleConfirmOpen(true);
+  };
+
   const handleReshuffle = async () => {
     if (isReshuffling) return;
 
-    const recipients =
-      reshuffleAgents.length > 0
-        ? reshuffleAgents
-        : agents.map(a => a.id);
+    const recipients = reshufflePreview.recipientIds;
 
     if (recipients.length === 0) {
       alert('Select at least one Agent to receive leads.');
       return;
     }
 
+    setIsReshuffleConfirmOpen(false);
     setIsReshuffling(true);
+    setReshuffleResult(null);
+    setReshuffleProgress({
+      percent: 0,
+      processed: 0,
+      total: reshufflePreview.total,
+      phase: 'preparing'
+    });
 
     try {
-      const reshuffledCount = await firestoreService.reshuffleLeads(
+      const result = await firestoreService.reshuffleLeads(
         recipients,
         String(currentUser.id || ''),
         reshuffleStatuses,
-        reshuffleTargetStatus || undefined
+        reshuffleTargetStatus || undefined,
+        progress => setReshuffleProgress(progress)
       );
 
-      handleSuccess(`Reshuffled ${reshuffledCount || 0} leads`);
+      setReshuffleProgress({
+        percent: 100,
+        processed: result?.totalChanged || 0,
+        total: result?.totalChanged || 0,
+        phase: 'complete'
+      });
+
+      setReshuffleResult(result);
+      await fetchLeads();
     } catch (err: any) {
       console.error('Reshuffle failed:', err);
       alert(err?.message || 'Failed to reshuffle leads.');
-    } finally {
       setIsReshuffling(false);
     }
   };
@@ -1028,7 +1097,7 @@ export default function Leads() {
                   Cancel
                 </button>
                 <button 
-                  onClick={handleReshuffle}
+                  onClick={openReshuffleConfirmation}
                   disabled={
                     reshuffleStatuses.length === 0 ||
                     reshuffleAgents.length === 0 ||
@@ -1041,12 +1110,189 @@ export default function Leads() {
                   className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 shadow-lg shadow-amber-500/20"
                 >
                   <RefreshCw className="w-4 h-4" />
-                  <span>Confirm Reshuffle</span>
+                  <span>Review Reshuffle</span>
                 </button>
               </div>
             </div>
           </div>
         )}
+        {isReshuffleConfirmOpen && !isReshuffling && (
+          <div className="fixed inset-0 z-[180] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <div className="w-full max-w-lg rounded-2xl border border-amber-500/30 bg-[#0A0F1C] shadow-2xl overflow-hidden">
+              <div className="p-5 border-b border-white/5 flex items-start gap-3">
+                <div className="p-2 rounded-xl bg-amber-500/10">
+                  <AlertTriangle className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Confirm Reshuffle</h3>
+                  <p className="text-xs text-slate-500 mt-1">Review exactly what will change before continuing.</p>
+                </div>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                  <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-3">Selected Leads</p>
+                  <div className="space-y-2">
+                    {Object.entries(reshufflePreview.statusCounts).map(([status, count]) => (
+                      <div key={status} className="flex items-center justify-between text-sm">
+                        <span className="text-slate-300">{status}</span>
+                        <span className="font-semibold text-white">{count as number}</span>
+                      </div>
+                    ))}
+                    <div className="pt-2 mt-2 border-t border-white/5 flex items-center justify-between">
+                      <span className="text-sm font-semibold text-white">Total</span>
+                      <span className="text-lg font-bold text-amber-400">{reshufflePreview.total}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                  <p className="text-xs text-slate-400">
+                    Status change:
+                    <span className="ml-2 font-semibold text-white">
+                      {reshuffleTargetStatus
+                        ? `${Object.keys(reshufflePreview.statusCounts).join(' + ')} → ${reshuffleTargetStatus}`
+                        : 'Keep current statuses'}
+                    </span>
+                  </p>
+                  <p className="text-xs text-slate-400 mt-3">Recipients:</p>
+                  <p className="text-sm text-blue-300 mt-1 leading-relaxed">
+                    {reshufflePreview.recipientNames.join(', ')}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
+                  <p className="text-xs text-rose-300 leading-relaxed">
+                    You are about to reshuffle <strong>{reshufflePreview.total}</strong> leads.
+                    {reshuffleTargetStatus
+                      ? <> Their status will be changed to <strong>{reshuffleTargetStatus}</strong>.</>
+                      : <> Their current statuses will be kept.</>}
+                    {' '}This action cannot be automatically undone.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-5 border-t border-white/5 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsReshuffleConfirmOpen(false)}
+                  className="px-5 py-2.5 rounded-lg text-sm font-semibold text-slate-300 hover:bg-white/5"
+                >
+                  No, Go Back
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReshuffle}
+                  className="px-5 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-sm font-semibold text-white shadow-lg shadow-amber-500/20"
+                >
+                  Yes, Start Reshuffle
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isReshuffling && !reshuffleResult && (
+          <div className="fixed inset-0 z-[190] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-blue-500/20 bg-[#0A0F1C] shadow-2xl p-6">
+              <div className="flex items-center gap-3">
+                <RefreshCw className="w-6 h-6 text-blue-400 animate-spin" />
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Reshuffling Leads...</h3>
+                  <p className="text-xs text-slate-500 mt-1">Do not close this window until the process reaches 100%.</p>
+                </div>
+              </div>
+
+              <div className="mt-6">
+                <div className="flex items-end justify-between">
+                  <span className="text-sm text-slate-400">
+                    {reshuffleProgress.phase === 'preparing'
+                      ? 'Preparing'
+                      : reshuffleProgress.phase === 'updating'
+                        ? 'Updating leads'
+                        : reshuffleProgress.phase === 'history'
+                          ? 'Saving audit history'
+                          : 'Complete'}
+                  </span>
+                  <span className="text-3xl font-bold text-blue-400">{reshuffleProgress.percent}%</span>
+                </div>
+
+                <div className="mt-3 h-3 rounded-full bg-white/5 overflow-hidden border border-white/5">
+                  <div
+                    className="h-full bg-blue-600 transition-all duration-300"
+                    style={{ width: `${Math.max(0, Math.min(100, reshuffleProgress.percent))}%` }}
+                  />
+                </div>
+
+                <p className="text-xs text-slate-500 mt-3 text-right">
+                  {reshuffleProgress.processed} / {reshuffleProgress.total || reshufflePreview.total} processed
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {reshuffleResult && (
+          <div className="fixed inset-0 z-[195] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+            <div className="w-full max-w-2xl max-h-[88vh] overflow-hidden rounded-2xl border border-emerald-500/20 bg-[#0A0F1C] shadow-2xl flex flex-col">
+              <div className="p-5 border-b border-white/5 flex items-start gap-3 shrink-0">
+                <div className="p-2 rounded-xl bg-emerald-500/10">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-semibold text-white">Reshuffle Completed</h3>
+                  <p className="text-sm text-emerald-400 mt-1">
+                    100% complete • {reshuffleResult.totalChanged} leads changed
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-5 overflow-y-auto custom-scrollbar space-y-5">
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-2">Status Summary</p>
+                  <div className="rounded-xl border border-white/5 divide-y divide-white/5 overflow-hidden">
+                    {Object.entries(reshuffleResult.statusChanges || {}).map(([transition, count]) => (
+                      <div key={transition} className="flex items-center justify-between px-4 py-3 bg-white/[0.02]">
+                        <span className="text-sm text-slate-300">{transition}</span>
+                        <span className="text-sm font-bold text-white">{count as number}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-2">Distribution by Recipient</p>
+                  <div className="rounded-xl border border-white/5 divide-y divide-white/5 overflow-hidden">
+                    {Object.entries(reshuffleResult.recipientCounts || {}).map(([name, count]) => (
+                      <div key={name} className="flex items-center justify-between px-4 py-3 bg-white/[0.02]">
+                        <span className="text-sm text-blue-300">{name}</span>
+                        <span className="text-sm font-bold text-white">{count as number}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-5 border-t border-white/5 flex justify-end shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReshuffleResult(null);
+                    setIsReshuffling(false);
+                    setIsReshuffleModalOpen(false);
+                    setIsReshuffleConfirmOpen(false);
+                    setReshuffleTargetStatus('');
+                    setIsReshuffleTargetOpen(false);
+                  }}
+                  className="px-6 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-sm font-semibold text-white"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
 
         {showFilters && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-[#0A0F1C] p-4 rounded-xl border border-white/5 shadow-sm animate-in fade-in slide-in-from-top-2 duration-200">
