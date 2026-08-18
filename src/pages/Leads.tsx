@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall } from 'lucide-react';
+import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall, Check } from 'lucide-react';
 import { format } from 'date-fns';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import LeadForm from '../components/LeadForm';
@@ -119,6 +119,7 @@ export default function Leads() {
   const [reshuffleStatuses, setReshuffleStatuses] = useState<string[]>([]);
   const [reshuffleAgents, setReshuffleAgents] = useState<string[]>([]);
   const [reshuffleTargetStatus, setReshuffleTargetStatus] = useState('');
+  const [isReshuffleTargetOpen, setIsReshuffleTargetOpen] = useState(false);
   const [selectedBulkAgents, setSelectedBulkAgents] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState<{ type: 'status' | 'assign' | 'reshuffle' | null, value: any }>({ type: null, value: null });
   const [showToast, setShowToast] = useState(false);
@@ -324,6 +325,7 @@ export default function Leads() {
     setBulkAction({ type: null, value: null });
     setIsReshuffleModalOpen(false);
     setReshuffleTargetStatus('');
+    setIsReshuffleTargetOpen(false);
     setActiveDropdown(null);
     if (message) showToastMessage(message);
   };
@@ -811,6 +813,7 @@ export default function Leads() {
                   );
                   setReshuffleAgents(agents.map(a => a.id));
                   setReshuffleTargetStatus('');
+                  setIsReshuffleTargetOpen(false);
                   setIsReshuffleModalOpen(true);
                 }}
                 className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-xs font-medium text-amber-400 border border-amber-500/20 transition-colors"
@@ -873,18 +876,71 @@ export default function Leads() {
                     <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
                       Change Status While Reshuffling
                     </label>
-                    <select
-                      value={reshuffleTargetStatus}
-                      onChange={e => setReshuffleTargetStatus(e.target.value)}
-                      className="mt-2 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/50"
-                    >
-                      <option value="">Keep current status</option>
-                      {STATUSES.map(status => (
-                        <option key={status} value={status}>
-                          Change to {status}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="relative mt-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsReshuffleTargetOpen(open => !open)}
+                        className={`w-full flex items-center justify-between gap-3 bg-[#111827] border rounded-lg px-3 py-2.5 text-sm text-left transition-colors ${
+                          isReshuffleTargetOpen
+                            ? 'border-blue-500/60 text-white'
+                            : 'border-white/10 text-slate-200 hover:border-white/20'
+                        }`}
+                      >
+                        <span className="truncate">
+                          {reshuffleTargetStatus
+                            ? `Change to ${reshuffleTargetStatus}`
+                            : 'Keep current status'}
+                        </span>
+                        <ChevronDown
+                          className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${
+                            isReshuffleTargetOpen ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </button>
+
+                      {isReshuffleTargetOpen && (
+                        <div className="absolute z-[160] left-0 right-0 mt-2 max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0B1220] shadow-2xl shadow-black/50 p-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReshuffleTargetStatus('');
+                              setIsReshuffleTargetOpen(false);
+                            }}
+                            className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm text-left transition-colors ${
+                              reshuffleTargetStatus === ''
+                                ? 'bg-blue-600/20 text-blue-300'
+                                : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                            }`}
+                          >
+                            <span>Keep current status</span>
+                            {reshuffleTargetStatus === '' && (
+                              <Check className="w-4 h-4 shrink-0" />
+                            )}
+                          </button>
+
+                          {STATUSES.map(status => (
+                            <button
+                              key={status}
+                              type="button"
+                              onClick={() => {
+                                setReshuffleTargetStatus(status);
+                                setIsReshuffleTargetOpen(false);
+                              }}
+                              className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm text-left transition-colors ${
+                                reshuffleTargetStatus === status
+                                  ? 'bg-blue-600/20 text-blue-300'
+                                  : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                              }`}
+                            >
+                              <span>Change to {status}</span>
+                              {reshuffleTargetStatus === status && (
+                                <Check className="w-4 h-4 shrink-0" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
 
                     {reshuffleStatuses.includes('No answer') && (
                       <p className="text-[11px] text-blue-300 mt-2">
