@@ -29,6 +29,18 @@ const STATUSES = [
   'JOR',
 ];
 
+const RESHUFFLE_PROTECTED_SOURCE_STATUSES = new Set([
+  'Callback',
+  'Low Potential',
+  'High Potential',
+  'Deposit'
+]);
+
+const RESHUFFLE_SOURCE_STATUSES = STATUSES.filter(
+  status => !RESHUFFLE_PROTECTED_SOURCE_STATUSES.has(status)
+);
+
+
 const normalizeStatus = (value: any) => {
   const raw = String(value || 'New').trim();
   const key = raw.toLowerCase().replace(/\s+/g, ' ');
@@ -106,6 +118,7 @@ export default function Leads() {
   const [isReshuffleModalOpen, setIsReshuffleModalOpen] = useState(false);
   const [reshuffleStatuses, setReshuffleStatuses] = useState<string[]>([]);
   const [reshuffleAgents, setReshuffleAgents] = useState<string[]>([]);
+  const [reshuffleTargetStatus, setReshuffleTargetStatus] = useState('');
   const [selectedBulkAgents, setSelectedBulkAgents] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState<{ type: 'status' | 'assign' | 'reshuffle' | null, value: any }>({ type: null, value: null });
   const [showToast, setShowToast] = useState(false);
@@ -310,6 +323,7 @@ export default function Leads() {
     setSelectedLeads([]);
     setBulkAction({ type: null, value: null });
     setIsReshuffleModalOpen(false);
+    setReshuffleTargetStatus('');
     setActiveDropdown(null);
     if (message) showToastMessage(message);
   };
@@ -499,7 +513,8 @@ export default function Leads() {
       const reshuffledCount = await firestoreService.reshuffleLeads(
         recipients,
         String(currentUser.id || ''),
-        reshuffleStatuses
+        reshuffleStatuses,
+        reshuffleTargetStatus || undefined
       );
 
       handleSuccess(`Reshuffled ${reshuffledCount || 0} leads`);
@@ -712,7 +727,7 @@ export default function Leads() {
                 </button>
                 {activeDropdown === 'bulkStatus' && (
                   <div className="absolute right-0 top-full mt-2 w-48 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 animate-in fade-in zoom-in duration-150">
-                    {STATUSES.map(status => (
+                    {RESHUFFLE_SOURCE_STATUSES.map(status => (
                       <button 
                         key={status}
                         onClick={() => handleBulkStatusUpdate(status)}
@@ -787,8 +802,15 @@ export default function Leads() {
 
               <button 
                 onClick={() => {
-                  setReshuffleStatuses(filters.statuses);
+                  setReshuffleStatuses(
+                    filters.statuses.filter(
+                      status => !RESHUFFLE_PROTECTED_SOURCE_STATUSES.has(
+                        normalizeStatus(status)
+                      )
+                    )
+                  );
                   setReshuffleAgents(agents.map(a => a.id));
+                  setReshuffleTargetStatus('');
                   setIsReshuffleModalOpen(true);
                 }}
                 className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-xs font-medium text-amber-400 border border-amber-500/20 transition-colors"
@@ -839,6 +861,39 @@ export default function Leads() {
                   </div>
                 </div>
 
+                <div className="rounded-xl border border-slate-700/60 bg-white/[0.02] p-4 space-y-3">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-300">Protected from Reshuffle</p>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Callback, Low Potential, High Potential and Deposit cannot be selected as source statuses.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+                      Change Status While Reshuffling
+                    </label>
+                    <select
+                      value={reshuffleTargetStatus}
+                      onChange={e => setReshuffleTargetStatus(e.target.value)}
+                      className="mt-2 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white outline-none focus:border-blue-500/50"
+                    >
+                      <option value="">Keep current status</option>
+                      {STATUSES.map(status => (
+                        <option key={status} value={status}>
+                          Change to {status}
+                        </option>
+                      ))}
+                    </select>
+
+                    {reshuffleStatuses.includes('No answer') && (
+                      <p className="text-[11px] text-blue-300 mt-2">
+                        No Answer selected: you can change these Leads to New, High Potential or any other status before redistribution.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
                 <div className="space-y-3">
                   <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Select Agents to Receive Leads</label>
                   <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto custom-scrollbar p-1">
@@ -872,9 +927,40 @@ export default function Leads() {
                   </div>
                 </div>
 
-                <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-                  <p className="text-xs text-amber-400 leading-relaxed">
-                    <strong>Warning:</strong> This will redistribute leads with the selected statuses among the selected agents. This action cannot be undone.
+                <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-2">
+                  {(() => {
+                    const matchingCount = leads.filter(lead =>
+                      reshuffleStatuses.includes(normalizeStatus(lead.status))
+                    ).length;
+
+                    const minPerAgent =
+                      reshuffleAgents.length > 0
+                        ? Math.floor(matchingCount / reshuffleAgents.length)
+                        : 0;
+
+                    const maxPerAgent =
+                      reshuffleAgents.length > 0
+                        ? Math.ceil(matchingCount / reshuffleAgents.length)
+                        : 0;
+
+                    return (
+                      <>
+                        <p className="text-xs text-amber-300 font-semibold">
+                          {matchingCount} matching Lead{matchingCount === 1 ? '' : 's'}
+                        </p>
+                        <p className="text-[11px] text-amber-400/90">
+                          Recipients: {reshuffleAgents.length} • Estimated distribution: {minPerAgent}
+                          {maxPerAgent !== minPerAgent ? `–${maxPerAgent}` : ''} per recipient
+                        </p>
+                        <p className="text-[11px] text-amber-400/90">
+                          Status after reshuffle: {reshuffleTargetStatus || 'Keep current status'}
+                        </p>
+                      </>
+                    );
+                  })()}
+
+                  <p className="text-xs text-amber-400 leading-relaxed pt-1">
+                    <strong>Warning:</strong> This action redistributes the selected source statuses and cannot be undone.
                   </p>
                 </div>
               </div>
@@ -887,7 +973,15 @@ export default function Leads() {
                 </button>
                 <button 
                   onClick={handleReshuffle}
-                  disabled={reshuffleStatuses.length === 0 || reshuffleAgents.length === 0}
+                  disabled={
+                    reshuffleStatuses.length === 0 ||
+                    reshuffleAgents.length === 0 ||
+                    reshuffleStatuses.some(status =>
+                      RESHUFFLE_PROTECTED_SOURCE_STATUSES.has(
+                        normalizeStatus(status)
+                      )
+                    )
+                  }
                   className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 shadow-lg shadow-amber-500/20"
                 >
                   <RefreshCw className="w-4 h-4" />
