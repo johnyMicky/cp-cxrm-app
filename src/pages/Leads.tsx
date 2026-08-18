@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall } from 'lucide-react';
 import { format } from 'date-fns';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
@@ -82,6 +82,11 @@ const getStatusStyles = (status: string) => {
 };
 
 export default function Leads() {
+  const [searchParams] = useSearchParams();
+  const dashboardStatus = searchParams.get('status') || '';
+  const dashboardView = searchParams.get('view') || '';
+  const dashboardRange = searchParams.get('range') || 'all';
+
   const [leads, setLeads] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
   const [search, setSearch] = useState('');
@@ -318,25 +323,58 @@ export default function Leads() {
     const countryQuery = safeLower(filters.country);
     const statusSet = new Set(filters.statuses);
     const agentSet = new Set(filters.agents);
+    const dashboardStatusNormalized = dashboardStatus ? normalizeStatus(dashboardStatus) : '';
+
+    const now = new Date();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const terminalStatuses = new Set(['Deposit', 'Lost', 'No Potential', 'JOR']);
+
+    const toDate = (value: any) => {
+      if (!value) return null;
+      const date = value?.toDate ? value.toDate() : new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+
+    let dashboardStartDate: Date | null = null;
+    if (dashboardRange === '1d') dashboardStartDate = new Date(today);
+    else if (dashboardRange === '1w') {
+      dashboardStartDate = new Date(now);
+      dashboardStartDate.setDate(dashboardStartDate.getDate() - 7);
+    } else if (dashboardRange === '1m') {
+      dashboardStartDate = new Date(now);
+      dashboardStartDate.setMonth(dashboardStartDate.getMonth() - 1);
+    }
 
     return leads.filter(lead => {
-      const matchesSearch =
-        !searchQuery ||
-        safeLower(lead.name).includes(searchQuery) ||
-        safeLower(lead.email).includes(searchQuery) ||
-        safeLower(lead.phone).includes(searchQuery) ||
-        safeLower(lead.country).includes(searchQuery);
+      const normalizedLeadStatus = normalizeStatus(lead.status);
+      const baseMatch =
+        (!searchQuery || safeLower(lead.name).includes(searchQuery) || safeLower(lead.email).includes(searchQuery) || safeLower(lead.phone).includes(searchQuery) || safeLower(lead.country).includes(searchQuery)) &&
+        (statusSet.size === 0 || statusSet.has(normalizedLeadStatus)) &&
+        (!sourceQuery || safeLower(lead.source).includes(sourceQuery)) &&
+        (agentSet.size === 0 || agentSet.has(lead.assigned_to)) &&
+        (!countryQuery || safeLower(lead.country).includes(countryQuery));
 
-      const matchesStatus =
-        statusSet.size === 0 ||
-        statusSet.has(normalizeStatus(lead.status));
-      const matchesSource = !sourceQuery || safeLower(lead.source).includes(sourceQuery);
-      const matchesAgent = agentSet.size === 0 || agentSet.has(lead.assigned_to);
-      const matchesCountry = !countryQuery || safeLower(lead.country).includes(countryQuery);
+      if (!baseMatch) return false;
+      if (dashboardStatusNormalized && normalizedLeadStatus !== dashboardStatusNormalized) return false;
 
-      return matchesSearch && matchesStatus && matchesSource && matchesAgent && matchesCountry;
+      const created = toDate(lead.createdAt);
+      const updated = toDate(lead.updatedAt) || created;
+      const callback = toDate(lead.callbackAt);
+
+      if (dashboardStartDate && (dashboardStatusNormalized || ['all', 'active'].includes(dashboardView)) && (!created || created < dashboardStartDate)) return false;
+      if (dashboardView === 'new-today') return !!created && created >= today && created < tomorrow;
+      if (dashboardView === 'active') return !terminalStatuses.has(normalizedLeadStatus);
+      if (dashboardView === 'unassigned') return !String(lead.assigned_to || '').trim();
+      if (dashboardView === 'callbacks-today') return !!callback && callback >= today && callback < tomorrow;
+      if (dashboardView === 'overdue-callbacks') return !!callback && callback < now && normalizedLeadStatus === 'Callback';
+      if (dashboardView === 'untouched24h') return !terminalStatuses.has(normalizedLeadStatus) && !!updated && now.getTime() - updated.getTime() >= 24 * 60 * 60 * 1000;
+      if (dashboardView === 'stale7d') return !terminalStatuses.has(normalizedLeadStatus) && !!updated && now.getTime() - updated.getTime() >= 7 * 24 * 60 * 60 * 1000;
+      return true;
     });
-  }, [leads, deferredSearch, filters.statuses, filters.source, filters.agents, filters.country]);
+  }, [leads, deferredSearch, filters.statuses, filters.source, filters.agents, filters.country, dashboardStatus, dashboardView, dashboardRange]);
 
   // Rendering thousands of table rows is one of the biggest UI bottlenecks.
   // Keep all records available for filters/bulk actions but render 100 at a time.
@@ -347,7 +385,7 @@ export default function Leads() {
 
   useEffect(() => {
     setVisibleLeadCount(100);
-  }, [deferredSearch, filters.statuses, filters.source, filters.agents, filters.country]);
+  }, [deferredSearch, filters.statuses, filters.source, filters.agents, filters.country, dashboardStatus, dashboardView, dashboardRange]);
 
   const handleSelectAll = () => {
     if (selectedLeads.length === filteredLeads.length) {
@@ -608,6 +646,27 @@ export default function Leads() {
           )}
         </div>
       </div>
+
+      {(dashboardStatus || dashboardView) && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-blue-500/20 bg-blue-500/5 px-4 py-3">
+          <div>
+            <p className="text-xs uppercase tracking-wider font-bold text-blue-400">Dashboard Drill-down</p>
+            <p className="text-sm text-slate-300 mt-1">
+              {dashboardStatus
+                ? `Status: ${normalizeStatus(dashboardStatus)}${dashboardRange !== 'all' ? ` • Range: ${dashboardRange.toUpperCase()}` : ''}`
+                : dashboardView === 'unassigned' ? 'Unassigned Leads'
+                : dashboardView === 'overdue-callbacks' ? 'Overdue Callbacks'
+                : dashboardView === 'untouched24h' ? 'Untouched 24h+'
+                : dashboardView === 'stale7d' ? 'Stale 7d+'
+                : dashboardView === 'callbacks-today' ? 'Callbacks Today'
+                : dashboardView === 'new-today' ? 'New Today'
+                : dashboardView === 'active' ? `Active Leads${dashboardRange !== 'all' ? ` • Range: ${dashboardRange.toUpperCase()}` : ''}`
+                : 'Dashboard Leads'}
+            </p>
+          </div>
+          <Link to="/leads" className="inline-flex items-center justify-center px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-300">Clear Dashboard Filter</Link>
+        </div>
+      )}
 
       <div className="space-y-4">
         <div className="flex items-center justify-between bg-[#0A0F1C] p-4 rounded-xl border border-white/5 shadow-sm">
