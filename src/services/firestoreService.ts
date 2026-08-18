@@ -1291,7 +1291,37 @@ export const firestoreService = {
     let internalDuplicates = 0;
     let errors = 0;
 
-    const normalizePhone = (value: any) => String(value || '').replace(/\D/g, '');
+    // Build several conservative comparison keys for the same phone.
+    // This catches common formatting differences:
+    // +44..., 0044..., spaces/brackets/dashes, and a single local trunk "0".
+    // A 10-digit suffix is also indexed as a fallback for records where an
+    // international prefix was added/removed between different lead files.
+    const phoneKeys = (value: any) => {
+      const digits = String(value ?? '').replace(/\D/g, '');
+      if (!digits) return [] as string[];
+
+      const keys = new Set<string>();
+      keys.add(`full:${digits}`);
+
+      if (digits.startsWith('00') && digits.length > 2) {
+        keys.add(`full:${digits.slice(2)}`);
+      }
+
+      if (digits.startsWith('0') && digits.length > 7) {
+        keys.add(`local:${digits.slice(1)}`);
+      } else if (digits.length > 7) {
+        keys.add(`local:${digits}`);
+      }
+
+      if (digits.length >= 10) {
+        keys.add(`suffix10:${digits.slice(-10)}`);
+      }
+
+      return Array.from(keys);
+    };
+
+    const primaryPhone = (value: any) =>
+      String(value ?? '').replace(/\D/g, '');
 
     const importRef = await addDoc(collection(db, IMPORTS_COL), {
       fileName,
@@ -1315,18 +1345,26 @@ export const firestoreService = {
       const importNameMap = new Map<string, string>();
       importsSnap.docs.forEach(importDoc => {
         const data = importDoc.data() as any;
-        importNameMap.set(String(importDoc.id), String(data.fileName || `Import ${importDoc.id}`));
+        importNameMap.set(
+          String(importDoc.id),
+          String(data.fileName || `Import ${importDoc.id}`)
+        );
       });
 
-      const existingByPhone = new Map<string, any>();
+      // One key can point to one canonical existing Lead. We only need a
+      // positive duplicate match, while the duplicate report preserves the
+      // matched Lead/file details.
+      const existingByPhoneKey = new Map<string, any>();
+
       existingLeadSnap.docs.forEach(existingDoc => {
         const data = existingDoc.data() as any;
-        const normalizedPhone =
-          String(data.phoneNormalized || '').trim() || normalizePhone(data.phone);
 
-        if (!normalizedPhone || existingByPhone.has(normalizedPhone)) return;
+        const resolvedFileName =
+          String(data.importFileName || '').trim() ||
+          (data.importId && importNameMap.get(String(data.importId))) ||
+          'Manual / Legacy';
 
-        existingByPhone.set(normalizedPhone, {
+        const record = {
           id: existingDoc.id,
           name: data.name || '',
           email: data.email || '',
@@ -1334,28 +1372,44 @@ export const firestoreService = {
           status: data.status || 'New',
           assigned_to: data.assigned_to || '',
           importId: data.importId || '',
-          importFileName:
-            String(data.importFileName || '').trim() ||
-            (data.importId && importNameMap.get(String(data.importId))) ||
-            'Manual / Legacy'
+          importFileName: resolvedFileName
+        };
+
+        const sourceValue =
+          String(data.phone || '').trim() ||
+          String(data.phoneNormalized || '').trim();
+
+        phoneKeys(sourceValue).forEach(key => {
+          if (!existingByPhoneKey.has(key)) {
+            existingByPhoneKey.set(key, record);
+          }
         });
       });
 
-      const seenInCurrentFile = new Map<string, any>();
-      const uniqueLeads: any[] = [];
+      const currentFileByPhoneKey = new Map<string, any>();
+      const uniqueLeads: Array<{ lead: any; leadRef: any }> = [];
       const duplicateDetails: any[] = [];
 
       leads.forEach((lead: any, rowIndex: number) => {
-        const normalizedPhone = normalizePhone(lead.phone);
+        const keys = phoneKeys(lead.phone);
+        const normalizedPhone = primaryPhone(lead.phone);
 
-        if (!normalizedPhone) {
-          uniqueLeads.push({ ...lead, phoneNormalized: '' });
+        if (keys.length === 0) {
+          uniqueLeads.push({
+            lead: { ...lead, phoneNormalized: '' },
+            leadRef: doc(collection(db, LEADS_COL))
+          });
           return;
         }
 
-        const currentFileMatch = seenInCurrentFile.get(normalizedPhone);
-        if (currentFileMatch) {
+        const currentFileMatchKey = keys.find(key =>
+          currentFileByPhoneKey.has(key)
+        );
+
+        if (currentFileMatchKey) {
+          const currentFileMatch = currentFileByPhoneKey.get(currentFileMatchKey);
           internalDuplicates++;
+
           duplicateDetails.push({
             duplicateType: 'Current File',
             rowNumber: rowIndex + 2,
@@ -1363,7 +1417,7 @@ export const firestoreService = {
             attemptedEmail: lead.email || '',
             attemptedPhone: lead.phone || '',
             normalizedPhone,
-            matchedLeadId: '',
+            matchedLeadId: currentFileMatch.id || '',
             matchedLeadName: currentFileMatch.name || '',
             matchedLeadEmail: currentFileMatch.email || '',
             matchedLeadPhone: currentFileMatch.phone || '',
@@ -1371,16 +1425,20 @@ export const firestoreService = {
             matchedAssignedTo: currentFileMatch.assigned_to || '',
             matchedImportId: importRef.id,
             matchedFileName: fileName,
+            matchedPhoneKey: currentFileMatchKey,
             createdAt: serverTimestamp()
           });
           return;
         }
 
-        seenInCurrentFile.set(normalizedPhone, lead);
+        const databaseMatchKey = keys.find(key =>
+          existingByPhoneKey.has(key)
+        );
 
-        const existingMatch = existingByPhone.get(normalizedPhone);
-        if (existingMatch) {
+        if (databaseMatchKey) {
+          const existingMatch = existingByPhoneKey.get(databaseMatchKey);
           databaseDuplicates++;
+
           duplicateDetails.push({
             duplicateType: 'CRM Database',
             rowNumber: rowIndex + 2,
@@ -1396,63 +1454,133 @@ export const firestoreService = {
             matchedAssignedTo: existingMatch.assigned_to || '',
             matchedImportId: existingMatch.importId || '',
             matchedFileName: existingMatch.importFileName || 'Manual / Legacy',
+            matchedPhoneKey: databaseMatchKey,
             createdAt: serverTimestamp()
+          });
+
+          // Still index this row inside the current file so a second occurrence
+          // in the same upload is correctly reported as Current File.
+          const currentRecord = {
+            id: '',
+            name: lead.name || '',
+            email: lead.email || '',
+            phone: lead.phone || '',
+            status: lead.status || 'New',
+            assigned_to: lead.assigned_to || ''
+          };
+          keys.forEach(key => {
+            if (!currentFileByPhoneKey.has(key)) {
+              currentFileByPhoneKey.set(key, currentRecord);
+            }
           });
           return;
         }
 
-        uniqueLeads.push({ ...lead, phoneNormalized: normalizedPhone });
-
-        existingByPhone.set(normalizedPhone, {
-          id: '',
+        const leadRef = doc(collection(db, LEADS_COL));
+        const currentRecord = {
+          id: leadRef.id,
           name: lead.name || '',
           email: lead.email || '',
           phone: lead.phone || '',
           status: lead.status || 'New',
-          assigned_to: lead.assigned_to || '',
-          importId: importRef.id,
-          importFileName: fileName
+          assigned_to: lead.assigned_to || ''
+        };
+
+        keys.forEach(key => {
+          currentFileByPhoneKey.set(key, currentRecord);
+          existingByPhoneKey.set(key, {
+            ...currentRecord,
+            importId: importRef.id,
+            importFileName: fileName
+          });
+        });
+
+        uniqueLeads.push({
+          lead: {
+            ...lead,
+            phoneNormalized: normalizedPhone
+          },
+          leadRef
         });
       });
 
-      const BATCH_SIZE = 400;
+      // A Lead with an imported Note requires two Firestore writes
+      // (Lead + Note). 200 items keeps every batch safely below 500 writes.
+      const BATCH_SIZE = 200;
       const now = new Date();
 
       for (let i = 0; i < uniqueLeads.length; i += BATCH_SIZE) {
         const batch = writeBatch(db);
-        uniqueLeads.slice(i, i + BATCH_SIZE).forEach(lead => {
+        const chunk = uniqueLeads.slice(i, i + BATCH_SIZE);
+
+        chunk.forEach(({ lead, leadRef }) => {
           try {
-            const docRef = doc(collection(db, LEADS_COL));
-            batch.set(docRef, sanitizeData({
-              ...lead,
-              createdBy: userId,
-              importId: importRef.id,
-              importFileName: fileName,
-              createdAt: now,
-              updatedAt: now
-            }));
+            const importedNote = String(lead.notes || '').trim();
+
+            // Do not keep imported comments as an unused raw lead.notes string.
+            // LeadDetail reads the real "notes" collection, so import it there.
+            const {
+              notes: _importOnlyNotes,
+              ...leadWithoutImportOnlyNotes
+            } = lead;
+
+            batch.set(
+              leadRef,
+              sanitizeData({
+                ...leadWithoutImportOnlyNotes,
+                createdBy: userId,
+                importId: importRef.id,
+                importFileName: fileName,
+                createdAt: now,
+                updatedAt: now
+              })
+            );
+
+            if (importedNote) {
+              const noteRef = doc(collection(db, "notes"));
+              batch.set(noteRef, {
+                lead_id: leadRef.id,
+                user_id: userId,
+                content: importedNote,
+                source: 'Import',
+                importId: importRef.id,
+                importFileName: fileName,
+                createdAt: now
+              });
+            }
+
             imported++;
           } catch (err) {
-            console.error('Lead sanitization error:', err);
+            console.error('Lead import preparation error:', err);
             errors++;
           }
         });
+
         await batch.commit();
 
         if (onProgress) {
           onProgress(
-            Math.min(i + BATCH_SIZE + databaseDuplicates + internalDuplicates, leads.length),
+            Math.min(
+              i + chunk.length + databaseDuplicates + internalDuplicates,
+              leads.length
+            ),
             leads.length
           );
         }
       }
 
-      for (let i = 0; i < duplicateDetails.length; i += BATCH_SIZE) {
+      // Persistent duplicate report.
+      const DUP_BATCH_SIZE = 400;
+      for (let i = 0; i < duplicateDetails.length; i += DUP_BATCH_SIZE) {
         const batch = writeBatch(db);
-        duplicateDetails.slice(i, i + BATCH_SIZE).forEach(detail => {
-          const ref = doc(collection(db, IMPORTS_COL, importRef.id, 'duplicates'));
-          batch.set(ref, sanitizeData(detail));
-        });
+        duplicateDetails
+          .slice(i, i + DUP_BATCH_SIZE)
+          .forEach(detail => {
+            const ref = doc(
+              collection(db, IMPORTS_COL, importRef.id, 'duplicates')
+            );
+            batch.set(ref, sanitizeData(detail));
+          });
         await batch.commit();
       }
 
@@ -1468,7 +1596,9 @@ export const firestoreService = {
         completedAt: serverTimestamp()
       });
 
-      if (onProgress) onProgress(leads.length, leads.length);
+      if (onProgress) {
+        onProgress(leads.length, leads.length);
+      }
 
       return {
         importId: importRef.id,
@@ -1489,16 +1619,9 @@ export const firestoreService = {
         status: 'failed',
         completedAt: serverTimestamp()
       }).catch(console.error);
+
       throw error;
     }
-  },
-
-  async getImportDuplicates(importId: string) {
-    if (!importId) return [];
-    const snap = await getDocs(collection(db, IMPORTS_COL, String(importId), 'duplicates'));
-    return snap.docs
-      .map(d => ({ id: d.id, ...d.data() } as any))
-      .sort((a: any, b: any) => Number(a.rowNumber || 0) - Number(b.rowNumber || 0));
   },
 
   async getImports() {
@@ -3370,7 +3493,12 @@ export const firestoreService = {
     }
   },
 
-  async reshuffleLeads(agentIds: string[], userId: string, statusFilter: string[]) {
+  async reshuffleLeads(
+    agentIds: string[],
+    userId: string,
+    statusFilter: string[],
+    targetStatus?: string
+  ) {
     if (!userId) {
       throw new Error('Current user is required.');
     }
@@ -3394,9 +3522,68 @@ export const firestoreService = {
       throw new Error('You do not have permission to reshuffle leads.');
     }
 
+    const canonicalStatus = (value: any) => {
+      const raw = String(value || '').trim();
+      const key = raw.toLowerCase().replace(/\s+/g, ' ');
+
+      const map: Record<string, string> = {
+        'new': 'New',
+        'vm': 'VM',
+        'no answer': 'No answer',
+        'deposit': 'Deposit',
+        'callback': 'Callback',
+        'low potential': 'Low Potential',
+        'high potential': 'High Potential',
+        'no potential': 'No Potential',
+        'language barrier': 'Language Barrier',
+        'wrong person': 'Wrong Person',
+        'underage': 'Underage',
+        'no experience': 'No Experience',
+        'not interested': 'Not Interested',
+        'hung up': 'Hung Up',
+        'hang up': 'Hung Up',
+        'wrong number': 'Wrong Number',
+        'drop': 'Drop',
+        'jor': 'JOR'
+      };
+
+      return map[key] || raw;
+    };
+
+    // These statuses must never be taken OUT of their current ownership by
+    // reshuffle. They remain valid as a target status if management chooses it.
+    const protectedSourceStatuses = new Set([
+      'Callback',
+      'Low Potential',
+      'High Potential',
+      'Deposit'
+    ]);
+
     const normalizedStatuses = Array.from(
-      new Set((statusFilter || []).map(status => String(status)).filter(Boolean))
+      new Set(
+        (statusFilter || [])
+          .map(status => canonicalStatus(status))
+          .filter(Boolean)
+      )
     );
+
+    if (normalizedStatuses.length === 0) {
+      throw new Error('Select at least one status to reshuffle.');
+    }
+
+    const protectedRequested = normalizedStatuses.filter(status =>
+      protectedSourceStatuses.has(status)
+    );
+
+    if (protectedRequested.length > 0) {
+      throw new Error(
+        `${protectedRequested.join(', ')} cannot be used as a reshuffle source status.`
+      );
+    }
+
+    const normalizedTargetStatus = targetStatus
+      ? canonicalStatus(targetStatus)
+      : '';
 
     let allowedRecipientIds = new Set<string>();
     let visibleLeadAssigneeIds: Set<string> | null = null;
@@ -3444,19 +3631,25 @@ export const firestoreService = {
 
     if (invalidRecipientId) {
       if (currentRole === 'Team Leader') {
-        throw new Error('Team Leaders can reshuffle leads only to Agents in their own team.');
+        throw new Error(
+          'Team Leaders can reshuffle leads only to Agents in their own team.'
+        );
       }
       throw new Error('One or more selected recipients are not valid.');
     }
 
-    // PERFORMANCE FIX: Team Leaders should never download the whole company
-    // lead collection just to reshuffle their own team. Query only team assignees.
+    // Team Leaders load only their team's assignees.
     let rawLeadDocs: any[] = [];
 
     if (currentRole === 'Team Leader' && visibleLeadAssigneeIds) {
       const scopedSnapshots = await Promise.all(
         Array.from(visibleLeadAssigneeIds).map(assigneeId =>
-          getDocs(query(collection(db, LEADS_COL), where("assigned_to", "==", assigneeId)))
+          getDocs(
+            query(
+              collection(db, LEADS_COL),
+              where("assigned_to", "==", assigneeId)
+            )
+          )
         )
       );
       rawLeadDocs = scopedSnapshots.flatMap(snapshot => snapshot.docs);
@@ -3472,15 +3665,24 @@ export const firestoreService = {
         seenLeadIds.add(leadDoc.id);
         return true;
       })
-      .map((leadDoc: any) => ({ id: leadDoc.id, ...leadDoc.data() } as any))
+      .map(
+        (leadDoc: any) =>
+          ({ id: leadDoc.id, ...leadDoc.data() } as any)
+      )
       .filter((lead: any) => {
         const assignedTo = String(lead.assigned_to || '');
-
         if (!assignedTo) return false;
+
+        const leadStatus = canonicalStatus(lead.status);
+
+        // Server-side protection even if an old frontend tries to send one.
+        if (protectedSourceStatuses.has(leadStatus)) {
+          return false;
+        }
 
         if (
           normalizedStatuses.length > 0 &&
-          !normalizedStatuses.includes(String(lead.status || ''))
+          !normalizedStatuses.includes(leadStatus)
         ) {
           return false;
         }
@@ -3500,9 +3702,6 @@ export const firestoreService = {
       return 0;
     }
 
-    // TRUE shuffle: randomize both leads and recipients.
-    // The previous round-robin could recreate the exact same assignments and
-    // visually look like "nothing happened".
     const shuffle = <T,>(items: T[]): T[] => {
       const arr = [...items];
       for (let i = arr.length - 1; i > 0; i--) {
@@ -3521,9 +3720,6 @@ export const firestoreService = {
         member.name || member.email || String(member.id);
     });
 
-    // Keep distribution balanced while strongly preferring a DIFFERENT agent
-    // for every lead. With two or more recipients, a lead will not stay on the
-    // same agent unless there is no valid alternative.
     const assignmentCounts: Record<string, number> = {};
     shuffledRecipients.forEach(id => {
       assignmentCounts[id] = 0;
@@ -3533,16 +3729,17 @@ export const firestoreService = {
       const currentAgentId = String(lead.assigned_to || '');
 
       const candidates = shuffledRecipients
-        .filter(id => shuffledRecipients.length === 1 || id !== currentAgentId)
+        .filter(
+          id => shuffledRecipients.length === 1 || id !== currentAgentId
+        )
         .sort((a, b) => {
-          const countDiff = (assignmentCounts[a] || 0) - (assignmentCounts[b] || 0);
+          const countDiff =
+            (assignmentCounts[a] || 0) - (assignmentCounts[b] || 0);
           if (countDiff !== 0) return countDiff;
           return Math.random() - 0.5;
         });
 
-      const nextAgentId =
-        candidates[0] ||
-        shuffledRecipients[0];
+      const nextAgentId = candidates[0] || shuffledRecipients[0];
 
       assignmentCounts[nextAgentId] =
         (assignmentCounts[nextAgentId] || 0) + 1;
@@ -3554,26 +3751,42 @@ export const firestoreService = {
       };
     });
 
-    const changedAssignments = assignments.filter(
-      assignment => assignment.oldAgentId !== assignment.agentId
-    );
+    // If a target status was selected, a Lead may still need an update even
+    // when it stays on the same recipient.
+    const changedAssignments = assignments.filter(assignment => {
+      const agentChanged =
+        assignment.oldAgentId !== assignment.agentId;
 
-    // If only one recipient is selected and every lead is already assigned to
-    // that recipient, there is genuinely nothing to change.
+      const statusChanged =
+        !!normalizedTargetStatus &&
+        canonicalStatus(assignment.lead.status) !== normalizedTargetStatus;
+
+      return agentChanged || statusChanged;
+    });
+
     if (changedAssignments.length === 0) {
       return 0;
     }
 
-    const BATCH_SIZE = 500;
+    const BATCH_SIZE = 450;
     const commits: Promise<void>[] = [];
     let batch = writeBatch(db);
     let batchCount = 0;
 
     for (const assignment of changedAssignments) {
-      batch.update(doc(db, LEADS_COL, String(assignment.lead.id)), {
+      const updatePayload: any = {
         assigned_to: assignment.agentId,
         updatedAt: serverTimestamp()
-      });
+      };
+
+      if (normalizedTargetStatus) {
+        updatePayload.status = normalizedTargetStatus;
+      }
+
+      batch.update(
+        doc(db, LEADS_COL, String(assignment.lead.id)),
+        updatePayload
+      );
 
       batchCount++;
 
@@ -3590,26 +3803,38 @@ export const firestoreService = {
 
     await Promise.all(commits);
 
-    // Preserve the full per-lead History trail, but write it in Firestore
-    // batches instead of hundreds of individual addDoc network round trips.
+    // Preserve full per-lead History.
     let historyBatch = writeBatch(db);
     let historyBatchCount = 0;
     const historyCommits: Promise<void>[] = [];
 
     for (const { lead, oldAgentId, agentId } of changedAssignments) {
+      const oldStatus = canonicalStatus(lead.status);
       const historyRef = doc(collection(db, "history"));
+
+      const statusText =
+        normalizedTargetStatus && oldStatus !== normalizedTargetStatus
+          ? ` • Status ${oldStatus} → ${normalizedTargetStatus}`
+          : '';
+
       historyBatch.set(historyRef, {
         lead_id: lead.id,
         user_id: userId,
         action: "Reshuffled",
         details:
-          `Lead reshuffled from ${recipientNameMap[oldAgentId] || oldAgentId || 'Unassigned'} ` +
-          `to ${recipientNameMap[agentId] || agentId}`,
+          `Lead reshuffled from ${
+            recipientNameMap[oldAgentId] ||
+            oldAgentId ||
+            'Unassigned'
+          } to ${
+            recipientNameMap[agentId] ||
+            agentId
+          }${statusText}`,
         createdAt: serverTimestamp()
       });
 
       historyBatchCount++;
-      if (historyBatchCount === 500) {
+      if (historyBatchCount === 450) {
         historyCommits.push(historyBatch.commit());
         historyBatch = writeBatch(db);
         historyBatchCount = 0;
