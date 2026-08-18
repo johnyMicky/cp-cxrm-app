@@ -96,7 +96,13 @@ export default function LeadImport({ onClose, onSuccess }: LeadImportProps) {
       const data = await file.arrayBuffer();
       const workbook = XLSX.read(data);
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet) as any[];
+      // raw:false uses Excel's displayed cell text where possible.
+      // This is important for phone numbers because numeric cells can otherwise
+      // lose formatting/leading zeroes before duplicate comparison.
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+        raw: false,
+        defval: ''
+      }) as any[];
 
       if (jsonData.length === 0) {
         throw new Error('The uploaded file is empty.');
