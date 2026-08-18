@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, Trash2, Calendar, User, CheckCircle2, AlertCircle, Loader2, Search, Filter, Users, Shuffle, X } from 'lucide-react';
+import { FileText, Trash2, Calendar, User, CheckCircle2, AlertCircle, Loader2, Search, Filter, Users, Shuffle, X, Copy, Eye } from 'lucide-react';
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
 import { cn } from '../App';
@@ -30,6 +30,11 @@ export default function Imports() {
   const [isDistributing, setIsDistributing] = useState(false);
   const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
   const [distributionTotal, setDistributionTotal] = useState(0);
+  const [duplicateImport, setDuplicateImport] = useState<ImportRecord | null>(null);
+  const [duplicateRows, setDuplicateRows] = useState<any[]>([]);
+  const [duplicateLoading, setDuplicateLoading] = useState(false);
+  const [duplicateCopied, setDuplicateCopied] = useState('');
+
 
   const currentUserId = localStorage.getItem('userId') || '';
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
@@ -70,6 +75,32 @@ export default function Imports() {
     } finally {
       setIsDeleting(false);
     }
+  };
+
+  const openDuplicateReport = async (imp: ImportRecord) => {
+    setDuplicateImport(imp);
+    setDuplicateRows([]);
+    setDuplicateLoading(true);
+    try {
+      setDuplicateRows(await firestoreService.getImportDuplicates(imp.id) as any[]);
+    } catch (err) {
+      console.error('Failed to load duplicate report:', err);
+    } finally {
+      setDuplicateLoading(false);
+    }
+  };
+
+  const closeDuplicateReport = () => {
+    setDuplicateImport(null);
+    setDuplicateRows([]);
+    setDuplicateCopied('');
+  };
+
+  const copyDuplicatePhone = async (phone: string, id: string) => {
+    if (!phone) return;
+    await navigator.clipboard.writeText(phone);
+    setDuplicateCopied(id);
+    setTimeout(() => setDuplicateCopied(''), 1500);
   };
 
   const openDistributionModal = (imp: ImportRecord, mode: 'distribute' | 'reshuffle') => {
@@ -240,6 +271,13 @@ export default function Imports() {
                   </div>
 
                   <div className="flex items-center flex-wrap gap-2 ml-auto lg:ml-0">
+                    {(imp.duplicateCount || 0) > 0 && (
+                      <button onClick={() => openDuplicateReport(imp)} className="flex items-center space-x-2 px-3 py-2.5 rounded-xl bg-amber-500/10 text-amber-400 hover:bg-amber-500 hover:text-slate-950 transition-all" title="View duplicate matches and source files">
+                        <Eye className="w-4 h-4" />
+                        <span className="text-xs font-semibold">Duplicates</span>
+                      </button>
+                    )}
+
                     <button
                       onClick={() => openDistributionModal(imp, 'distribute')}
                       disabled={distributionUsers.length === 0}
@@ -284,6 +322,44 @@ export default function Imports() {
           <p className="text-slate-500 mt-2 max-w-md mx-auto">
             {searchTerm ? `No results matching "${searchTerm}"` : "You haven't imported any lead files yet."}
           </p>
+        </div>
+      )}
+
+      {duplicateImport && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-5xl max-h-[85vh] shadow-2xl overflow-hidden flex flex-col">
+            <div className="p-5 border-b border-white/5 flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2"><AlertCircle className="w-5 h-5 text-amber-400" /><h2 className="text-xl font-semibold text-white">Duplicate Report</h2></div>
+                <p className="text-xs text-slate-500 mt-2">{duplicateImport.fileName} • {duplicateImport.duplicateCount || 0} duplicate(s)</p>
+              </div>
+              <button onClick={closeDuplicateReport} className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="overflow-auto custom-scrollbar flex-1">
+              {duplicateLoading ? (
+                <div className="py-20 flex flex-col items-center gap-3 text-slate-500"><Loader2 className="w-8 h-8 animate-spin text-amber-400" /><span className="text-sm">Loading duplicate matches...</span></div>
+              ) : duplicateRows.length > 0 ? (
+                <table className="w-full min-w-[950px] text-left">
+                  <thead className="sticky top-0 bg-[#0A0F1C] z-10">
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5"><th className="px-5 py-3">Uploaded Lead</th><th>Phone</th><th>Type</th><th>Matched Existing Lead</th><th>Matched File</th><th>Status</th><th>Agent</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {duplicateRows.map((row: any) => (
+                      <tr key={row.id} className="hover:bg-white/[0.02]">
+                        <td className="px-5 py-3"><p className="text-sm font-medium text-white">{row.attemptedName || '—'}</p><p className="text-[10px] text-slate-600">Row {row.rowNumber || '—'}</p></td>
+                        <td><button onClick={() => copyDuplicatePhone(row.attemptedPhone || row.normalizedPhone, row.id)} className="inline-flex items-center gap-2 text-xs text-blue-300 hover:text-blue-200">{row.attemptedPhone || row.normalizedPhone || '—'}<Copy className="w-3.5 h-3.5" />{duplicateCopied === row.id && <span className="text-[9px] text-emerald-400">Copied</span>}</button></td>
+                        <td><span className={`text-[10px] px-2 py-1 rounded ${row.duplicateType === 'CRM Database' ? 'bg-rose-500/10 text-rose-300' : 'bg-amber-500/10 text-amber-300'}`}>{row.duplicateType || 'Duplicate'}</span></td>
+                        <td><p className="text-xs text-slate-300">{row.matchedLeadName || '—'}</p><p className="text-[10px] text-slate-600">{row.matchedLeadPhone || ''}</p></td>
+                        <td className="text-xs text-violet-300 max-w-[220px] truncate" title={row.matchedFileName || ''}>{row.matchedFileName || 'Manual / Legacy'}</td>
+                        <td className="text-xs text-slate-300">{row.matchedStatus || '—'}</td>
+                        <td className="text-xs text-slate-400">{row.matchedAssignedTo ? (users.find((u: any) => String(u.id) === String(row.matchedAssignedTo))?.name || 'Unknown') : 'Unassigned'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : <div className="py-20 text-center text-sm text-slate-500">No duplicate detail rows stored for this import.</div>}
+            </div>
+          </div>
         </div>
       )}
 
