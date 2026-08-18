@@ -826,9 +826,9 @@ export default function Leads() {
         </div>
 
         {isReshuffleModalOpen && (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-            <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-              <div className="flex items-center justify-between p-6 border-b border-white/5 bg-white/[0.02]">
+          <div className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto p-4 md:p-6 bg-black/60 backdrop-blur-sm">
+            <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md max-h-[calc(100vh-2rem)] md:max-h-[calc(100vh-3rem)] shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200 flex flex-col">
+              <div className="flex items-center justify-between p-4 md:p-5 border-b border-white/5 bg-white/[0.02] shrink-0">
                 <h2 className="text-xl font-semibold text-white tracking-tight flex items-center space-x-2">
                   <RefreshCw className="w-5 h-5 text-amber-400" />
                   <span>Reshuffle Leads</span>
@@ -841,11 +841,11 @@ export default function Leads() {
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              <div className="p-6 space-y-6">
+              <div className="p-4 md:p-5 space-y-4 overflow-y-auto custom-scrollbar min-h-0 flex-1">
                 <div className="space-y-3">
                   <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Select Statuses to Reshuffle</label>
                   <div className="grid grid-cols-2 gap-2">
-                    {STATUSES.map(status => (
+                    {RESHUFFLE_SOURCE_STATUSES.map(status => (
                       <button
                         key={status}
                         onClick={() => setReshuffleStatuses(prev => 
@@ -899,7 +899,7 @@ export default function Leads() {
                       </button>
 
                       {isReshuffleTargetOpen && (
-                        <div className="absolute z-[160] left-0 right-0 bottom-full mb-2 max-h-[220px] overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0B1220] shadow-2xl shadow-black/50 p-1">
+                        <div className="relative z-[20] mt-2 max-h-44 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0B1220] shadow-xl shadow-black/30 p-1">
                           <button
                             type="button"
                             onClick={() => {
@@ -952,7 +952,7 @@ export default function Leads() {
 
                 <div className="space-y-3">
                   <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Select Agents to Receive Leads</label>
-                  <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto custom-scrollbar p-1">
+                  <div className="grid grid-cols-2 gap-2 max-h-40 md:max-h-44 overflow-y-auto custom-scrollbar p-1">
                     {agents.map(agent => (
                       <button
                         key={agent.id}
@@ -1020,7 +1020,7 @@ export default function Leads() {
                   </p>
                 </div>
               </div>
-              <div className="flex items-center justify-end space-x-3 p-6 border-t border-white/5 bg-white/[0.01]">
+              <div className="flex items-center justify-end space-x-3 p-4 md:p-5 border-t border-white/5 bg-[#0A0F1C] shrink-0">
                 <button 
                   onClick={() => setIsReshuffleModalOpen(false)}
                   className="px-6 py-2.5 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
