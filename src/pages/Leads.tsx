@@ -880,7 +880,7 @@ export default function Leads() {
                       <button
                         type="button"
                         onClick={() => setIsReshuffleTargetOpen(open => !open)}
-                        className={`w-full flex items-center justify-between gap-3 bg-[#111827] border rounded-lg px-3 py-2.5 text-sm text-left transition-colors ${
+                        className={`w-full flex items-center justify-between gap-3 bg-[#111827] border rounded-lg px-3 py-2 text-sm text-left transition-colors ${
                           isReshuffleTargetOpen
                             ? 'border-blue-500/60 text-white'
                             : 'border-white/10 text-slate-200 hover:border-white/20'
@@ -899,14 +899,14 @@ export default function Leads() {
                       </button>
 
                       {isReshuffleTargetOpen && (
-                        <div className="absolute z-[160] left-0 right-0 mt-2 max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0B1220] shadow-2xl shadow-black/50 p-1">
+                        <div className="absolute z-[160] left-0 right-0 bottom-full mb-2 max-h-[220px] overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0B1220] shadow-2xl shadow-black/50 p-1">
                           <button
                             type="button"
                             onClick={() => {
                               setReshuffleTargetStatus('');
                               setIsReshuffleTargetOpen(false);
                             }}
-                            className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm text-left transition-colors ${
+                            className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm text-left transition-colors ${
                               reshuffleTargetStatus === ''
                                 ? 'bg-blue-600/20 text-blue-300'
                                 : 'text-slate-300 hover:bg-white/5 hover:text-white'
