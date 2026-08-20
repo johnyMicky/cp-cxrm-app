@@ -3078,6 +3078,218 @@ export const firestoreService = {
     return totals;
   },
 
+  async submitFinanceSolutionArrival(
+    depositId: string,
+    reviewerId: string,
+    payload: any
+  ) {
+    if (!depositId || !reviewerId) {
+      throw new Error('Finance record and reviewer are required.');
+    }
+
+    const reviewer = await this.getUser(String(reviewerId));
+    if (!reviewer) throw new Error('Reviewer was not found.');
+
+    const reviewerRole = String(reviewer.role || '');
+    if (!['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(reviewerRole)) {
+      throw new Error('You do not have permission to record Solution arrivals.');
+    }
+
+    const depositRef = doc(db, FINANCE_DEPOSITS_COL, String(depositId));
+    const depositSnap = await getDoc(depositRef);
+    if (!depositSnap.exists()) throw new Error('Finance record was not found.');
+
+    const deposit = depositSnap.data() as any;
+
+    if (String(deposit.status || '') !== 'On Solution') {
+      throw new Error('Only an On Solution record can be submitted as arrived.');
+    }
+
+    if (
+      reviewerRole === 'Team Leader' &&
+      String(deposit.teamId || '') !== String(reviewer.teamId || '')
+    ) {
+      throw new Error('Team Leaders can record arrivals only for their own team.');
+    }
+
+    const receivedAmount = Number(payload?.receivedAmount || 0);
+    if (!Number.isFinite(receivedAmount) || receivedAmount <= 0) {
+      throw new Error('Actually Received amount must be greater than 0.');
+    }
+
+    const receivedDate = String(payload?.receivedDate || '').trim();
+    if (!receivedDate) {
+      throw new Error('Received Date is required.');
+    }
+
+    const parsedReceivedDate = new Date(`${receivedDate}T12:00:00`);
+    if (Number.isNaN(parsedReceivedDate.getTime())) {
+      throw new Error('Received Date is invalid.');
+    }
+
+    const receivingWalletAddress = String(
+      payload?.receivingWalletAddress || ''
+    ).trim();
+
+    if (!receivingWalletAddress) {
+      throw new Error('Receiving Wallet / Account is required.');
+    }
+
+    const receivedCrypto = String(
+      payload?.receivedCrypto || deposit.crypto || ''
+    ).trim();
+
+    if (!receivedCrypto) {
+      throw new Error('Received Crypto / Currency is required.');
+    }
+
+    const originalAmount = Number(
+      deposit.originalSentAmount ?? deposit.amount ?? 0
+    );
+
+    const originalAllocations = Array.isArray(deposit.allocations)
+      ? deposit.allocations
+      : [];
+
+    // Keep the original attribution percentages, but calculate each person's
+    // actual credited amount from what physically arrived.
+    const arrivalAllocations = originalAllocations.map((allocation: any) => {
+      const percentage = Number(allocation.percentage || 0);
+      return {
+        ...allocation,
+        percentage: Number(percentage.toFixed(4)),
+        amount: Number(((receivedAmount * percentage) / 100).toFixed(2))
+      };
+    });
+
+    // Guard rounding differences by assigning any residual cents to the owner.
+    const calculatedTotal = arrivalAllocations.reduce(
+      (sum: number, allocation: any) => sum + Number(allocation.amount || 0),
+      0
+    );
+
+    const residual = Number((receivedAmount - calculatedTotal).toFixed(2));
+    if (residual !== 0 && arrivalAllocations.length > 0) {
+      const ownerIndex = Math.max(
+        0,
+        arrivalAllocations.findIndex((allocation: any) => allocation.type === 'owner')
+      );
+
+      arrivalAllocations[ownerIndex] = {
+        ...arrivalAllocations[ownerIndex],
+        amount: Number(
+          (Number(arrivalAllocations[ownerIndex].amount || 0) + residual).toFixed(2)
+        )
+      };
+    }
+
+    const varianceAmount = Number((receivedAmount - originalAmount).toFixed(2));
+    const variancePercent =
+      originalAmount > 0
+        ? Number(((varianceAmount / originalAmount) * 100).toFixed(2))
+        : 0;
+
+    const arrivalPayload = {
+      status: 'Arrival Pending',
+      arrivalStatus: 'Pending',
+      arrivalRequestedAt: serverTimestamp(),
+      arrivalRequestedBy: String(reviewerId),
+      arrivalRequestedByName:
+        reviewer.name || reviewer.email || reviewerRole,
+
+      originalSentAmount: originalAmount,
+      receivedAmount: Number(receivedAmount.toFixed(2)),
+      receivedDate,
+      receivedAtDate: Timestamp.fromDate(parsedReceivedDate),
+      receivedCrypto,
+      receivingWalletAddress,
+      arrivalTransactionReference: String(
+        payload?.transactionReference || ''
+      ).trim(),
+      arrivalComment: String(payload?.arrivalComment || '').trim(),
+
+      arrivalAllocations,
+      varianceAmount,
+      variancePercent,
+
+      arrivalRejectReason: '',
+      updatedAt: serverTimestamp()
+    };
+
+    await updateDoc(depositRef, arrivalPayload);
+
+    await addDoc(collection(db, FINANCE_AUDIT_COL), {
+      depositId: String(depositId),
+      action: 'Arrival Details Submitted',
+      changedBy: String(reviewerId),
+      changedByName:
+        reviewer.name || reviewer.email || reviewerRole,
+      oldValue: {
+        status: 'On Solution',
+        amount: originalAmount,
+        allocations: originalAllocations
+      },
+      newValue: {
+        status: 'Arrival Pending',
+        originalSentAmount: originalAmount,
+        receivedAmount: Number(receivedAmount.toFixed(2)),
+        receivedDate,
+        receivedCrypto,
+        receivingWalletAddress,
+        transactionReference: String(payload?.transactionReference || '').trim(),
+        arrivalComment: String(payload?.arrivalComment || '').trim(),
+        varianceAmount,
+        variancePercent,
+        arrivalAllocations
+      },
+      createdAt: serverTimestamp()
+    });
+
+    const allUsers = await this.getUsers();
+    const approvers = allUsers.filter((candidate: any) => {
+      const role = String(candidate.role || '');
+
+      if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
+        return true;
+      }
+
+      return (
+        role === 'Team Leader' &&
+        !!deposit.teamId &&
+        String(candidate.teamId || '') === String(deposit.teamId)
+      );
+    });
+
+    const uniqueApprovers = Array.from(
+      new Map(
+        approvers.map((approver: any) => [String(approver.id), approver])
+      ).values()
+    );
+
+    await Promise.all(
+      uniqueApprovers
+        .filter((approver: any) => String(approver.id) !== String(reviewerId))
+        .map((approver: any) =>
+          addDoc(collection(db, NOTIFICATIONS_COL), {
+            user_id: String(approver.id),
+            type: 'finance_arrival_pending',
+            title: 'Solution Arrival Approval Required',
+            message:
+              `${reviewer.name || reviewerRole} recorded $${receivedAmount.toLocaleString()} actually received from ${deposit.solutionName || 'solution'} (sent $${originalAmount.toLocaleString()}). Please confirm.`,
+            finance_deposit_id: String(depositId),
+            read: false,
+            createdAt: serverTimestamp()
+          })
+        )
+    );
+
+    return {
+      id: depositSnap.id,
+      ...deposit,
+      ...arrivalPayload
+    };
+  },
+
   async markFinanceSolutionArrived(depositId: string, userId: string) {
     if (!depositId || !userId) throw new Error('Deposit and Agent are required.');
 
@@ -3279,6 +3491,30 @@ export const firestoreService = {
                 status: 'Approved',
                 arrivalStatus: 'Approved',
                 arrivedAt: serverTimestamp(),
+
+                // Keep sent amount for audit, but from this point onward the
+                // normal Finance calculations use the amount that actually arrived.
+                originalSentAmount: Number(
+                  deposit.originalSentAmount ?? deposit.amount ?? 0
+                ),
+                amount: Number(
+                  deposit.receivedAmount ?? deposit.amount ?? 0
+                ),
+                allocations:
+                  Array.isArray(deposit.arrivalAllocations) &&
+                  deposit.arrivalAllocations.length > 0
+                    ? deposit.arrivalAllocations
+                    : (Array.isArray(deposit.allocations) ? deposit.allocations : []),
+
+                crypto:
+                  String(deposit.receivedCrypto || deposit.crypto || ''),
+                walletAddress:
+                  String(
+                    deposit.receivingWalletAddress ||
+                    deposit.walletAddress ||
+                    ''
+                  ),
+
                 approvedBy: String(reviewerId),
                 approvedByName: reviewer.name || reviewer.email || role,
                 approvedAt: serverTimestamp(),
@@ -3311,7 +3547,24 @@ export const firestoreService = {
           status: updatePayload.status,
           arrivalStatus: updatePayload.arrivalStatus || '',
           rejectReason:
-            decision === 'Rejected' ? String(rejectReason || '').trim() : ''
+            decision === 'Rejected' ? String(rejectReason || '').trim() : '',
+          originalSentAmount:
+            currentStatus === 'Arrival Pending'
+              ? Number(deposit.originalSentAmount ?? deposit.amount ?? 0)
+              : undefined,
+          receivedAmount:
+            currentStatus === 'Arrival Pending'
+              ? Number(deposit.receivedAmount ?? deposit.amount ?? 0)
+              : undefined,
+          allocations:
+            currentStatus === 'Arrival Pending' && decision === 'Approved'
+              ? (
+                  Array.isArray(deposit.arrivalAllocations) &&
+                  deposit.arrivalAllocations.length > 0
+                    ? deposit.arrivalAllocations
+                    : deposit.allocations
+                )
+              : undefined
         },
         createdAt: serverTimestamp()
       });
@@ -3322,7 +3575,11 @@ export const firestoreService = {
           teamId: deposit.teamId || '',
           teamName: deposit.teamName || '',
           agentName: deposit.agentName || deposit.submittedByName || 'Agent',
-          amount: Number(deposit.amount || 0),
+          amount: Number(
+            reviewAction === 'Arrival Approved'
+              ? (deposit.receivedAmount ?? deposit.amount ?? 0)
+              : (deposit.amount || 0)
+          ),
           createdAt: serverTimestamp()
         });
       }
@@ -3364,7 +3621,11 @@ export const firestoreService = {
       message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} solution request was rejected. Reason: ${String(rejectReason || '').trim()}`;
     } else if (isArrivalApproval) {
       title = 'Arrival Approved 🎉';
-      message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} from ${reviewedDeposit.solutionName || 'solution'} was confirmed as received.`;
+      message = `$${Number(
+        reviewedDeposit.receivedAmount ??
+        reviewedDeposit.amount ??
+        0
+      ).toLocaleString()} from ${reviewedDeposit.solutionName || 'solution'} was confirmed as received.`;
     } else if (isArrivalReject) {
       title = 'Arrival Not Confirmed';
       message = `Arrival confirmation for $${Number(reviewedDeposit.amount || 0).toLocaleString()} was rejected. It remains On Solution. Reason: ${String(rejectReason || '').trim()}`;
