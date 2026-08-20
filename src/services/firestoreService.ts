@@ -3548,23 +3548,25 @@ export const firestoreService = {
           arrivalStatus: updatePayload.arrivalStatus || '',
           rejectReason:
             decision === 'Rejected' ? String(rejectReason || '').trim() : '',
-          originalSentAmount:
-            currentStatus === 'Arrival Pending'
-              ? Number(deposit.originalSentAmount ?? deposit.amount ?? 0)
-              : undefined,
-          receivedAmount:
-            currentStatus === 'Arrival Pending'
-              ? Number(deposit.receivedAmount ?? deposit.amount ?? 0)
-              : undefined,
-          allocations:
-            currentStatus === 'Arrival Pending' && decision === 'Approved'
-              ? (
+          ...(currentStatus === 'Arrival Pending'
+            ? {
+                originalSentAmount: Number(
+                  deposit.originalSentAmount ?? deposit.amount ?? 0
+                ),
+                receivedAmount: Number(
+                  deposit.receivedAmount ?? deposit.amount ?? 0
+                )
+              }
+            : {}),
+          ...(currentStatus === 'Arrival Pending' && decision === 'Approved'
+            ? {
+                allocations:
                   Array.isArray(deposit.arrivalAllocations) &&
                   deposit.arrivalAllocations.length > 0
                     ? deposit.arrivalAllocations
-                    : deposit.allocations
-                )
-              : undefined
+                    : (Array.isArray(deposit.allocations) ? deposit.allocations : [])
+              }
+            : {})
         },
         createdAt: serverTimestamp()
       });
