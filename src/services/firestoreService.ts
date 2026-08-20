@@ -3407,7 +3407,7 @@ export const firestoreService = {
       const deposit = depositSnap.data() as any;
       const currentStatus = String(deposit.status || 'Pending');
 
-      if (!['Pending', 'Solution Pending', 'Arrival Pending'].includes(currentStatus)) {
+      if (!['Pending', 'Solution Pending', 'On Solution', 'Arrival Pending'].includes(currentStatus)) {
         throw new Error(`This finance record is already ${currentStatus}.`);
       }
 
@@ -3479,8 +3479,38 @@ export const firestoreService = {
                 rejectedByName: reviewer.name || reviewer.email || role,
                 rejectedAt: serverTimestamp(),
                 rejectReason: String(rejectReason || '').trim(),
+
+                // Solution-specific rejection metadata.
+                // Generic rejection fields stay intact for all existing logic.
+                solutionRejectReason: String(rejectReason || '').trim(),
+                solutionRejectedBy: String(reviewerId),
+                solutionRejectedByName: reviewer.name || reviewer.email || role,
+                solutionRejectedAt: serverTimestamp(),
+
                 updatedAt: serverTimestamp()
               };
+      } else if (currentStatus === 'On Solution') {
+        if (decision !== 'Rejected') {
+          throw new Error('On Solution records can only be rejected here or recorded as arrived.');
+        }
+
+        reviewAction = 'On Solution Rejected';
+
+        updatePayload = {
+          status: 'Rejected',
+          rejectedBy: String(reviewerId),
+          rejectedByName: reviewer.name || reviewer.email || role,
+          rejectedAt: serverTimestamp(),
+          rejectReason: String(rejectReason || '').trim(),
+
+          solutionRejectReason: String(rejectReason || '').trim(),
+          solutionRejectedBy: String(reviewerId),
+          solutionRejectedByName: reviewer.name || reviewer.email || role,
+          solutionRejectedAt: serverTimestamp(),
+          solutionRejectedFromStatus: 'On Solution',
+
+          updatedAt: serverTimestamp()
+        };
       } else {
         reviewAction =
           decision === 'Approved' ? 'Arrival Approved' : 'Arrival Rejected';
@@ -3548,6 +3578,14 @@ export const firestoreService = {
           arrivalStatus: updatePayload.arrivalStatus || '',
           rejectReason:
             decision === 'Rejected' ? String(rejectReason || '').trim() : '',
+          ...(['Solution Pending', 'On Solution'].includes(currentStatus) && decision === 'Rejected'
+            ? {
+                solutionRejectReason: String(rejectReason || '').trim(),
+                solutionRejectedBy: String(reviewerId),
+                solutionRejectedByName: reviewer.name || reviewer.email || role,
+                solutionRejectedFromStatus: currentStatus
+              }
+            : {}),
           ...(currentStatus === 'Arrival Pending'
             ? {
                 originalSentAmount: Number(
@@ -3608,7 +3646,9 @@ export const firestoreService = {
 
     const statusAfter = String(reviewedDeposit.status || '');
     const isSolutionApproval = reviewAction === 'Solution Approved';
-    const isSolutionReject = reviewAction === 'Solution Rejected';
+    const isSolutionReject =
+      reviewAction === 'Solution Rejected' ||
+      reviewAction === 'On Solution Rejected';
     const isArrivalApproval = reviewAction === 'Arrival Approved';
     const isArrivalReject = reviewAction === 'Arrival Rejected';
 
@@ -3620,7 +3660,10 @@ export const firestoreService = {
       message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} on ${reviewedDeposit.solutionName || 'solution'} is now On Solution.`;
     } else if (isSolutionReject) {
       title = 'Solution Rejected';
-      message = `$${Number(reviewedDeposit.amount || 0).toLocaleString()} solution request was rejected. Reason: ${String(rejectReason || '').trim()}`;
+      message =
+        reviewAction === 'On Solution Rejected'
+          ? `$${Number(reviewedDeposit.amount || 0).toLocaleString()} already on ${reviewedDeposit.solutionName || 'solution'} was rejected by ${reviewer.name || role}. Reason: ${String(rejectReason || '').trim()}`
+          : `$${Number(reviewedDeposit.amount || 0).toLocaleString()} solution request was rejected. Reason: ${String(rejectReason || '').trim()}`;
     } else if (isArrivalApproval) {
       title = 'Arrival Approved 🎉';
       message = `$${Number(
