@@ -93,6 +93,18 @@ const getStatusStyles = (status: string) => {
   }
 };
 
+const LEADS_VIEW_STATE_KEY = 'cpcrm_leads_view_state_v2';
+
+const readSavedLeadsViewState = () => {
+  try {
+    const raw = sessionStorage.getItem(LEADS_VIEW_STATE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
 export default function Leads() {
   const [searchParams] = useSearchParams();
   const dashboardStatus = searchParams.get('status') || '';
@@ -101,16 +113,38 @@ export default function Leads() {
 
   const [leads, setLeads] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => {
+    const saved = readSavedLeadsViewState();
+    return typeof saved?.search === 'string' ? saved.search : '';
+  });
   const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
-  const [filters, setFilters] = useState({
-    statuses: [] as string[],
-    source: '',
-    agents: [] as string[],
-    country: ''
+  const [showFilters, setShowFilters] = useState(() => {
+    const saved = readSavedLeadsViewState();
+    return Boolean(saved?.showFilters);
+  });
+  const [filters, setFilters] = useState(() => {
+    const saved = readSavedLeadsViewState();
+    const savedFilters = saved?.filters || {};
+
+    return {
+      statuses: Array.isArray(savedFilters.statuses)
+        ? savedFilters.statuses
+        : [] as string[],
+      source:
+        typeof savedFilters.source === 'string'
+          ? savedFilters.source
+          : '',
+      agents:
+        Array.isArray(savedFilters.agents)
+          ? savedFilters.agents
+          : [] as string[],
+      country:
+        typeof savedFilters.country === 'string'
+          ? savedFilters.country
+          : ''
+    };
   });
   const [activeDropdown, setActiveDropdown] = useState<'status' | 'agent' | 'bulkStatus' | 'bulkAssign' | null>(null);
   const [statusSearch, setStatusSearch] = useState('');
@@ -140,7 +174,11 @@ export default function Leads() {
     phase: 'preparing' as 'preparing' | 'updating' | 'history' | 'complete'
   });
   const [reshuffleResult, setReshuffleResult] = useState<any>(null);
-  const [visibleLeadCount, setVisibleLeadCount] = useState(100);
+  const [visibleLeadCount, setVisibleLeadCount] = useState(() => {
+    const saved = readSavedLeadsViewState();
+    const value = Number(saved?.visibleLeadCount || 100);
+    return Number.isFinite(value) && value >= 100 ? value : 100;
+  });
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [deleteSummary, setDeleteSummary] = useState<{
@@ -154,11 +192,98 @@ export default function Leads() {
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialAgentLeadLoadRef = useRef(true);
   const previousLeadIdsRef = useRef<Set<string>>(new Set());
+  const hasMountedLeadViewRef = useRef(false);
+  const hasRestoredScrollRef = useRef(false);
 
   const currentUser = { 
     id: localStorage.getItem('userId'),
     role: localStorage.getItem('userRole') || 'Agent' 
   };
+
+  // Preserve the employee's current Leads view while this browser tab stays open.
+  // This includes manual filters/search, rendered row count and exact scroll position.
+  useEffect(() => {
+    const previous = readSavedLeadsViewState() || {};
+
+    sessionStorage.setItem(
+      LEADS_VIEW_STATE_KEY,
+      JSON.stringify({
+        ...previous,
+        search,
+        showFilters,
+        filters,
+        visibleLeadCount
+      })
+    );
+  }, [search, showFilters, filters, visibleLeadCount]);
+
+  useEffect(() => {
+    let frame: number | null = null;
+
+    const saveScrollPosition = () => {
+      if (frame !== null) return;
+
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+
+        const previous = readSavedLeadsViewState() || {};
+        sessionStorage.setItem(
+          LEADS_VIEW_STATE_KEY,
+          JSON.stringify({
+            ...previous,
+            scrollY: window.scrollY
+          })
+        );
+      });
+    };
+
+    window.addEventListener('scroll', saveScrollPosition, { passive: true });
+
+    return () => {
+      window.removeEventListener('scroll', saveScrollPosition);
+
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+
+      const previous = readSavedLeadsViewState() || {};
+      sessionStorage.setItem(
+        LEADS_VIEW_STATE_KEY,
+        JSON.stringify({
+          ...previous,
+          scrollY: window.scrollY
+        })
+      );
+    };
+  }, []);
+
+  // Restore only once, after Lead rows are available. The double frame lets the
+  // restored visibleLeadCount render before the browser jumps to the old position.
+  useEffect(() => {
+    if (hasRestoredScrollRef.current || leads.length === 0) return;
+
+    hasRestoredScrollRef.current = true;
+
+    const saved = readSavedLeadsViewState();
+    const scrollY = Number(saved?.scrollY || 0);
+
+    if (!Number.isFinite(scrollY) || scrollY <= 0) return;
+
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        window.scrollTo({ top: scrollY, behavior: 'auto' });
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) {
+        window.cancelAnimationFrame(secondFrame);
+      }
+    };
+  }, [leads.length]);
+
 
   const showToastMessage = (message: string) => {
     setToastMessage(message);
@@ -408,6 +533,11 @@ export default function Leads() {
   );
 
   useEffect(() => {
+    if (!hasMountedLeadViewRef.current) {
+      hasMountedLeadViewRef.current = true;
+      return;
+    }
+
     setVisibleLeadCount(100);
   }, [deferredSearch, filters.statuses, filters.source, filters.agents, filters.country, dashboardStatus, dashboardView, dashboardRange]);
 
