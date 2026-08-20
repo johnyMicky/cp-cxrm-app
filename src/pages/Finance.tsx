@@ -64,6 +64,16 @@ export default function Finance() {
   const [expandedId, setExpandedId] = useState('');
   const [rejecting, setRejecting] = useState<any>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [arrivalEditing, setArrivalEditing] = useState<any>(null);
+  const [arrivalBusy, setArrivalBusy] = useState(false);
+  const [arrivalDraft, setArrivalDraft] = useState({
+    receivedAmount: '',
+    receivedDate: format(new Date(), 'yyyy-MM-dd'),
+    receivedCrypto: 'USDT',
+    receivingWalletAddress: '',
+    transactionReference: '',
+    arrivalComment: ''
+  });
   const fullFinanceAccess = ['Administrator', 'Manager', 'Financial Manager'].includes(currentUser.role);
   const [financeMonth, setFinanceMonth] = useState(() => format(new Date(), 'yyyy-MM'));
   const [opsOverview, setOpsOverview] = useState<any>(null);
@@ -169,6 +179,83 @@ export default function Finance() {
         0
       );
   }, [deposits]);
+
+  const openArrivalForm = (deposit: any) => {
+    setArrivalEditing(deposit);
+    setArrivalDraft({
+      receivedAmount: String(
+        deposit.receivedAmount ??
+        deposit.amount ??
+        ''
+      ),
+      receivedDate:
+        String(deposit.receivedDate || '').trim() ||
+        format(new Date(), 'yyyy-MM-dd'),
+      receivedCrypto:
+        String(
+          deposit.receivedCrypto ||
+          deposit.crypto ||
+          'USDT'
+        ),
+      receivingWalletAddress:
+        String(
+          deposit.receivingWalletAddress ||
+          ''
+        ),
+      transactionReference:
+        String(deposit.arrivalTransactionReference || ''),
+      arrivalComment:
+        String(deposit.arrivalComment || '')
+    });
+  };
+
+  const closeArrivalForm = () => {
+    if (arrivalBusy) return;
+    setArrivalEditing(null);
+  };
+
+  const submitArrivalDetails = async () => {
+    if (!arrivalEditing) return;
+
+    const receivedAmount = Number(arrivalDraft.receivedAmount || 0);
+
+    if (!Number.isFinite(receivedAmount) || receivedAmount <= 0) {
+      return alert('Actually Received amount must be greater than 0.');
+    }
+
+    if (!arrivalDraft.receivedDate) {
+      return alert('Received Date is required.');
+    }
+
+    if (!arrivalDraft.receivingWalletAddress.trim()) {
+      return alert('Receiving Wallet / Account is required.');
+    }
+
+    if (!arrivalDraft.receivedCrypto.trim()) {
+      return alert('Received Crypto / Currency is required.');
+    }
+
+    try {
+      setArrivalBusy(true);
+
+      await firestoreService.submitFinanceSolutionArrival(
+        arrivalEditing.id,
+        currentUser.id,
+        {
+          ...arrivalDraft,
+          receivedAmount
+        }
+      );
+
+      setArrivalEditing(null);
+      setTab('Arrival Pending');
+      await loadData();
+    } catch (err: any) {
+      alert(err?.message || 'Failed to submit Solution arrival.');
+    } finally {
+      setArrivalBusy(false);
+    }
+  };
 
   const review = async (
     deposit: any,
@@ -773,6 +860,17 @@ export default function Finance() {
                       )}
                     </button>
 
+                    {deposit.status === 'On Solution' && (
+                      <button
+                        onClick={() => openArrivalForm(deposit)}
+                        disabled={arrivalBusy}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
+                      >
+                        <Truck className="w-4 h-4" />
+                        Record Arrival
+                      </button>
+                    )}
+
                     {[
                       'Pending',
                       'Solution Pending',
@@ -878,6 +976,60 @@ export default function Finance() {
                               'Not Arrived'
                             }
                           />
+                          {deposit.receivedAmount != null && (
+                            <>
+                              <Detail
+                                label="Originally Sent"
+                                value={money(
+                                  deposit.originalSentAmount ??
+                                  deposit.amount
+                                )}
+                              />
+                              <Detail
+                                label="Actually Received"
+                                value={money(deposit.receivedAmount)}
+                              />
+                              <Detail
+                                label="Variance"
+                                value={`${money(
+                                  deposit.varianceAmount || 0
+                                )} (${Number(
+                                  deposit.variancePercent || 0
+                                ).toFixed(2)}%)`}
+                              />
+                              <Detail
+                                label="Received Date"
+                                value={deposit.receivedDate || '—'}
+                              />
+                              <Detail
+                                label="Received Crypto / Currency"
+                                value={
+                                  deposit.receivedCrypto || '—'
+                                }
+                              />
+                              <Detail
+                                label="Receiving Wallet / Account"
+                                value={
+                                  deposit.receivingWalletAddress ||
+                                  '—'
+                                }
+                              />
+                              <Detail
+                                label="Transaction / Reference"
+                                value={
+                                  deposit.arrivalTransactionReference ||
+                                  '—'
+                                }
+                              />
+                              <Detail
+                                label="Arrival Comment"
+                                value={
+                                  deposit.arrivalComment ||
+                                  '—'
+                                }
+                              />
+                            </>
+                          )}
                         </>
                       )}
                     </div>
@@ -910,6 +1062,38 @@ export default function Finance() {
                         )}
                       </div>
                     </div>
+
+                    {Array.isArray(deposit.arrivalAllocations) &&
+                      deposit.arrivalAllocations.length > 0 && (
+                        <div>
+                          <p className="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-2">
+                            Arrival Attribution / Split
+                          </p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {deposit.arrivalAllocations.map(
+                              (allocation: any) => (
+                                <div
+                                  key={`${deposit.id}-arrival-${allocation.userId}`}
+                                  className="rounded-lg bg-blue-500/[0.03] border border-blue-500/10 p-3 flex items-center justify-between"
+                                >
+                                  <div>
+                                    <p className="text-sm font-medium text-white">
+                                      {allocation.userName}
+                                    </p>
+                                    <p className="text-[10px] text-slate-500">
+                                      {allocation.role} •{' '}
+                                      {allocation.percentage}%
+                                    </p>
+                                  </div>
+                                  <p className="text-sm font-bold text-cyan-400">
+                                    {money(allocation.amount)}
+                                  </p>
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )}
 
                     {overdue && (
                       <div className="rounded-lg bg-rose-500/5 border border-rose-500/10 p-3 text-sm text-rose-300">
@@ -999,6 +1183,240 @@ export default function Finance() {
                 No finance audit records yet.
               </p>
             )}
+          </div>
+        </div>
+      )}
+
+      {arrivalEditing && (
+        <div className="fixed inset-0 z-[160] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-3xl max-h-[90vh] overflow-hidden bg-[#0A0F1C] border border-blue-500/20 rounded-2xl shadow-2xl flex flex-col">
+            <div className="p-5 border-b border-white/5 flex items-start justify-between gap-4 shrink-0">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-xl bg-blue-500/10">
+                  <Truck className="w-5 h-5 text-blue-400" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-semibold text-white">
+                    Record Solution Arrival
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Record what actually reached the company. It will move to Arrival Pending for final approval.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeArrivalForm}
+                disabled={arrivalBusy}
+                className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 disabled:opacity-50"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto custom-scrollbar space-y-5">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <ArrivalMetric
+                  label="Sent to Solution"
+                  value={money(
+                    arrivalEditing.originalSentAmount ??
+                    arrivalEditing.amount
+                  )}
+                  cls="text-blue-400"
+                />
+                <ArrivalMetric
+                  label="Actually Received"
+                  value={money(
+                    Number(arrivalDraft.receivedAmount || 0)
+                  )}
+                  cls="text-emerald-400"
+                />
+                <ArrivalMetric
+                  label="Variance"
+                  value={money(
+                    Number(arrivalDraft.receivedAmount || 0) -
+                    Number(
+                      arrivalEditing.originalSentAmount ??
+                      arrivalEditing.amount ??
+                      0
+                    )
+                  )}
+                  cls={
+                    Number(arrivalDraft.receivedAmount || 0) -
+                      Number(
+                        arrivalEditing.originalSentAmount ??
+                        arrivalEditing.amount ??
+                        0
+                      ) >= 0
+                      ? 'text-emerald-400'
+                      : 'text-rose-400'
+                  }
+                />
+                <ArrivalMetric
+                  label="Solution"
+                  value={arrivalEditing.solutionName || '—'}
+                  cls="text-violet-300"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ArrivalInput
+                  label="Actually Received $"
+                  type="number"
+                  value={arrivalDraft.receivedAmount}
+                  onChange={(value: string) =>
+                    setArrivalDraft(prev => ({
+                      ...prev,
+                      receivedAmount: value
+                    }))
+                  }
+                  required
+                />
+
+                <ArrivalInput
+                  label="Received Date"
+                  type="date"
+                  value={arrivalDraft.receivedDate}
+                  onChange={(value: string) =>
+                    setArrivalDraft(prev => ({
+                      ...prev,
+                      receivedDate: value
+                    }))
+                  }
+                  required
+                />
+
+                <ArrivalInput
+                  label="Received Crypto / Currency"
+                  value={arrivalDraft.receivedCrypto}
+                  onChange={(value: string) =>
+                    setArrivalDraft(prev => ({
+                      ...prev,
+                      receivedCrypto: value
+                    }))
+                  }
+                  placeholder="USDT / BTC / ETH / USD..."
+                  required
+                />
+
+                <ArrivalInput
+                  label="Receiving Wallet / Account"
+                  value={arrivalDraft.receivingWalletAddress}
+                  onChange={(value: string) =>
+                    setArrivalDraft(prev => ({
+                      ...prev,
+                      receivingWalletAddress: value
+                    }))
+                  }
+                  placeholder="Wallet address / bank account / internal destination"
+                  required
+                />
+
+                <ArrivalInput
+                  label="Transaction / Reference ID"
+                  value={arrivalDraft.transactionReference}
+                  onChange={(value: string) =>
+                    setArrivalDraft(prev => ({
+                      ...prev,
+                      transactionReference: value
+                    }))
+                  }
+                  placeholder="Optional transaction hash / reference"
+                />
+
+                <ArrivalInput
+                  label="Arrival Comment"
+                  value={arrivalDraft.arrivalComment}
+                  onChange={(value: string) =>
+                    setArrivalDraft(prev => ({
+                      ...prev,
+                      arrivalComment: value
+                    }))
+                  }
+                  placeholder="Optional finance comment"
+                />
+              </div>
+
+              <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <p className="text-sm font-semibold text-white">
+                      Split Preview
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Original percentages are preserved. Final credited amounts are recalculated from the amount actually received.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {(arrivalEditing.allocations || []).map(
+                    (allocation: any) => {
+                      const received = Number(
+                        arrivalDraft.receivedAmount || 0
+                      );
+                      const calculated = Number(
+                        (
+                          received *
+                          Number(allocation.percentage || 0) /
+                          100
+                        ).toFixed(2)
+                      );
+
+                      return (
+                        <div
+                          key={`arrival-preview-${allocation.userId}`}
+                          className="rounded-lg border border-white/5 bg-[#0B1220] p-3 flex items-center justify-between gap-3"
+                        >
+                          <div>
+                            <p className="text-sm font-medium text-white">
+                              {allocation.userName}
+                            </p>
+                            <p className="text-[10px] text-slate-500">
+                              {allocation.role} • {allocation.percentage}%
+                            </p>
+                          </div>
+                          <p className="text-sm font-bold text-cyan-400">
+                            {money(calculated)}
+                          </p>
+                        </div>
+                      );
+                    }
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+                <p className="text-xs text-amber-300 leading-relaxed">
+                  Submitting does not count this money as approved revenue yet. The record moves to <strong>Arrival Pending</strong>. After final approval, the actually received amount and recalculated splits become the real company/agent revenue.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-white/5 flex items-center justify-end gap-3 shrink-0 bg-[#0A0F1C]">
+              <button
+                type="button"
+                onClick={closeArrivalForm}
+                disabled={arrivalBusy}
+                className="px-5 py-2.5 rounded-lg text-sm font-semibold text-slate-300 hover:bg-white/5 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitArrivalDetails}
+                disabled={arrivalBusy}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
+              >
+                {arrivalBusy ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4" />
+                )}
+                Submit for Arrival Approval
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1101,6 +1519,60 @@ function Summary({
       <p className="text-xs text-slate-500 mt-1">
         {label}
       </p>
+    </div>
+  );
+}
+
+function ArrivalMetric({
+  label,
+  value,
+  cls = 'text-white'
+}: {
+  label: string;
+  value: string;
+  cls?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3">
+      <p className="text-[10px] uppercase tracking-wider text-slate-500">
+        {label}
+      </p>
+      <p className={`text-base font-bold mt-1 ${cls}`}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function ArrivalInput({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  placeholder = '',
+  required = false
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+        {label}{required ? ' *' : ''}
+      </label>
+      <input
+        type={type}
+        value={value}
+        onChange={event => onChange(event.target.value)}
+        min={type === 'number' ? '0.01' : undefined}
+        step={type === 'number' ? '0.01' : undefined}
+        placeholder={placeholder}
+        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+      />
     </div>
   );
 }
