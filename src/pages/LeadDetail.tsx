@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { ArrowLeft, User, Phone, Mail, MapPin, Globe, Clock, MessageSquare, History, Edit3, Check, Trash2, Calendar, DollarSign, Eye, Handshake, TrendingUp, Save, PhoneCall, Copy } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
@@ -146,12 +146,13 @@ export default function LeadDetail() {
           <p className="text-sm text-slate-400 mt-2">
             You do not have permission to view this lead.
           </p>
-          <Link
-            to="/leads"
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
             className="inline-flex mt-4 text-sm font-medium text-blue-400 hover:text-blue-300"
           >
             Back to Leads
-          </Link>
+          </button>
         </div>
       </div>
     );
@@ -413,9 +414,14 @@ export default function LeadDetail() {
     <div className="p-8 max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-4">
-          <Link to="/leads" className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors">
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors"
+            title="Back to previous Leads view"
+          >
             <ArrowLeft className="w-5 h-5" />
-          </Link>
+          </button>
           <div>
             <h1 className="text-2xl font-semibold text-white tracking-tight flex items-center space-x-3">
               <span>{lead.name}</span>
