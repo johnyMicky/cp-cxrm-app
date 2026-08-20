@@ -861,14 +861,28 @@ export default function Finance() {
                     </button>
 
                     {deposit.status === 'On Solution' && (
-                      <button
-                        onClick={() => openArrivalForm(deposit)}
-                        disabled={arrivalBusy}
-                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
-                      >
-                        <Truck className="w-4 h-4" />
-                        Record Arrival
-                      </button>
+                      <>
+                        <button
+                          onClick={() => openArrivalForm(deposit)}
+                          disabled={arrivalBusy || reviewingId === deposit.id}
+                          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
+                        >
+                          <Truck className="w-4 h-4" />
+                          Record Arrival
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setRejecting(deposit);
+                            setRejectReason('');
+                          }}
+                          disabled={arrivalBusy || reviewingId === deposit.id}
+                          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-50 text-rose-400 text-sm font-semibold"
+                        >
+                          <XCircle className="w-4 h-4" />
+                          Reject
+                        </button>
+                      </>
                     )}
 
                     {[
@@ -935,6 +949,23 @@ export default function Finance() {
                         label="System Submitter"
                         value={deposit.submittedByName}
                       />
+
+                      {deposit.solutionRejectReason && (
+                        <>
+                          <Detail
+                            label="Solution Reject Comment"
+                            value={deposit.solutionRejectReason}
+                          />
+                          <Detail
+                            label="Solution Rejected By"
+                            value={
+                              deposit.solutionRejectedByName ||
+                              deposit.rejectedByName ||
+                              '—'
+                            }
+                          />
+                        </>
+                      )}
 
                       {deposit.depositType === 'On Solution' && (
                         <>
@@ -1425,10 +1456,18 @@ export default function Finance() {
         <div className="fixed inset-0 z-[130] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-lg bg-[#0A0F1C] border border-white/10 rounded-2xl p-6">
             <h3 className="text-xl font-semibold text-white">
-              Reject Finance Action
+              {['Solution Pending', 'On Solution'].includes(
+                String(rejecting?.status || '')
+              )
+                ? 'Reject Solution'
+                : 'Reject Finance Action'}
             </h3>
             <p className="text-sm text-slate-500 mt-1">
-              A reason is required. Arrival rejection returns the record to On Solution.
+              {['Solution Pending', 'On Solution'].includes(
+                String(rejecting?.status || '')
+              )
+                ? 'Write the reason/comment for rejecting this Solution record. The comment will be saved in Finance history and shown to the Agent.'
+                : 'A reason is required. Arrival rejection returns the record to On Solution.'}
             </p>
 
             <textarea
@@ -1439,7 +1478,13 @@ export default function Finance() {
               }
               rows={5}
               className="w-full mt-5 bg-white/5 border border-white/10 rounded-xl p-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-rose-500/40"
-              placeholder="Enter reject reason..."
+              placeholder={
+                ['Solution Pending', 'On Solution'].includes(
+                  String(rejecting?.status || '')
+                )
+                  ? 'Enter Solution rejection comment...'
+                  : 'Enter reject reason...'
+              }
             />
 
             <div className="flex justify-end gap-3 mt-5">
