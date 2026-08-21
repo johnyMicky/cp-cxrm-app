@@ -6020,12 +6020,69 @@ export const firestoreService = {
     stats.topSources = stats.sourceAnalytics.slice(0, 5);
 
     // -------------------------
-    // Agent operational performance.
-    // Revenue ranking will replace/extend this after Finance module is added.
+    // Agent operational performance + Finance revenue leaderboard.
+    // Approved revenue uses the same allocation amounts as Agent Finance Portfolio,
+    // so split deposits are credited only by each Agent's approved share.
     // -------------------------
     const agents = visibleUsers.filter(
       (u: any) => String(u.role || '') === 'Agent'
     );
+
+    const approvedFinanceSnapshot = await getDocs(
+      query(
+        collection(db, FINANCE_DEPOSITS_COL),
+        where('status', '==', 'Approved')
+      )
+    );
+
+    const visibleAgentIds = new Set(
+      agents.map((agent: any) => String(agent.id))
+    );
+
+    const approvedRevenueByAgent = new Map<string, number>();
+    const approvedDepositCountByAgent = new Map<string, number>();
+
+    approvedFinanceSnapshot.docs.forEach(financeDoc => {
+      const deposit = financeDoc.data() as any;
+
+      // Dashboard range applies to Finance ranking too. "All" matches the
+      // Agent Finance Portfolio's Total Approved figure.
+      if (timeRange !== 'all') {
+        const financeDate =
+          toDate(deposit.approvedAt) ||
+          toDate(deposit.receivedAtDate) ||
+          toDate(deposit.submittedAt) ||
+          toDate(deposit.depositDate);
+
+        if (!financeDate || financeDate < startDate) {
+          return;
+        }
+      }
+
+      const allocations = Array.isArray(deposit.allocations)
+        ? deposit.allocations
+        : [];
+
+      allocations.forEach((allocation: any) => {
+        const userId = String(allocation.userId || '');
+        if (!userId || !visibleAgentIds.has(userId)) return;
+
+        const amount = Number(allocation.amount || 0);
+        if (!Number.isFinite(amount)) return;
+
+        approvedRevenueByAgent.set(
+          userId,
+          Number(approvedRevenueByAgent.get(userId) || 0) + amount
+        );
+
+        if (amount > 0) {
+          approvedDepositCountByAgent.set(
+            userId,
+            Number(approvedDepositCountByAgent.get(userId) || 0) + 1
+          );
+        }
+      });
+    });
 
     stats.agentPerformance = agents
       .map((agent: any) => {
@@ -6045,6 +6102,10 @@ export const firestoreService = {
           (lead: any) => lead.status === 'Callback'
         ).length;
 
+        const approvedRevenue = Number(
+          Number(approvedRevenueByAgent.get(String(agent.id)) || 0).toFixed(2)
+        );
+
         return {
           id: agent.id,
           name: agent.name || agent.email || 'Agent',
@@ -6053,22 +6114,38 @@ export const firestoreService = {
           teamName: agent.teamName || '',
           total: agentLeads.length,
           deposits,
+          approvedDepositCount: Number(
+            approvedDepositCountByAgent.get(String(agent.id)) || 0
+          ),
           highPotential: high,
           callbacks,
           conversionRate: agentLeads.length
             ? Math.round((deposits / agentLeads.length) * 1000) / 10
             : 0,
-          revenue: null
+          revenue: approvedRevenue,
+          approvedRevenue
         };
       })
       .sort((a: any, b: any) => {
-        if (b.deposits !== a.deposits) return b.deposits - a.deposits;
+        // Primary ranking is real Approved attributed revenue.
+        if (b.approvedRevenue !== a.approvedRevenue) {
+          return b.approvedRevenue - a.approvedRevenue;
+        }
+
+        // Stable tie breakers keep the table deterministic.
+        if (b.approvedDepositCount !== a.approvedDepositCount) {
+          return b.approvedDepositCount - a.approvedDepositCount;
+        }
+
         if (b.conversionRate !== a.conversionRate) {
           return b.conversionRate - a.conversionRate;
         }
-        return b.highPotential - a.highPotential;
+
+        return String(a.name).localeCompare(String(b.name));
       })
       .slice(0, 10);
+
+    stats.financeReady = true;
 
     // Backward-compatible field: existing UI/code that still reads workload
     // will continue working until Dashboard.tsx is updated.
