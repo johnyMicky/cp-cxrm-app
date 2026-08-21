@@ -11,7 +11,9 @@ import {
   ReceiptText,
   Users,
   Save,
-  PhoneCall
+  PhoneCall,
+  ListChecks,
+  Trash2
 } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
 
@@ -49,6 +51,13 @@ export default function Settings() {
   const [atlantBusyId, setAtlantBusyId] = useState('');
   const [atlantError, setAtlantError] = useState('');
   const [atlantSuccess, setAtlantSuccess] = useState('');
+
+  // Administrator-managed Lead statuses.
+  const [leadStatuses, setLeadStatuses] = useState<any[]>([]);
+  const [leadStatusName, setLeadStatusName] = useState('');
+  const [leadStatusBusyId, setLeadStatusBusyId] = useState('');
+  const [leadStatusError, setLeadStatusError] = useState('');
+  const [leadStatusSuccess, setLeadStatusSuccess] = useState('');
 
 
   const loadSolutions = async () => {
@@ -122,11 +131,24 @@ export default function Settings() {
     }
   };
 
+  const loadLeadStatuses = async () => {
+    if (userRole !== 'Administrator' || !currentUserId) return;
+
+    try {
+      setLeadStatusError('');
+      await firestoreService.initializeLeadStatuses(currentUserId);
+      setLeadStatuses(await firestoreService.getLeadStatuses(true) as any[]);
+    } catch (err: any) {
+      setLeadStatusError(err?.message || 'Failed to load Lead statuses.');
+    }
+  };
+
   useEffect(() => {
     loadSolutions();
     loadSimpleFinanceConfig();
     loadAtlantConfig();
-  }, [userRole]);
+    loadLeadStatuses();
+  }, [userRole, currentUserId]);
 
   const handleAddSolution = async () => {
     if (!currentUserId || !solutionName.trim()) return;
@@ -243,6 +265,64 @@ export default function Settings() {
       setAtlantError(err?.message || 'Failed to save Atlant extension.');
     } finally {
       setAtlantBusyId('');
+    }
+  };
+
+  const addLeadStatus = async () => {
+    if (!leadStatusName.trim() || !currentUserId) return;
+
+    try {
+      setLeadStatusBusyId('new');
+      setLeadStatusError('');
+      setLeadStatusSuccess('');
+      await firestoreService.createLeadStatus(leadStatusName, currentUserId);
+      setLeadStatusSuccess(`Status "${leadStatusName.trim()}" added.`);
+      setLeadStatusName('');
+      await loadLeadStatuses();
+    } catch (err: any) {
+      setLeadStatusError(err?.message || 'Failed to add Lead status.');
+    } finally {
+      setLeadStatusBusyId('');
+    }
+  };
+
+  const toggleLeadStatus = async (status: any) => {
+    if (!currentUserId) return;
+
+    try {
+      setLeadStatusBusyId(String(status.id));
+      setLeadStatusError('');
+      setLeadStatusSuccess('');
+      await firestoreService.setLeadStatusActive(
+        status.id,
+        status.isActive === false,
+        currentUserId
+      );
+      await loadLeadStatuses();
+    } catch (err: any) {
+      setLeadStatusError(err?.message || 'Failed to update Lead status.');
+    } finally {
+      setLeadStatusBusyId('');
+    }
+  };
+
+  const deleteLeadStatus = async (status: any) => {
+    if (!currentUserId) return;
+    if (!confirm(`Delete Lead status "${status.name}"? This is only allowed when no Lead currently uses it.`)) {
+      return;
+    }
+
+    try {
+      setLeadStatusBusyId(String(status.id));
+      setLeadStatusError('');
+      setLeadStatusSuccess('');
+      await firestoreService.deleteLeadStatus(status.id, currentUserId);
+      setLeadStatusSuccess(`Status "${status.name}" deleted.`);
+      await loadLeadStatuses();
+    } catch (err: any) {
+      setLeadStatusError(err?.message || 'Failed to delete Lead status.');
+    } finally {
+      setLeadStatusBusyId('');
     }
   };
 
@@ -622,6 +702,114 @@ export default function Settings() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-1">
+            <ListChecks className="w-5 h-5 text-violet-400" />
+            <h2 className="text-xl font-semibold text-white">Lead Statuses</h2>
+          </div>
+          <p className="text-sm text-slate-400 mb-5">
+            Add or disable the statuses Agents can use on Leads. In Process is included by default. Core workflow statuses are protected so Lead routing, callbacks and finance logic cannot be broken accidentally.
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              value={leadStatusName}
+              onChange={e => setLeadStatusName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addLeadStatus();
+                }
+              }}
+              placeholder="Example: Follow Up"
+              maxLength={40}
+              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white"
+            />
+            <button
+              onClick={addLeadStatus}
+              disabled={leadStatusBusyId === 'new' || !leadStatusName.trim()}
+              className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold"
+            >
+              {leadStatusBusyId === 'new' ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Plus className="w-4 h-4" />
+              )}
+              Add Status
+            </button>
+          </div>
+
+          {leadStatusError && (
+            <div className="mt-4 rounded-lg bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-300">
+              {leadStatusError}
+            </div>
+          )}
+
+          {leadStatusSuccess && (
+            <div className="mt-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-sm text-emerald-300">
+              {leadStatusSuccess}
+            </div>
+          )}
+
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-2">
+            {leadStatuses.map(status => {
+              const active = status.isActive !== false;
+              const locked = status.isLocked === true;
+              const busy = leadStatusBusyId === String(status.id);
+
+              return (
+                <div
+                  key={status.id}
+                  className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 flex items-center justify-between gap-4"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white truncate">{status.name}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className={`text-[10px] uppercase ${active ? 'text-emerald-400' : 'text-slate-600'}`}>
+                        {active ? 'Active' : 'Disabled'}
+                      </span>
+                      {locked && (
+                        <span className="text-[10px] uppercase text-amber-400">Protected</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => toggleLeadStatus(status)}
+                      disabled={busy || locked}
+                      title={locked ? 'Required by a core CRM workflow' : undefined}
+                      className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-40 ${
+                        active
+                          ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+                          : 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                      }`}
+                    >
+                      {busy ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : active ? (
+                        <PowerOff className="w-3.5 h-3.5" />
+                      ) : (
+                        <Power className="w-3.5 h-3.5" />
+                      )}
+                      {active ? 'Disable' : 'Enable'}
+                    </button>
+
+                    <button
+                      onClick={() => deleteLeadStatus(status)}
+                      disabled={busy || locked}
+                      title={locked ? 'Required by a core CRM workflow' : 'Delete only if unused'}
+                      className="inline-flex items-center justify-center p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 disabled:opacity-30"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
