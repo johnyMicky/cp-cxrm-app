@@ -6142,8 +6142,7 @@ export const firestoreService = {
         }
 
         return String(a.name).localeCompare(String(b.name));
-      })
-      .slice(0, 10);
+      });
 
     stats.financeReady = true;
 
