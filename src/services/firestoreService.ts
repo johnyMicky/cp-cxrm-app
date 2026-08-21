@@ -26,7 +26,8 @@ import {
   inMemoryPersistence
 } from "firebase/auth";
 import { format } from 'date-fns';
-import { db, auth, secondaryAuth, authPersistenceReady } from "../firebase";
+import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { db, auth, secondaryAuth, authPersistenceReady, storage } from "../firebase";
 
 // Collections
 const LEADS_COL = "leads";
@@ -47,7 +48,39 @@ const FINANCE_CATALOG_COL = "finance_catalog";
 const FINANCE_EXPENSES_COL = "finance_expenses";
 const FINANCE_PAYROLL_CONFIG_COL = "finance_payroll_config";
 const FINANCE_PAYROLL_MONTHLY_COL = "finance_payroll_monthly";
+const LEAD_STATUSES_COL = "lead_statuses";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
+
+const DEFAULT_LEAD_STATUS_NAMES = [
+  'New',
+  'In Process',
+  'VM',
+  'No answer',
+  'Deposit',
+  'Callback',
+  'Low Potential',
+  'High Potential',
+  'No Potential',
+  'Language Barrier',
+  'Wrong Person',
+  'Underage',
+  'No Experience',
+  'Not Interested',
+  'Hung Up',
+  'Wrong Number',
+  'Drop',
+  'JOR'
+];
+
+// These statuses are referenced by core CRM workflows and cannot be disabled/deleted.
+const LOCKED_LEAD_STATUS_NAMES = new Set(['New', 'Deposit', 'Callback', 'JOR']);
+
+const statusDocId = (name: string) =>
+  String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || `status-${Date.now()}`;
 
 const sanitizeData = (data: any) => {
   const sanitized: any = {};
@@ -478,6 +511,207 @@ export const firestoreService = {
       id: uid,
       ...canonicalData
     };
+  },
+
+  async uploadOwnAvatar(userId: string, file: File) {
+    const cleanUserId = String(userId || '').trim();
+    if (!cleanUserId || !file) {
+      throw new Error('User and image file are required.');
+    }
+
+    if (!auth.currentUser || String(auth.currentUser.uid) !== cleanUserId) {
+      throw new Error('You can only change your own avatar.');
+    }
+
+    if (!String(file.type || '').startsWith('image/')) {
+      throw new Error('Please select an image file.');
+    }
+
+    const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+    if (file.size > MAX_AVATAR_BYTES) {
+      throw new Error('Avatar image must be 5 MB or smaller.');
+    }
+
+    const safeType = String(file.type || 'image/jpeg').replace(/[^a-z0-9/+.-]/gi, '');
+    const extension =
+      safeType.includes('png') ? 'png' :
+      safeType.includes('webp') ? 'webp' :
+      safeType.includes('gif') ? 'gif' : 'jpg';
+
+    const path = `avatars/${cleanUserId}/profile-${Date.now()}.${extension}`;
+    const avatarRef = storageRef(storage, path);
+
+    await uploadBytes(avatarRef, file, {
+      contentType: safeType || file.type || 'image/jpeg',
+      customMetadata: {
+        ownerUserId: cleanUserId
+      }
+    });
+
+    const downloadUrl = await getDownloadURL(avatarRef);
+
+    await updateDoc(doc(db, USERS_COL, cleanUserId), {
+      avatar: downloadUrl,
+      avatarStoragePath: path,
+      avatarUpdatedAt: serverTimestamp()
+    });
+
+    return downloadUrl;
+  },
+
+  async getLeadStatuses(includeInactive = false) {
+    const snapshot = await getDocs(collection(db, LEAD_STATUSES_COL));
+
+    if (snapshot.empty) {
+      return DEFAULT_LEAD_STATUS_NAMES.map((name, index) => ({
+        id: statusDocId(name),
+        name,
+        isActive: true,
+        isLocked: LOCKED_LEAD_STATUS_NAMES.has(name),
+        sortOrder: index,
+        isFallback: true
+      })).filter(status => includeInactive || status.isActive);
+    }
+
+    return snapshot.docs
+      .map(statusSnapshot => {
+        const data = statusSnapshot.data() as any;
+        const name = String(data.name || '').trim();
+        return {
+          id: statusSnapshot.id,
+          name,
+          isActive: data.isActive !== false,
+          isLocked: data.isLocked === true || LOCKED_LEAD_STATUS_NAMES.has(name),
+          sortOrder: Number(data.sortOrder ?? 9999),
+          createdAt: data.createdAt || null,
+          updatedAt: data.updatedAt || null
+        };
+      })
+      .filter(status => !!status.name)
+      .filter(status => includeInactive || status.isActive)
+      .sort((a, b) => {
+        const order = Number(a.sortOrder || 0) - Number(b.sortOrder || 0);
+        return order || a.name.localeCompare(b.name);
+      });
+  },
+
+  async initializeLeadStatuses(adminUserId: string) {
+    const currentUser = await this.getUser(String(adminUserId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can configure Lead statuses.');
+    }
+
+    const snapshot = await getDocs(collection(db, LEAD_STATUSES_COL));
+    if (!snapshot.empty) return this.getLeadStatuses(true);
+
+    const batch = writeBatch(db);
+    DEFAULT_LEAD_STATUS_NAMES.forEach((name, index) => {
+      batch.set(doc(db, LEAD_STATUSES_COL, statusDocId(name)), {
+        name,
+        isActive: true,
+        isLocked: LOCKED_LEAD_STATUS_NAMES.has(name),
+        sortOrder: index,
+        isSystem: true,
+        createdBy: String(adminUserId),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    });
+    await batch.commit();
+
+    return this.getLeadStatuses(true);
+  },
+
+  async createLeadStatus(name: string, adminUserId: string) {
+    const currentUser = await this.getUser(String(adminUserId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can add Lead statuses.');
+    }
+
+    const cleanName = String(name || '').trim().replace(/\s+/g, ' ');
+    if (!cleanName) throw new Error('Status name is required.');
+    if (cleanName.length > 40) throw new Error('Status name is too long.');
+
+    const allStatuses = await this.getLeadStatuses(true);
+    const duplicate = allStatuses.find(
+      (status: any) => String(status.name || '').toLowerCase() === cleanName.toLowerCase()
+    );
+    if (duplicate) throw new Error('A status with this name already exists.');
+
+    const maxOrder = allStatuses.reduce(
+      (max: number, status: any) => Math.max(max, Number(status.sortOrder || 0)),
+      -1
+    );
+
+    const newRef = doc(collection(db, LEAD_STATUSES_COL));
+    await setDoc(newRef, {
+      name: cleanName,
+      isActive: true,
+      isLocked: false,
+      isSystem: false,
+      sortOrder: maxOrder + 1,
+      createdBy: String(adminUserId),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    return { id: newRef.id, name: cleanName, isActive: true, isLocked: false };
+  },
+
+  async setLeadStatusActive(statusId: string, isActive: boolean, adminUserId: string) {
+    const currentUser = await this.getUser(String(adminUserId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can update Lead statuses.');
+    }
+
+    const statusRef = doc(db, LEAD_STATUSES_COL, String(statusId));
+    const statusSnapshot = await getDoc(statusRef);
+    if (!statusSnapshot.exists()) throw new Error('Lead status was not found.');
+
+    const data = statusSnapshot.data() as any;
+    const name = String(data.name || '').trim();
+    const locked = data.isLocked === true || LOCKED_LEAD_STATUS_NAMES.has(name);
+
+    if (!isActive && locked) {
+      throw new Error(`${name} is required by a core CRM workflow and cannot be disabled.`);
+    }
+
+    await updateDoc(statusRef, {
+      isActive: !!isActive,
+      updatedBy: String(adminUserId),
+      updatedAt: serverTimestamp()
+    });
+  },
+
+  async deleteLeadStatus(statusId: string, adminUserId: string) {
+    const currentUser = await this.getUser(String(adminUserId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can delete Lead statuses.');
+    }
+
+    const statusRef = doc(db, LEAD_STATUSES_COL, String(statusId));
+    const statusSnapshot = await getDoc(statusRef);
+    if (!statusSnapshot.exists()) throw new Error('Lead status was not found.');
+
+    const data = statusSnapshot.data() as any;
+    const name = String(data.name || '').trim();
+    const locked = data.isLocked === true || LOCKED_LEAD_STATUS_NAMES.has(name);
+
+    if (locked) {
+      throw new Error(`${name} is required by a core CRM workflow and cannot be deleted.`);
+    }
+
+    const inUseSnapshot = await getDocs(
+      query(collection(db, LEADS_COL), where('status', '==', name), limit(1))
+    );
+
+    if (!inUseSnapshot.empty) {
+      throw new Error(
+        `${name} is currently used by Lead records. Disable it instead so existing Leads keep their data.`
+      );
+    }
+
+    await deleteDoc(statusRef);
   },
 
   async logout() {
