@@ -9,8 +9,9 @@ import { firestoreService } from '../services/firestoreService';
 import { safeLower } from '../utils/stringUtils';
 import { db } from '../firebase';
 
-const STATUSES = [
+const DEFAULT_STATUSES = [
   'New',
+  'In Process',
   'VM',
   'No answer',
   'Deposit',
@@ -36,9 +37,6 @@ const RESHUFFLE_PROTECTED_SOURCE_STATUSES = new Set([
   'Deposit'
 ]);
 
-const RESHUFFLE_SOURCE_STATUSES = STATUSES.filter(
-  status => !RESHUFFLE_PROTECTED_SOURCE_STATUSES.has(status)
-);
 
 
 const normalizeStatus = (value: any) => {
@@ -47,6 +45,7 @@ const normalizeStatus = (value: any) => {
 
   const canonical: Record<string, string> = {
     'new': 'New',
+    'in process': 'In Process',
     'vm': 'VM',
     'no answer': 'No answer',
     'deposit': 'Deposit',
@@ -76,6 +75,7 @@ const getStatusStyles = (status: string) => {
     case 'VM': return 'text-rose-400 border-rose-500/20 bg-rose-500/5';
     case 'Callback': return 'text-amber-400 border-amber-500/20 bg-amber-500/5';
     case 'New': return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
+    case 'In Process': return 'text-cyan-400 border-cyan-500/20 bg-cyan-500/5';
     case 'No answer': return 'text-slate-400 border-slate-500/20 bg-slate-500/5';
     case 'Low Potential': return 'text-orange-400 border-orange-500/20 bg-orange-500/5';
     case 'High Potential': return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
@@ -113,6 +113,7 @@ export default function Leads() {
 
   const [leads, setLeads] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
+  const [statuses, setStatuses] = useState<string[]>(DEFAULT_STATUSES);
   const [search, setSearch] = useState(() => {
     const saved = readSavedLeadsViewState();
     return typeof saved?.search === 'string' ? saved.search : '';
@@ -199,6 +200,31 @@ export default function Leads() {
     id: localStorage.getItem('userId'),
     role: localStorage.getItem('userRole') || 'Agent' 
   };
+
+  const reshuffleSourceStatuses = useMemo(
+    () => statuses.filter(
+      status => !RESHUFFLE_PROTECTED_SOURCE_STATUSES.has(normalizeStatus(status))
+    ),
+    [statuses]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    firestoreService.getLeadStatuses()
+      .then((items: any[]) => {
+        if (cancelled) return;
+        const names = (items || [])
+          .map(item => String(item?.name || '').trim())
+          .filter(Boolean);
+        if (names.length > 0) setStatuses(names);
+      })
+      .catch(err => {
+        console.error('Failed to load Lead statuses:', err);
+      });
+
+    return () => { cancelled = true; };
+  }, []);
 
   // Preserve the employee's current Leads view while this browser tab stays open.
   // This includes manual filters/search, rendered row count and exact scroll position.
@@ -777,6 +803,7 @@ export default function Leads() {
     const normalizedStatus = normalizeStatus(status);
     switch (normalizedStatus) {
       case 'New': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+      case 'In Process': return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
       case 'VM':
       case 'No answer':
       case 'Callback': return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
@@ -928,7 +955,7 @@ export default function Leads() {
                 </button>
                 {activeDropdown === 'bulkStatus' && (
                   <div className="absolute right-0 top-full mt-2 w-48 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 animate-in fade-in zoom-in duration-150">
-                    {RESHUFFLE_SOURCE_STATUSES.map(status => (
+                    {reshuffleSourceStatuses.map(status => (
                       <button 
                         key={status}
                         onClick={() => handleBulkStatusUpdate(status)}
@@ -1044,7 +1071,7 @@ export default function Leads() {
                 <div className="space-y-3">
                   <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Select Statuses to Reshuffle</label>
                   <div className="grid grid-cols-2 gap-2">
-                    {RESHUFFLE_SOURCE_STATUSES.map(status => (
+                    {reshuffleSourceStatuses.map(status => (
                       <button
                         key={status}
                         onClick={() => setReshuffleStatuses(prev => 
@@ -1117,7 +1144,7 @@ export default function Leads() {
                             )}
                           </button>
 
-                          {STATUSES.map(status => (
+                          {statuses.map(status => (
                             <button
                               key={status}
                               type="button"
@@ -1459,7 +1486,7 @@ export default function Leads() {
                   >
                     Clear All
                   </button>
-                  {STATUSES.filter(s => s.toLowerCase().includes(statusSearch.toLowerCase())).map(status => (
+                  {statuses.filter(s => s.toLowerCase().includes(statusSearch.toLowerCase())).map(status => (
                     <button 
                       key={status}
                       onClick={() => toggleStatusFilter(status)}
@@ -1614,7 +1641,7 @@ export default function Leads() {
                       onChange={(e) => handleStatusChange(lead.id, e.target.value)}
                       className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border bg-transparent focus:outline-none cursor-pointer transition-colors ${getStatusStyles(lead.status)}`}
                     >
-                      {STATUSES.map(s => (
+                      {statuses.map(s => (
                         <option key={s} value={s} className="bg-[#0A0F1C] text-slate-300">{s}</option>
                       ))}
                     </select>
