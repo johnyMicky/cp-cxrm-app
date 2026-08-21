@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X, Camera, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -35,11 +35,13 @@ export function cn(...inputs: (string | undefined | null | false)[]) {
 function Sidebar({
   onOpenChat,
   unreadChatCount,
-  sessionUser
+  sessionUser,
+  onAvatarUpdated
 }: {
   onOpenChat: () => void;
   unreadChatCount: number;
   sessionUser: any;
+  onAvatarUpdated: (avatarUrl: string) => void;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -48,6 +50,9 @@ function Sidebar({
   const notificationsRef = useRef<any[]>([]);
   const [notificationToast, setNotificationToast] = useState<any>(null);
   const notificationToastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarError, setAvatarError] = useState('');
   
   const currentUserId = sessionUser?.id || null;
   const currentUserRole = sessionUser?.role || 'Agent';
@@ -55,6 +60,25 @@ function Sidebar({
   const userAvatar =
     sessionUser?.avatar ||
     `https://i.pravatar.cc/150?u=${currentUserId || 'user'}`;
+
+  const handleAvatarFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file || !currentUserId || avatarUploading) return;
+
+    try {
+      setAvatarUploading(true);
+      setAvatarError('');
+      const url = await firestoreService.uploadOwnAvatar(String(currentUserId), file);
+      onAvatarUpdated(url);
+    } catch (err: any) {
+      console.error('Avatar upload failed:', err);
+      setAvatarError(err?.message || 'Failed to upload avatar.');
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
 
   const fetchNotifications = async () => {
     if (!currentUserId || currentUserId === '1') return;
@@ -422,7 +446,35 @@ function Sidebar({
       
       <div className="p-4 border-t border-white/5">
         <div className="flex items-center space-x-3 px-3 py-2">
-          <img src={userAvatar} alt={userName} className="w-8 h-8 rounded-full" />
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => avatarInputRef.current?.click()}
+              disabled={avatarUploading}
+              className="relative group block rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-70"
+              title="Change profile photo"
+            >
+              <img
+                src={userAvatar}
+                alt={userName}
+                className="w-8 h-8 rounded-full object-cover"
+              />
+              <span className="absolute inset-0 rounded-full bg-black/55 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                {avatarUploading ? (
+                  <Loader2 className="w-3.5 h-3.5 text-white animate-spin" />
+                ) : (
+                  <Camera className="w-3.5 h-3.5 text-white" />
+                )}
+              </span>
+            </button>
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              onChange={handleAvatarFile}
+              className="hidden"
+            />
+          </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-white truncate">{userName}</p>
             <p className="text-xs text-slate-400 truncate">{currentUserRole}</p>
@@ -434,6 +486,11 @@ function Sidebar({
             <LogOut className="w-4 h-4" />
           </button>
         </div>
+        {avatarError && (
+          <p className="px-3 mt-1 text-[10px] leading-relaxed text-rose-400">
+            {avatarError}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -742,6 +799,12 @@ export default function App() {
                     onOpenChat={() => setIsChatOpen(true)}
                     unreadChatCount={unreadChatCount}
                     sessionUser={sessionUser}
+                    onAvatarUpdated={(avatarUrl) => {
+                      setSessionUser((previous: any) =>
+                        previous ? { ...previous, avatar: avatarUrl } : previous
+                      );
+                      localStorage.setItem('userAvatar', avatarUrl);
+                    }}
                   />
 
                   {showLeadToast && (
