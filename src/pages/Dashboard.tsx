@@ -597,7 +597,7 @@ export default function Dashboard() {
                 </span>
               </div>
 
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto max-h-[720px] overflow-y-auto custom-scrollbar pr-1">
                 <table className="w-full text-left">
                   <thead>
                     <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
@@ -605,13 +605,11 @@ export default function Dashboard() {
                       <th className="pb-3 font-medium">Agent</th>
                       <th className="pb-3 font-medium text-right">Approved</th>
                       <th className="pb-3 font-medium text-right">Approved Dep.</th>
-                      <th className="pb-3 font-medium text-right">High Pot.</th>
-                      <th className="pb-3 font-medium text-right">Conv.</th>
                     </tr>
                   </thead>
 
                   <tbody className="divide-y divide-white/5">
-                    {(data.agentPerformance || []).slice(0, 10).map(
+                    {(data.agentPerformance || []).map(
                       (agent: any, index: number) => {
                         const rank = index + 1;
                         const podiumClass =
@@ -712,14 +710,6 @@ export default function Dashboard() {
 
                             <td className="py-3 text-right text-sm text-emerald-400 font-semibold">
                               {agent.approvedDepositCount || 0}
-                            </td>
-
-                            <td className="py-3 text-right text-sm text-cyan-400">
-                              {agent.highPotential}
-                            </td>
-
-                            <td className="py-3 text-right text-sm text-white font-semibold">
-                              {agent.conversionRate}%
                             </td>
                           </tr>
                         );
