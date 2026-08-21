@@ -5,7 +5,7 @@ import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import { firestoreService } from '../services/firestoreService';
 
-const STATUSES = ['New', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'High Potential', 'No Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience', 'Not Interested', 'Hung Up', 'Wrong Number', 'Drop', 'JOR'];
+const DEFAULT_STATUSES = ['New', 'In Process', 'VM', 'No answer', 'Deposit', 'Callback', 'Low Potential', 'High Potential', 'No Potential', 'Language Barrier', 'Wrong Person', 'Underage', 'No Experience', 'Not Interested', 'Hung Up', 'Wrong Number', 'Drop', 'JOR'];
 
 const getStatusStyles = (status: string) => {
   switch (status) {
@@ -13,6 +13,7 @@ const getStatusStyles = (status: string) => {
     case 'VM': return 'text-rose-400 border-rose-500/20 bg-rose-500/5';
     case 'Callback': return 'text-amber-400 border-amber-500/20 bg-amber-500/5';
     case 'New': return 'text-blue-400 border-blue-500/20 bg-blue-500/5';
+    case 'In Process': return 'text-cyan-400 border-cyan-500/20 bg-cyan-500/5';
     case 'No answer': return 'text-slate-400 border-slate-500/20 bg-slate-500/5';
     case 'Low Potential': return 'text-orange-400 border-orange-500/20 bg-orange-500/5';
     case 'High Potential': return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
@@ -35,6 +36,7 @@ export default function LeadDetail() {
   const navigate = useNavigate();
   const [lead, setLead] = useState<any>(null);
   const [users, setUsers] = useState<any[]>([]);
+  const [statuses, setStatuses] = useState<string[]>(DEFAULT_STATUSES);
   const [noteContent, setNoteContent] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<any>({});
@@ -80,6 +82,16 @@ export default function LeadDetail() {
             : [];
         } else {
           usersData = await firestoreService.getUsers();
+        }
+
+        try {
+          const statusItems = await firestoreService.getLeadStatuses();
+          const statusNames = (statusItems as any[])
+            .map(item => String(item?.name || '').trim())
+            .filter(Boolean);
+          if (statusNames.length > 0) setStatuses(statusNames);
+        } catch (statusError) {
+          console.error('Failed to load Lead statuses:', statusError);
         }
 
         setLead(leadData);
@@ -391,6 +403,7 @@ export default function LeadDetail() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'New': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+      case 'In Process': return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
       case 'VM':
       case 'No answer':
       case 'Callback': return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
@@ -610,7 +623,7 @@ export default function LeadDetail() {
                     onChange={e => setEditForm({...editForm, status: e.target.value})}
                     className={`w-full bg-transparent border border-white/10 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${getStatusStyles(editForm.status)}`}
                   >
-                    {STATUSES.map(s => (
+                    {statuses.map(s => (
                       <option key={s} value={s} className="bg-[#0A0F1C] text-slate-300">{s}</option>
                     ))}
                   </select>
