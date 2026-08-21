@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert, MessageSquare, Coffee, PlayCircle, Square, Clock3, AlertTriangle, PhoneCall, UserX, Flame, Timer, FolderOpen, ChevronRight, TrendingUp, Target, CalendarDays, X } from 'lucide-react';
+import { Users, UserPlus, CheckCircle, XCircle, Activity, BarChart3, PieChart, ShieldCheck, ShieldAlert, MessageSquare, Coffee, PlayCircle, Square, Clock3, AlertTriangle, PhoneCall, UserX, Flame, Timer, FolderOpen, ChevronRight, TrendingUp, Target, CalendarDays, X, Crown } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart as RePieChart, Pie } from 'recharts';
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
@@ -573,47 +573,230 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-5">
-            <h3 className="text-lg font-medium text-white flex items-center gap-2">
-              <TrendingUp className="w-5 h-5 text-emerald-400" />
-              Agent Operational Performance
-            </h3>
-            <span className="text-[10px] uppercase tracking-wider text-slate-500">Revenue ranking comes with Finance</span>
-          </div>
+          {['Administrator', 'Manager', 'Team Leader'].includes(currentUserRole) ? (
+            <>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+                <div>
+                  <h3 className="text-lg font-medium text-white flex items-center gap-2">
+                    <Crown className="w-5 h-5 text-amber-400" />
+                    Approved Revenue Leaderboard
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Ranked by each Agent&apos;s Finance Portfolio → Total Approved amount.
+                    Splits count only the Agent&apos;s approved attributed share.
+                  </p>
+                </div>
+                <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                  {timeRange === '1d'
+                    ? 'Today'
+                    : timeRange === '1w'
+                      ? 'Last 7 Days'
+                      : timeRange === '1m'
+                        ? 'Last Month'
+                        : 'All Time'}
+                </span>
+              </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
-                  <th className="pb-3 font-medium">Agent</th>
-                  <th className="pb-3 font-medium text-right">Leads</th>
-                  <th className="pb-3 font-medium text-right">Deposit</th>
-                  <th className="pb-3 font-medium text-right">High Pot.</th>
-                  <th className="pb-3 font-medium text-right">Conv.</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {(data.agentPerformance || []).slice(0, 8).map((agent: any) => (
-                  <tr key={agent.id}>
-                    <td className="py-3">
-                      <div className="flex items-center gap-2">
-                        <img src={agent.avatar} alt="" className="w-7 h-7 rounded-full object-cover" />
-                        <span className="text-sm text-white font-medium">{agent.name}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 text-right text-sm text-slate-300">{agent.total}</td>
-                    <td className="py-3 text-right text-sm text-emerald-400 font-semibold">{agent.deposits}</td>
-                    <td className="py-3 text-right text-sm text-cyan-400">{agent.highPotential}</td>
-                    <td className="py-3 text-right text-sm text-white font-semibold">{agent.conversionRate}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
+                      <th className="pb-3 font-medium w-14">Rank</th>
+                      <th className="pb-3 font-medium">Agent</th>
+                      <th className="pb-3 font-medium text-right">Approved</th>
+                      <th className="pb-3 font-medium text-right">Approved Dep.</th>
+                      <th className="pb-3 font-medium text-right">High Pot.</th>
+                      <th className="pb-3 font-medium text-right">Conv.</th>
+                    </tr>
+                  </thead>
 
-          <div className="mt-4 rounded-lg bg-blue-500/5 border border-blue-500/10 px-3 py-2 text-[11px] text-blue-300">
-            Finance module will replace this ranking with revenue, average deposit, commission and net contribution.
-          </div>
+                  <tbody className="divide-y divide-white/5">
+                    {(data.agentPerformance || []).slice(0, 10).map(
+                      (agent: any, index: number) => {
+                        const rank = index + 1;
+                        const podiumClass =
+                          rank === 1
+                            ? 'bg-amber-500/[0.06]'
+                            : rank === 2
+                              ? 'bg-slate-300/[0.035]'
+                              : rank === 3
+                                ? 'bg-orange-700/[0.045]'
+                                : '';
+
+                        return (
+                          <tr
+                            key={agent.id}
+                            className={`${podiumClass} transition-colors`}
+                          >
+                            <td className="py-3">
+                              <div className="flex items-center gap-1.5">
+                                {rank <= 3 ? (
+                                  <>
+                                    <Crown
+                                      className={`w-5 h-5 ${
+                                        rank === 1
+                                          ? 'text-amber-400'
+                                          : rank === 2
+                                            ? 'text-slate-300'
+                                            : 'text-orange-600'
+                                      }`}
+                                      fill="currentColor"
+                                    />
+                                    <span
+                                      className={`text-xs font-bold ${
+                                        rank === 1
+                                          ? 'text-amber-400'
+                                          : rank === 2
+                                            ? 'text-slate-300'
+                                            : 'text-orange-500'
+                                      }`}
+                                    >
+                                      #{rank}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span className="text-xs font-semibold text-slate-500">
+                                    #{rank}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+
+                            <td className="py-3">
+                              <div className="flex items-center gap-2">
+                                <div className="relative shrink-0">
+                                  <img
+                                    src={agent.avatar}
+                                    alt=""
+                                    className={`w-8 h-8 rounded-full object-cover ${
+                                      rank === 1
+                                        ? 'ring-2 ring-amber-400/60'
+                                        : rank === 2
+                                          ? 'ring-2 ring-slate-300/40'
+                                          : rank === 3
+                                            ? 'ring-2 ring-orange-600/40'
+                                            : ''
+                                    }`}
+                                  />
+                                </div>
+                                <div className="min-w-0">
+                                  <span className="text-sm text-white font-medium block truncate">
+                                    {agent.name}
+                                  </span>
+                                  {rank === 1 && (
+                                    <span className="text-[9px] uppercase tracking-wider text-amber-400">
+                                      Current Leader
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+
+                            <td className="py-3 text-right">
+                              <span
+                                className={`text-sm font-bold ${
+                                  rank === 1
+                                    ? 'text-amber-400'
+                                    : 'text-emerald-400'
+                                }`}
+                              >
+                                ${Number(agent.approvedRevenue || 0).toLocaleString(
+                                  undefined,
+                                  {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2
+                                  }
+                                )}
+                              </span>
+                            </td>
+
+                            <td className="py-3 text-right text-sm text-emerald-400 font-semibold">
+                              {agent.approvedDepositCount || 0}
+                            </td>
+
+                            <td className="py-3 text-right text-sm text-cyan-400">
+                              {agent.highPotential}
+                            </td>
+
+                            <td className="py-3 text-right text-sm text-white font-semibold">
+                              {agent.conversionRate}%
+                            </td>
+                          </tr>
+                        );
+                      }
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {(!data.agentPerformance || data.agentPerformance.length === 0) && (
+                <div className="py-10 text-center">
+                  <Crown className="w-8 h-8 text-slate-700 mx-auto mb-2" />
+                  <p className="text-sm text-slate-500">
+                    No Agents available for this leaderboard.
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-4 rounded-lg bg-amber-500/5 border border-amber-500/10 px-3 py-2 text-[11px] text-amber-200/80">
+                🏆 Ranking uses only Finance records with Approved status. On Solution,
+                Pending, Arrival Pending and Rejected amounts do not count.
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="text-lg font-medium text-white flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5 text-emerald-400" />
+                  Agent Operational Performance
+                </h3>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
+                      <th className="pb-3 font-medium">Agent</th>
+                      <th className="pb-3 font-medium text-right">Leads</th>
+                      <th className="pb-3 font-medium text-right">Deposit</th>
+                      <th className="pb-3 font-medium text-right">High Pot.</th>
+                      <th className="pb-3 font-medium text-right">Conv.</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {(data.agentPerformance || []).slice(0, 8).map((agent: any) => (
+                      <tr key={agent.id}>
+                        <td className="py-3">
+                          <div className="flex items-center gap-2">
+                            <img
+                              src={agent.avatar}
+                              alt=""
+                              className="w-7 h-7 rounded-full object-cover"
+                            />
+                            <span className="text-sm text-white font-medium">
+                              {agent.name}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-3 text-right text-sm text-slate-300">
+                          {agent.total}
+                        </td>
+                        <td className="py-3 text-right text-sm text-emerald-400 font-semibold">
+                          {agent.deposits}
+                        </td>
+                        <td className="py-3 text-right text-sm text-cyan-400">
+                          {agent.highPotential}
+                        </td>
+                        <td className="py-3 text-right text-sm text-white font-semibold">
+                          {agent.conversionRate}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-6 shadow-sm">
