@@ -57,6 +57,7 @@ export default function AgentFinancePanel() {
     email: '',
     phoneNumber: '',
     walletAddress: '',
+    method: 'Crypto',
     amount: '',
     crypto: 'USDT',
     cryptoOther: '',
@@ -119,6 +120,7 @@ export default function AgentFinancePanel() {
       email: '',
       phoneNumber: '',
       walletAddress: '',
+      method: 'Crypto',
       amount: '',
       crypto: 'USDT',
       cryptoOther: '',
@@ -412,6 +414,21 @@ export default function AgentFinancePanel() {
                 />
               </div>
             ))}
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Method</label>
+              <select
+                value={form.method}
+                onChange={e => setForm(prev => ({ ...prev, method: e.target.value }))}
+                className="w-full bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"
+              >
+                <option value="Crypto">Crypto</option>
+                <option value="Bank Transfer">Bank Transfer</option>
+                <option value="Card">Card</option>
+                <option value="Cash">Cash</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
 
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
