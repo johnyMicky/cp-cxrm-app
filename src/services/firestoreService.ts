@@ -3056,6 +3056,7 @@ export const firestoreService = {
       email: String(payload?.email || '').trim(),
       phoneNumber: String(payload?.phoneNumber || '').trim(),
       walletAddress: String(payload?.walletAddress || '').trim(),
+      method: String(payload?.method || 'Crypto').trim(),
       amount,
       crypto: String(payload?.crypto || '').trim(),
       cryptoOther: String(payload?.cryptoOther || '').trim(),
@@ -3215,6 +3216,111 @@ export const firestoreService = {
           : new Date(b.submittedAt || 0);
         return bDate.getTime() - aDate.getTime();
       });
+  },
+
+  async submitManualFinanceIncome(payload: any, reviewerId: string, approveNow = true) {
+    if (!reviewerId) throw new Error('Current user is required.');
+
+    const reviewer: any = await this.getUser(String(reviewerId));
+    if (!reviewer) throw new Error('Current CRM user was not found.');
+    const reviewerRole = String(reviewer.role || '');
+    if (!['Administrator', 'Manager', 'Financial Manager', 'Team Leader'].includes(reviewerRole)) {
+      throw new Error('You do not have permission to create manual income.');
+    }
+
+    const amount = Number(payload?.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0.');
+    const methodName = String(payload?.method || '').trim();
+    if (!methodName) throw new Error('Method is required.');
+
+    const allUsers: any[] = await this.getUsers() as any[];
+    const userMap = new Map(allUsers.map((u: any) => [String(u.id), u]));
+    const rows = Array.isArray(payload?.allocations) ? payload.allocations : [];
+    if (!rows.length) throw new Error('Select at least one Agent.');
+
+    const allocationMap = new Map<string, number>();
+    rows.forEach((row: any) => {
+      const uid = String(row?.userId || '').trim();
+      const pct = Number(row?.percentage || 0);
+      const target: any = userMap.get(uid);
+      if (!uid || !target || String(target.role || '') !== 'Agent' || pct <= 0) {
+        throw new Error('Every attribution row must contain a valid Agent and percentage.');
+      }
+      if (reviewerRole === 'Team Leader' && String(target.teamId || '') !== String(reviewer.teamId || '')) {
+        throw new Error('Team Leaders can create manual income only for Agents in their own team.');
+      }
+      allocationMap.set(uid, Number(allocationMap.get(uid) || 0) + pct);
+    });
+
+    const totalPct = Array.from(allocationMap.values()).reduce((a, b) => a + b, 0);
+    if (Math.abs(totalPct - 100) > 0.01) throw new Error('Agent attribution must total exactly 100%.');
+
+    const allocations: any[] = [];
+    allocationMap.forEach((percentage, uid) => {
+      const u: any = userMap.get(uid);
+      allocations.push({
+        userId: uid,
+        userName: u?.name || u?.email || uid,
+        systemUserName: u?.name || u?.email || uid,
+        role: u?.role || 'Agent',
+        percentage: Number(percentage.toFixed(4)),
+        amount: Number(((amount * percentage) / 100).toFixed(2)),
+        type: allocations.length === 0 ? 'owner' : 'split'
+      });
+    });
+
+    const participantIds = allocations.map((a: any) => String(a.userId));
+    const firstAgent: any = userMap.get(participantIds[0]);
+    const status = approveNow ? 'Approved' : 'Pending';
+    const financePayload = sanitizeData({
+      clientFullName: String(payload?.clientFullName || '').trim(),
+      country: String(payload?.country || '').trim(),
+      email: String(payload?.email || '').trim(),
+      phoneNumber: String(payload?.phoneNumber || '').trim(),
+      walletAddress: String(payload?.walletAddress || '').trim(),
+      method: methodName,
+      amount,
+      crypto: String(payload?.crypto || '').trim(),
+      cryptoOther: String(payload?.cryptoOther || '').trim(),
+      depositDate: String(payload?.depositDate || '').trim(),
+      leadSourceId: String(payload?.leadSourceId || '').trim(),
+      retName: String(payload?.retName || '').trim(),
+      internalComment: String(payload?.comment || '').trim(),
+      agentName: allocations.length === 1 ? allocations[0].userName : 'Split attribution',
+      depositType: 'Received',
+      manualEntry: true,
+      manualCreatedBy: String(reviewerId),
+      manualCreatedByName: reviewer.name || reviewer.email || reviewerRole,
+      manualCreatedByRole: reviewerRole,
+      allocations,
+      participantIds,
+      totalSplitPercentage: 100,
+      submitterPercentage: 0,
+      submittedBy: String(reviewerId),
+      submittedByName: reviewer.name || reviewer.email || reviewerRole,
+      submittedByEmail: reviewer.email || '',
+      submittedByRole: reviewerRole,
+      teamId: firstAgent?.teamId || '',
+      teamName: firstAgent?.teamName || '',
+      status,
+      approvedBy: approveNow ? String(reviewerId) : '',
+      approvedByName: approveNow ? (reviewer.name || reviewer.email || reviewerRole) : '',
+      approvedAt: approveNow ? serverTimestamp() : null,
+      rejectedBy: '', rejectedByName: '', rejectedAt: null, rejectReason: '',
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(), submittedAt: serverTimestamp()
+    });
+
+    const depositRef = await addDoc(collection(db, FINANCE_DEPOSITS_COL), financePayload);
+    await addDoc(collection(db, FINANCE_AUDIT_COL), {
+      depositId: depositRef.id,
+      action: approveNow ? 'Manual Income Created & Approved' : 'Manual Income Created',
+      changedBy: String(reviewerId),
+      changedByName: reviewer.name || reviewer.email || reviewerRole,
+      oldValue: null,
+      newValue: { status, amount, method: methodName, allocations, manualEntry: true },
+      createdAt: serverTimestamp()
+    });
+    return depositRef.id;
   },
 
   async getFinancePortfolio(userId: string) {
