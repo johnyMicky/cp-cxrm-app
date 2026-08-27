@@ -80,6 +80,16 @@ export default function Finance() {
   const [entryBusy, setEntryBusy] = useState(false);
   const [expenseDrafts, setExpenseDrafts] = useState<Record<string, { amount: string; status: string; notes: string }>>({});
   const [payrollDrafts, setPayrollDrafts] = useState<Record<string, { fines: string; notWorkedDays: string; notes: string }>>({});
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualBusy, setManualBusy] = useState(false);
+  const [financeUsers, setFinanceUsers] = useState<any[]>([]);
+  const [currentTeamId, setCurrentTeamId] = useState('');
+  const [manualAllocations, setManualAllocations] = useState<Array<{ userId: string; percentage: string }>>([{ userId: '', percentage: '100' }]);
+  const [manualDraft, setManualDraft] = useState({
+    clientFullName: '', country: '', email: '', phoneNumber: '', walletAddress: '',
+    method: 'Crypto', amount: '', crypto: 'USDT', depositDate: format(new Date(), 'yyyy-MM-dd'),
+    leadSourceId: '', retName: '', comment: ''
+  });
 
   const loadData = async () => {
     if (!allowed) return;
@@ -87,19 +97,23 @@ export default function Finance() {
     try {
       setLoading(true);
 
-      const [financeData, auditData, overviewData] = await Promise.all([
+      const [financeData, auditData, overviewData, allFinanceUsers] = await Promise.all([
         firestoreService.getFinanceDepositsForUser(currentUser),
         currentUser.role === 'Administrator'
           ? firestoreService.getFinanceAuditLogs(currentUser.id)
           : Promise.resolve([]),
         fullFinanceAccess
           ? firestoreService.getSimpleFinanceWorkspace(currentUser, financeMonth)
-          : Promise.resolve(null)
+          : Promise.resolve(null),
+        firestoreService.getUsers()
       ]);
 
       setDeposits(financeData as any[]);
       setAuditLogs(auditData as any[]);
       setOpsOverview(overviewData);
+      setFinanceUsers((allFinanceUsers as any[]).filter((u: any) => String(u.role || '') === 'Agent'));
+      const me = (allFinanceUsers as any[]).find((u: any) => String(u.id) === String(currentUser.id));
+      setCurrentTeamId(String(me?.teamId || ''));
 
       if (overviewData) {
         const nextExpenseDrafts: Record<string, { amount: string; status: string; notes: string }> = {};
@@ -294,6 +308,29 @@ export default function Finance() {
     return 'Approve';
   };
 
+  const manualTotalPct = manualAllocations.reduce((sum, row) => sum + Number(row.percentage || 0), 0);
+  const manualAgents = financeUsers.filter((u: any) => currentUser.role !== 'Team Leader' || String(u.teamId || '') === currentTeamId);
+
+  const submitManualIncome = async (approveNow: boolean) => {
+    const amount = Number(manualDraft.amount || 0);
+    if (!manualDraft.clientFullName.trim()) return alert('Client Full Name is required.');
+    if (!amount || amount <= 0) return alert('Amount must be greater than 0.');
+    if (!manualDraft.method.trim()) return alert('Method is required.');
+    if (!manualAllocations.length || manualAllocations.some(r => !r.userId || Number(r.percentage || 0) <= 0)) return alert('Select every Agent and percentage.');
+    if (Math.abs(manualTotalPct - 100) > 0.01) return alert('Agent attribution must total exactly 100%.');
+    try {
+      setManualBusy(true);
+      await firestoreService.submitManualFinanceIncome({ ...manualDraft, amount, allocations: manualAllocations }, currentUser.id, approveNow);
+      setManualDraft({ clientFullName: '', country: '', email: '', phoneNumber: '', walletAddress: '', method: 'Crypto', amount: '', crypto: 'USDT', depositDate: format(new Date(), 'yyyy-MM-dd'), leadSourceId: '', retName: '', comment: '' });
+      setManualAllocations([{ userId: '', percentage: '100' }]);
+      setManualOpen(false);
+      setTab(approveNow ? 'Approved' : 'Pending');
+      await loadData();
+    } catch (err: any) {
+      alert(err?.message || 'Failed to create manual income.');
+    } finally { setManualBusy(false); }
+  };
+
   const saveExpenseRow = async (row: any) => {
     const draft = expenseDrafts[String(row.categoryId)] || {
       amount: String(row.amount || 0),
@@ -379,6 +416,13 @@ export default function Finance() {
           </div>
         </div>
 
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setManualOpen(v => !v)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold"
+          >
+            <Plus className="w-4 h-4" /> Add Manual Income
+          </button>
         <button
           onClick={loadData}
           disabled={loading}
@@ -391,7 +435,24 @@ export default function Finance() {
           />
           Refresh
         </button>
+        </div>
       </div>
+
+      {manualOpen && (
+        <div className="bg-[#0A0F1C] border border-emerald-500/20 rounded-xl p-5 space-y-4">
+          <div><h3 className="text-lg font-semibold text-white">Manual Income</h3><p className="text-xs text-slate-500 mt-1">Create income, attribute it to one or more Agents, then save as Pending or approve immediately.</p></div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {[['clientFullName','Client Full Name','text'],['amount','Amount $','number'],['depositDate','Date','date'],['country','Country','text'],['email','Email','email'],['phoneNumber','Phone Number','text'],['walletAddress','Wallet / Account','text'],['leadSourceId','Lead Source / ID','text'],['retName','Ret Name','text']].map(([key,label,type]) => <div key={key}><label className="text-[10px] uppercase text-slate-500 font-bold">{label}</label><input type={type} value={(manualDraft as any)[key]} onChange={e => setManualDraft(prev => ({...prev,[key]:e.target.value}))} className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" /></div>)}
+            <div><label className="text-[10px] uppercase text-slate-500 font-bold">Method</label><select value={manualDraft.method} onChange={e=>setManualDraft(p=>({...p,method:e.target.value}))} className="mt-1 w-full bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"><option>Crypto</option><option>Bank Transfer</option><option>Card</option><option>Cash</option><option>Other</option></select></div>
+            <div><label className="text-[10px] uppercase text-slate-500 font-bold">Crypto / Currency</label><input value={manualDraft.crypto} onChange={e=>setManualDraft(p=>({...p,crypto:e.target.value}))} className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" /></div>
+          </div>
+          <div className="rounded-xl bg-white/[0.02] border border-white/5 p-4 space-y-3"><div className="flex justify-between items-center"><div><p className="text-sm font-semibold text-white">Agent Attribution / Split</p><p className="text-[11px] text-slate-500">Total must equal 100%. Current: {manualTotalPct.toFixed(2)}%</p></div><button type="button" onClick={()=>setManualAllocations(r=>[...r,{userId:'',percentage:''}])} className="px-3 py-2 rounded-lg bg-blue-500/10 text-blue-300 text-xs">+ Add Agent</button></div>
+            {manualAllocations.map((row,index)=><div key={index} className="grid grid-cols-[1fr_130px_44px] gap-2"><select value={row.userId} onChange={e=>setManualAllocations(rows=>rows.map((r,i)=>i===index?{...r,userId:e.target.value}:r))} className="bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2 text-sm text-white"><option value="">Select Agent...</option>{manualAgents.filter((u:any)=>!manualAllocations.some((r,i)=>i!==index&&r.userId===String(u.id))).map((u:any)=><option key={u.id} value={u.id}>{u.name||u.email}</option>)}</select><input type="number" min="0.01" max="100" step="0.01" value={row.percentage} onChange={e=>setManualAllocations(rows=>rows.map((r,i)=>i===index?{...r,percentage:e.target.value}:r))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white" placeholder="%"/><button type="button" onClick={()=>setManualAllocations(rows=>rows.filter((_,i)=>i!==index))} className="rounded-lg bg-rose-500/10 text-rose-400">×</button></div>)}
+          </div>
+          <div><label className="text-[10px] uppercase text-slate-500 font-bold">Internal Comment</label><textarea value={manualDraft.comment} onChange={e=>setManualDraft(p=>({...p,comment:e.target.value}))} className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" rows={2}/></div>
+          <div className="flex justify-end gap-2"><button disabled={manualBusy} onClick={()=>submitManualIncome(false)} className="px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-slate-300 text-sm"><Save className="w-4 h-4 inline mr-2"/>Save as Pending</button><button disabled={manualBusy} onClick={()=>submitManualIncome(true)} className="px-4 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold"><Check className="w-4 h-4 inline mr-2"/>Approve & Add</button></div>
+        </div>
+      )}
 
       {fullFinanceAccess && (
         <div className="space-y-5">
@@ -1064,6 +1125,8 @@ export default function Finance() {
                         </>
                       )}
                     </div>
+
+                    <div className="mb-3"><Detail label="Method" value={deposit.method || '—'} /></div>
 
                     <div>
                       <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
