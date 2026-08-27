@@ -443,7 +443,23 @@ export default function Finance() {
           <div><h3 className="text-lg font-semibold text-white">Manual Income</h3><p className="text-xs text-slate-500 mt-1">Create income, attribute it to one or more Agents, then save as Pending or approve immediately.</p></div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {[['clientFullName','Client Full Name','text'],['amount','Amount $','number'],['depositDate','Date','date'],['country','Country','text'],['email','Email','email'],['phoneNumber','Phone Number','text'],['walletAddress','Wallet / Account','text'],['leadSourceId','Lead Source / ID','text'],['retName','Ret Name','text']].map(([key,label,type]) => <div key={key}><label className="text-[10px] uppercase text-slate-500 font-bold">{label}</label><input type={type} value={(manualDraft as any)[key]} onChange={e => setManualDraft(prev => ({...prev,[key]:e.target.value}))} className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" /></div>)}
-            <div><label className="text-[10px] uppercase text-slate-500 font-bold">Method</label><select value={manualDraft.method} onChange={e=>setManualDraft(p=>({...p,method:e.target.value}))} className="mt-1 w-full bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"><option>Crypto</option><option>Bank Transfer</option><option>Card</option><option>Cash</option><option>Other</option></select></div>
+            <div>
+              <label className="text-[10px] uppercase text-slate-500 font-bold">Method</label>
+              <input
+                type="text"
+                list="manual-income-method-options"
+                value={manualDraft.method}
+                onChange={e => setManualDraft(p => ({ ...p, method: e.target.value }))}
+                placeholder="Type or choose a method..."
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"
+              />
+              <datalist id="manual-income-method-options">
+                <option value="Crypto" />
+                <option value="Bank Transfer" />
+                <option value="Card" />
+                <option value="Cash" />
+              </datalist>
+            </div>
             <div><label className="text-[10px] uppercase text-slate-500 font-bold">Crypto / Currency</label><input value={manualDraft.crypto} onChange={e=>setManualDraft(p=>({...p,crypto:e.target.value}))} className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white" /></div>
           </div>
           <div className="rounded-xl bg-white/[0.02] border border-white/5 p-4 space-y-3"><div className="flex justify-between items-center"><div><p className="text-sm font-semibold text-white">Agent Attribution / Split</p><p className="text-[11px] text-slate-500">Total must equal 100%. Current: {manualTotalPct.toFixed(2)}%</p></div><button type="button" onClick={()=>setManualAllocations(r=>[...r,{userId:'',percentage:''}])} className="px-3 py-2 rounded-lg bg-blue-500/10 text-blue-300 text-xs">+ Add Agent</button></div>
