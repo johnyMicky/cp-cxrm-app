@@ -417,17 +417,20 @@ export default function AgentFinancePanel() {
 
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Method</label>
-              <select
+              <input
+                type="text"
+                list="agent-finance-method-options"
                 value={form.method}
                 onChange={e => setForm(prev => ({ ...prev, method: e.target.value }))}
-                className="w-full bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white"
-              >
-                <option value="Crypto">Crypto</option>
-                <option value="Bank Transfer">Bank Transfer</option>
-                <option value="Card">Card</option>
-                <option value="Cash">Cash</option>
-                <option value="Other">Other</option>
-              </select>
+                placeholder="Type or choose a method..."
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+              />
+              <datalist id="agent-finance-method-options">
+                <option value="Crypto" />
+                <option value="Bank Transfer" />
+                <option value="Card" />
+                <option value="Cash" />
+              </datalist>
             </div>
 
             <div className="space-y-1.5">
