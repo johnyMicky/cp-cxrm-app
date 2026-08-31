@@ -133,23 +133,27 @@ export default function Leads() {
       statuses: Array.isArray(savedFilters.statuses)
         ? savedFilters.statuses
         : [] as string[],
-      source:
-        typeof savedFilters.source === 'string'
-          ? savedFilters.source
-          : '',
+      sources: Array.isArray(savedFilters.sources)
+        ? savedFilters.sources
+        : (typeof savedFilters.source === 'string' && savedFilters.source.trim()
+            ? [savedFilters.source]
+            : []) as string[],
       agents:
         Array.isArray(savedFilters.agents)
           ? savedFilters.agents
           : [] as string[],
-      country:
-        typeof savedFilters.country === 'string'
-          ? savedFilters.country
-          : ''
+      countries: Array.isArray(savedFilters.countries)
+        ? savedFilters.countries
+        : (typeof savedFilters.country === 'string' && savedFilters.country.trim()
+            ? [savedFilters.country]
+            : []) as string[]
     };
   });
   const [activeDropdown, setActiveDropdown] = useState<'status' | 'agent' | 'source' | 'country' | 'bulkStatus' | 'bulkAssign' | null>(null);
   const [statusSearch, setStatusSearch] = useState('');
   const [agentSearch, setAgentSearch] = useState('');
+  const [sourceSearch, setSourceSearch] = useState('');
+  const [countrySearch, setCountrySearch] = useState('');
   const [isReshuffleModalOpen, setIsReshuffleModalOpen] = useState(false);
   const [reshuffleStatuses, setReshuffleStatuses] = useState<string[]>([]);
   const [reshuffleAgents, setReshuffleAgents] = useState<string[]>([]);
@@ -226,14 +230,14 @@ export default function Leads() {
   }, [leads]);
 
   const visibleSourceOptions = useMemo(() => {
-    const query = safeLower(filters.source);
+    const query = safeLower(sourceSearch);
     return sourceOptions.filter(value => !query || safeLower(value).includes(query));
-  }, [sourceOptions, filters.source]);
+  }, [sourceOptions, sourceSearch]);
 
   const visibleCountryOptions = useMemo(() => {
-    const query = safeLower(filters.country);
+    const query = safeLower(countrySearch);
     return countryOptions.filter(value => !query || safeLower(value).includes(query));
-  }, [countryOptions, filters.country]);
+  }, [countryOptions, countrySearch]);
 
   const reshuffleSourceStatuses = useMemo(
     () => statuses.filter(
@@ -528,8 +532,8 @@ export default function Leads() {
 
   const filteredLeads = useMemo(() => {
     const searchQuery = safeLower(deferredSearch);
-    const sourceQuery = safeLower(filters.source);
-    const countryQuery = safeLower(filters.country);
+    const sourceSet = new Set(filters.sources.map((value: string) => safeLower(value)));
+    const countrySet = new Set(filters.countries.map((value: string) => safeLower(value)));
     const statusSet = new Set(filters.statuses);
     const agentSet = new Set(filters.agents);
     const dashboardStatusNormalized = dashboardStatus ? normalizeStatus(dashboardStatus) : '';
@@ -562,9 +566,9 @@ export default function Leads() {
       const baseMatch =
         (!searchQuery || safeLower(lead.name).includes(searchQuery) || safeLower(lead.email).includes(searchQuery) || safeLower(lead.phone).includes(searchQuery) || safeLower(lead.country).includes(searchQuery)) &&
         (statusSet.size === 0 || statusSet.has(normalizedLeadStatus)) &&
-        (!sourceQuery || safeLower(lead.source).includes(sourceQuery)) &&
+        (sourceSet.size === 0 || sourceSet.has(safeLower(lead.source))) &&
         (agentSet.size === 0 || agentSet.has(lead.assigned_to)) &&
-        (!countryQuery || safeLower(lead.country).includes(countryQuery));
+        (countrySet.size === 0 || countrySet.has(safeLower(lead.country)));
 
       if (!baseMatch) return false;
       if (dashboardStatusNormalized && normalizedLeadStatus !== dashboardStatusNormalized) return false;
@@ -583,7 +587,7 @@ export default function Leads() {
       if (dashboardView === 'stale7d') return !terminalStatuses.has(normalizedLeadStatus) && !!updated && now.getTime() - updated.getTime() >= 7 * 24 * 60 * 60 * 1000;
       return true;
     });
-  }, [leads, deferredSearch, filters.statuses, filters.source, filters.agents, filters.country, dashboardStatus, dashboardView, dashboardRange]);
+  }, [leads, deferredSearch, filters.statuses, filters.sources, filters.agents, filters.countries, dashboardStatus, dashboardView, dashboardRange]);
 
   // Rendering thousands of table rows is one of the biggest UI bottlenecks.
   // Keep all records available for filters/bulk actions but render 100 at a time.
@@ -599,7 +603,7 @@ export default function Leads() {
     }
 
     setVisibleLeadCount(100);
-  }, [deferredSearch, filters.statuses, filters.source, filters.agents, filters.country, dashboardStatus, dashboardView, dashboardRange]);
+  }, [deferredSearch, filters.statuses, filters.sources, filters.agents, filters.countries, dashboardStatus, dashboardView, dashboardRange]);
 
   const handleSelectAll = () => {
     if (selectedLeads.length === filteredLeads.length) {
@@ -631,6 +635,50 @@ export default function Leads() {
         ? prev.agents.filter(id => id !== agentId)
         : [...prev.agents, agentId]
     }));
+  };
+
+  const toggleSourceFilter = (source: string) => {
+    setFilters(prev => {
+      const isSelected = prev.sources.some(
+        (value: string) => safeLower(value) === safeLower(source)
+      );
+
+      return {
+        ...prev,
+        sources: isSelected
+          ? prev.sources.filter(
+              (value: string) => safeLower(value) !== safeLower(source)
+            )
+          : [...prev.sources, source]
+      };
+    });
+
+    // Multi-select UX: keep the menu open and reset only the search query,
+    // so the next Source can be selected immediately.
+    setSourceSearch('');
+    setActiveDropdown('source');
+  };
+
+  const toggleCountryFilter = (country: string) => {
+    setFilters(prev => {
+      const isSelected = prev.countries.some(
+        (value: string) => safeLower(value) === safeLower(country)
+      );
+
+      return {
+        ...prev,
+        countries: isSelected
+          ? prev.countries.filter(
+              (value: string) => safeLower(value) !== safeLower(country)
+            )
+          : [...prev.countries, country]
+      };
+    });
+
+    // Multi-select UX: keep the menu open and reset only the search query,
+    // so the next Country can be selected immediately.
+    setCountrySearch('');
+    setActiveDropdown('country');
   };
 
   const handleBulkStatusUpdate = async (status: string) => {
@@ -964,7 +1012,7 @@ export default function Leads() {
             >
               <Filter className="w-4 h-4" />
               <span>Filters</span>
-              {(filters.statuses.length > 0 || filters.source || filters.agents.length > 0 || filters.country) && (
+              {(filters.statuses.length > 0 || filters.sources.length > 0 || filters.agents.length > 0 || filters.countries.length > 0) && (
                 <span className="ml-1 w-2 h-2 rounded-full bg-blue-500" />
               )}
             </button>
@@ -1537,20 +1585,27 @@ export default function Leads() {
             <div className="space-y-1.5 relative">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Source</label>
               <div className="relative">
-                <input 
+                <input
                   type="text"
-                  placeholder="All Sources / type to search..."
-                  value={filters.source}
+                  placeholder={filters.sources.length === 0 ? 'All Sources / type to search...' : `${filters.sources.length} Source${filters.sources.length === 1 ? '' : 's'} selected`}
+                  value={sourceSearch}
                   onFocus={() => setActiveDropdown('source')}
                   onClick={(e) => {
                     e.stopPropagation();
                     setActiveDropdown('source');
                   }}
                   onChange={(e) => {
-                    setFilters(prev => ({ ...prev, source: e.target.value }));
+                    setSourceSearch(e.target.value);
                     setActiveDropdown('source');
                   }}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-3 pr-8 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && visibleSourceOptions.length > 0) {
+                      e.preventDefault();
+                      toggleSourceFilter(visibleSourceOptions[0]);
+                      setSourceSearch('');
+                    }
+                  }}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-3 pr-8 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
                 />
                 <button
                   type="button"
@@ -1565,42 +1620,66 @@ export default function Leads() {
                 </button>
               </div>
 
+              {filters.sources.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {filters.sources.map((source: string) => (
+                    <button
+                      key={source}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleSourceFilter(source);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-[10px] text-blue-300 hover:bg-blue-500/20"
+                      title={`Remove ${source}`}
+                    >
+                      <span className="max-w-[150px] truncate">{source}</span>
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {activeDropdown === 'source' && (
                 <div
-                  className="absolute left-0 right-0 top-full mt-1 z-50 max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0D121F] shadow-2xl py-1"
+                  className="absolute left-0 right-0 top-full mt-1 z-50 max-h-64 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0D121F] shadow-2xl py-1"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFilters(prev => ({ ...prev, source: '' }));
-                      setActiveDropdown(null);
-                    }}
-                    className="w-full text-left px-3 py-2 text-xs text-blue-400 hover:bg-white/5"
-                  >
-                    All Sources
-                  </button>
-                  {visibleSourceOptions.length > 0 ? (
-                    visibleSourceOptions.map(source => (
+                  <div className="px-3 py-2 border-b border-white/5 flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">
+                      {filters.sources.length === 0 ? 'All Sources' : `${filters.sources.length} selected`}
+                    </span>
+                    {filters.sources.length > 0 && (
                       <button
-                        key={source}
                         type="button"
-                        onClick={() => {
-                          setFilters(prev => ({ ...prev, source }));
-                          setActiveDropdown(null);
-                        }}
-                        className="w-full flex items-center justify-between gap-2 text-left px-3 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white"
+                        onClick={() => setFilters(prev => ({ ...prev, sources: [] }))}
+                        className="text-[10px] text-blue-400 hover:text-blue-300"
                       >
-                        <span className="truncate">{source}</span>
-                        {safeLower(filters.source) === safeLower(source) && (
-                          <Check className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                        )}
+                        Clear All
                       </button>
-                    ))
+                    )}
+                  </div>
+                  {visibleSourceOptions.length > 0 ? (
+                    visibleSourceOptions.map(source => {
+                      const selected = filters.sources.some((value: string) => safeLower(value) === safeLower(source));
+                      return (
+                        <button
+                          key={source}
+                          type="button"
+                          onClick={() => toggleSourceFilter(source)}
+                          className="w-full flex items-center justify-between gap-2 text-left px-3 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white"
+                        >
+                          <span className="truncate">{source}</span>
+                          {selected ? (
+                            <CheckSquare className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                          ) : (
+                            <Square className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })
                   ) : (
-                    <div className="px-3 py-3 text-xs text-slate-500">
-                      No matching Source found.
-                    </div>
+                    <div className="px-3 py-3 text-xs text-slate-500">No matching Source found.</div>
                   )}
                 </div>
               )}
@@ -1658,20 +1737,27 @@ export default function Leads() {
             <div className="space-y-1.5 relative">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Country</label>
               <div className="relative">
-                <input 
+                <input
                   type="text"
-                  placeholder="All Countries / type to search..."
-                  value={filters.country}
+                  placeholder={filters.countries.length === 0 ? 'All Countries / type to search...' : `${filters.countries.length} Countr${filters.countries.length === 1 ? 'y' : 'ies'} selected`}
+                  value={countrySearch}
                   onFocus={() => setActiveDropdown('country')}
                   onClick={(e) => {
                     e.stopPropagation();
                     setActiveDropdown('country');
                   }}
                   onChange={(e) => {
-                    setFilters(prev => ({ ...prev, country: e.target.value }));
+                    setCountrySearch(e.target.value);
                     setActiveDropdown('country');
                   }}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-3 pr-14 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && visibleCountryOptions.length > 0) {
+                      e.preventDefault();
+                      toggleCountryFilter(visibleCountryOptions[0]);
+                      setCountrySearch('');
+                    }
+                  }}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-3 pr-14 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
                 />
                 <button
                   type="button"
@@ -1684,12 +1770,14 @@ export default function Leads() {
                 >
                   <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'country' ? 'rotate-180' : ''}`} />
                 </button>
-                {(filters.statuses.length > 0 || filters.source || filters.agents.length > 0 || filters.country) && (
-                  <button 
+                {(filters.statuses.length > 0 || filters.sources.length > 0 || filters.agents.length > 0 || filters.countries.length > 0) && (
+                  <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setFilters({ statuses: [], source: '', agents: [], country: '' });
+                      setFilters({ statuses: [], sources: [], agents: [], countries: [] });
+                      setSourceSearch('');
+                      setCountrySearch('');
                       setActiveDropdown(null);
                     }}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
@@ -1700,42 +1788,66 @@ export default function Leads() {
                 )}
               </div>
 
+              {filters.countries.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {filters.countries.map((country: string) => (
+                    <button
+                      key={country}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleCountryFilter(country);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-[10px] text-blue-300 hover:bg-blue-500/20"
+                      title={`Remove ${country}`}
+                    >
+                      <span className="max-w-[150px] truncate">{country}</span>
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {activeDropdown === 'country' && (
                 <div
-                  className="absolute left-0 right-0 top-full mt-1 z-50 max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0D121F] shadow-2xl py-1"
+                  className="absolute left-0 right-0 top-full mt-1 z-50 max-h-64 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0D121F] shadow-2xl py-1"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFilters(prev => ({ ...prev, country: '' }));
-                      setActiveDropdown(null);
-                    }}
-                    className="w-full text-left px-3 py-2 text-xs text-blue-400 hover:bg-white/5"
-                  >
-                    All Countries
-                  </button>
-                  {visibleCountryOptions.length > 0 ? (
-                    visibleCountryOptions.map(country => (
+                  <div className="px-3 py-2 border-b border-white/5 flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">
+                      {filters.countries.length === 0 ? 'All Countries' : `${filters.countries.length} selected`}
+                    </span>
+                    {filters.countries.length > 0 && (
                       <button
-                        key={country}
                         type="button"
-                        onClick={() => {
-                          setFilters(prev => ({ ...prev, country }));
-                          setActiveDropdown(null);
-                        }}
-                        className="w-full flex items-center justify-between gap-2 text-left px-3 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white"
+                        onClick={() => setFilters(prev => ({ ...prev, countries: [] }))}
+                        className="text-[10px] text-blue-400 hover:text-blue-300"
                       >
-                        <span className="truncate">{country}</span>
-                        {safeLower(filters.country) === safeLower(country) && (
-                          <Check className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                        )}
+                        Clear All
                       </button>
-                    ))
+                    )}
+                  </div>
+                  {visibleCountryOptions.length > 0 ? (
+                    visibleCountryOptions.map(country => {
+                      const selected = filters.countries.some((value: string) => safeLower(value) === safeLower(country));
+                      return (
+                        <button
+                          key={country}
+                          type="button"
+                          onClick={() => toggleCountryFilter(country)}
+                          className="w-full flex items-center justify-between gap-2 text-left px-3 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white"
+                        >
+                          <span className="truncate">{country}</span>
+                          {selected ? (
+                            <CheckSquare className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                          ) : (
+                            <Square className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })
                   ) : (
-                    <div className="px-3 py-3 text-xs text-slate-500">
-                      No matching Country found.
-                    </div>
+                    <div className="px-3 py-3 text-xs text-slate-500">No matching Country found.</div>
                   )}
                 </div>
               )}
