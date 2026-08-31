@@ -147,7 +147,7 @@ export default function Leads() {
           : ''
     };
   });
-  const [activeDropdown, setActiveDropdown] = useState<'status' | 'agent' | 'bulkStatus' | 'bulkAssign' | null>(null);
+  const [activeDropdown, setActiveDropdown] = useState<'status' | 'agent' | 'source' | 'country' | 'bulkStatus' | 'bulkAssign' | null>(null);
   const [statusSearch, setStatusSearch] = useState('');
   const [agentSearch, setAgentSearch] = useState('');
   const [isReshuffleModalOpen, setIsReshuffleModalOpen] = useState(false);
@@ -200,6 +200,40 @@ export default function Leads() {
     id: localStorage.getItem('userId'),
     role: localStorage.getItem('userRole') || 'Agent' 
   };
+
+  // Build Source/Country options dynamically from the leads already visible to this user.
+  // Keep the first original spelling, but deduplicate case-insensitively.
+  const sourceOptions = useMemo(() => {
+    const values = new Map<string, string>();
+    leads.forEach((lead: any) => {
+      const value = String(lead?.source || '').trim();
+      if (!value) return;
+      const key = value.toLowerCase();
+      if (!values.has(key)) values.set(key, value);
+    });
+    return Array.from(values.values()).sort((a, b) => a.localeCompare(b));
+  }, [leads]);
+
+  const countryOptions = useMemo(() => {
+    const values = new Map<string, string>();
+    leads.forEach((lead: any) => {
+      const value = String(lead?.country || '').trim();
+      if (!value) return;
+      const key = value.toLowerCase();
+      if (!values.has(key)) values.set(key, value);
+    });
+    return Array.from(values.values()).sort((a, b) => a.localeCompare(b));
+  }, [leads]);
+
+  const visibleSourceOptions = useMemo(() => {
+    const query = safeLower(filters.source);
+    return sourceOptions.filter(value => !query || safeLower(value).includes(query));
+  }, [sourceOptions, filters.source]);
+
+  const visibleCountryOptions = useMemo(() => {
+    const query = safeLower(filters.country);
+    return countryOptions.filter(value => !query || safeLower(value).includes(query));
+  }, [countryOptions, filters.country]);
 
   const reshuffleSourceStatuses = useMemo(
     () => statuses.filter(
@@ -1500,15 +1534,76 @@ export default function Leads() {
               )}
             </div>
 
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 relative">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Source</label>
-              <input 
-                type="text"
-                placeholder="Filter by source..."
-                value={filters.source}
-                onChange={(e) => setFilters({...filters, source: e.target.value})}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-              />
+              <div className="relative">
+                <input 
+                  type="text"
+                  placeholder="All Sources / type to search..."
+                  value={filters.source}
+                  onFocus={() => setActiveDropdown('source')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveDropdown('source');
+                  }}
+                  onChange={(e) => {
+                    setFilters(prev => ({ ...prev, source: e.target.value }));
+                    setActiveDropdown('source');
+                  }}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-3 pr-8 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                />
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveDropdown(activeDropdown === 'source' ? null : 'source');
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                  aria-label="Toggle source options"
+                >
+                  <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'source' ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+
+              {activeDropdown === 'source' && (
+                <div
+                  className="absolute left-0 right-0 top-full mt-1 z-50 max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0D121F] shadow-2xl py-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilters(prev => ({ ...prev, source: '' }));
+                      setActiveDropdown(null);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs text-blue-400 hover:bg-white/5"
+                  >
+                    All Sources
+                  </button>
+                  {visibleSourceOptions.length > 0 ? (
+                    visibleSourceOptions.map(source => (
+                      <button
+                        key={source}
+                        type="button"
+                        onClick={() => {
+                          setFilters(prev => ({ ...prev, source }));
+                          setActiveDropdown(null);
+                        }}
+                        className="w-full flex items-center justify-between gap-2 text-left px-3 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white"
+                      >
+                        <span className="truncate">{source}</span>
+                        {safeLower(filters.source) === safeLower(source) && (
+                          <Check className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        )}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-3 py-3 text-xs text-slate-500">
+                      No matching Source found.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {currentUser.role !== 'Agent' && (
@@ -1560,25 +1655,90 @@ export default function Leads() {
               </div>
             )}
 
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 relative">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Country</label>
               <div className="relative">
                 <input 
                   type="text"
-                  placeholder="Filter by country..."
+                  placeholder="All Countries / type to search..."
                   value={filters.country}
-                  onChange={(e) => setFilters({...filters, country: e.target.value})}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                  onFocus={() => setActiveDropdown('country')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveDropdown('country');
+                  }}
+                  onChange={(e) => {
+                    setFilters(prev => ({ ...prev, country: e.target.value }));
+                    setActiveDropdown('country');
+                  }}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-3 pr-14 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-500/50"
                 />
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveDropdown(activeDropdown === 'country' ? null : 'country');
+                  }}
+                  className="absolute right-7 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                  aria-label="Toggle country options"
+                >
+                  <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'country' ? 'rotate-180' : ''}`} />
+                </button>
                 {(filters.statuses.length > 0 || filters.source || filters.agents.length > 0 || filters.country) && (
                   <button 
-                    onClick={() => setFilters({ statuses: [], source: '', agents: [], country: '' })}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFilters({ statuses: [], source: '', agents: [], country: '' });
+                      setActiveDropdown(null);
+                    }}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                    aria-label="Clear all filters"
                   >
                     <X className="w-3 h-3" />
                   </button>
                 )}
               </div>
+
+              {activeDropdown === 'country' && (
+                <div
+                  className="absolute left-0 right-0 top-full mt-1 z-50 max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-[#0D121F] shadow-2xl py-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilters(prev => ({ ...prev, country: '' }));
+                      setActiveDropdown(null);
+                    }}
+                    className="w-full text-left px-3 py-2 text-xs text-blue-400 hover:bg-white/5"
+                  >
+                    All Countries
+                  </button>
+                  {visibleCountryOptions.length > 0 ? (
+                    visibleCountryOptions.map(country => (
+                      <button
+                        key={country}
+                        type="button"
+                        onClick={() => {
+                          setFilters(prev => ({ ...prev, country }));
+                          setActiveDropdown(null);
+                        }}
+                        className="w-full flex items-center justify-between gap-2 text-left px-3 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white"
+                      >
+                        <span className="truncate">{country}</span>
+                        {safeLower(filters.country) === safeLower(country) && (
+                          <Check className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        )}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-3 py-3 text-xs text-slate-500">
+                      No matching Country found.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
