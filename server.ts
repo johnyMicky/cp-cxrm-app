@@ -545,6 +545,9 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
       lastCompletedCallId: '',
       lastDisposition: '',
       lastEndReason: '',
+      awaitingStatusLeadId: '',
+      lastStatusLeadId: '',
+      lastSelectedStatus: '',
       lastError: '',
       startedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -612,6 +615,116 @@ app.post('/api/atlant/dialer/stop', async (req, res) => {
   }
 });
 
+
+app.post('/api/atlant/dialer/continue-after-status', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    const leadId = String(req.body?.leadId || '').trim();
+    const selectedStatus = String(req.body?.status || '').trim();
+
+    if (!leadId || !selectedStatus) {
+      return res.status(400).json({
+        success: false,
+        error: 'Lead and status are required to continue Auto Dialer.'
+      });
+    }
+
+    const sessionRef = db.collection(ATLANT_DIALER_SESSIONS_COL).doc(decoded.uid);
+    let canAdvance = false;
+
+    await db.runTransaction(async transaction => {
+      const sessionSnap = await transaction.get(sessionRef);
+      if (!sessionSnap.exists) return;
+
+      const session = sessionSnap.data() || {};
+
+      if (session.enabled !== true) return;
+      if (String(session.state || '') !== 'awaiting_status') return;
+      if (String(session.currentCallId || '').trim()) return;
+
+      const expectedLeadId = String(
+        session.awaitingStatusLeadId ||
+        session.currentLeadId ||
+        ''
+      ).trim();
+
+      if (!expectedLeadId || expectedLeadId !== leadId) return;
+
+      transaction.set(sessionRef, {
+        state: 'waiting',
+        lastSelectedStatus: selectedStatus,
+        lastStatusLeadId: leadId,
+        statusSavedAt: admin.firestore.FieldValue.serverTimestamp(),
+        awaitingStatusLeadId: '',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      canAdvance = true;
+    });
+
+    if (!canAdvance) {
+      const current = await sessionRef.get();
+      const data = current.exists ? (current.data() || {}) : {};
+
+      // Idempotent response for repeated UI events after this Lead already advanced.
+      if (
+        data.enabled === true &&
+        String(data.lastStatusLeadId || '') === leadId &&
+        String(data.state || '') !== 'awaiting_status'
+      ) {
+        return res.status(200).json({
+          success: true,
+          accepted: false,
+          alreadyProcessed: true
+        });
+      }
+
+      return res.status(409).json({
+        success: false,
+        error: 'Auto Dialer is not waiting for a status on this Lead.'
+      });
+    }
+
+    // Requested UX: after the Agent saves the status, wait exactly 2 seconds,
+    // then start the next queued Lead if Auto is still enabled.
+    await sleep(2000);
+
+    const latestSnap = await sessionRef.get();
+    const latest = latestSnap.exists ? (latestSnap.data() || {}) : {};
+
+    if (
+      latest.enabled === true &&
+      String(latest.state || '') === 'waiting' &&
+      !String(latest.currentCallId || '').trim() &&
+      String(latest.lastStatusLeadId || '') === leadId
+    ) {
+      const nextResult = await startNextAtlantDialerCall(decoded.uid);
+
+      return res.status(200).json({
+        success: true,
+        accepted: true,
+        nextCallStarted: nextResult.started === true,
+        reason: nextResult.reason || null
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      accepted: true,
+      nextCallStarted: false
+    });
+  } catch (error: any) {
+    console.error('Atlant Auto Dialer continue-after-status error:', error);
+    const unauthorized = /token|auth|firebase id token/i.test(String(error?.message || ''));
+
+    return res.status(unauthorized ? 401 : 500).json({
+      success: false,
+      error: unauthorized ? 'Unauthorized' : 'Unable to continue Auto Dialer after status.'
+    });
+  }
+});
+
+
 app.get('/api/atlant/dialer/status', async (req, res) => {
   try {
     const decoded = await getVerifiedRequestUser(req);
@@ -637,6 +750,9 @@ app.get('/api/atlant/dialer/status', async (req, res) => {
         lastCompletedCallId: data.lastCompletedCallId || '',
         lastDisposition: data.lastDisposition || '',
         lastEndReason: data.lastEndReason || '',
+        awaitingStatusLeadId: data.awaitingStatusLeadId || '',
+        lastStatusLeadId: data.lastStatusLeadId || '',
+        lastSelectedStatus: data.lastSelectedStatus || '',
         lastError: data.lastError || ''
       }
     });
@@ -736,7 +852,7 @@ app.post('/api/atlant/webhook', async (req, res) => {
 
     // Correlate the provider Call ID with an active Auto Dialer session.
     // "answered" only updates UI state. "hangup" is the terminal event that
-    // unlocks the next Lead after a 2-second safety delay.
+    // pauses the queue until the Agent saves a status for the completed Lead.
     if (callId && (eventType === 'outbound.call.answered' || eventType === 'outbound.call.hangup')) {
       const sessionsSnapshot = await db
         .collection(ATLANT_DIALER_SESSIONS_COL)
@@ -760,8 +876,6 @@ app.post('/api/atlant/webhook', async (req, res) => {
           continue;
         }
 
-        let shouldAdvance = false;
-
         await db.runTransaction(async transaction => {
           const latestSnap = await transaction.get(sessionRef);
           if (!latestSnap.exists) return;
@@ -774,32 +888,16 @@ app.post('/api/atlant/webhook', async (req, res) => {
 
           transaction.set(sessionRef, {
             currentCallId: '',
-            state: stillEnabled ? 'waiting' : 'stopped',
+            state: stillEnabled ? 'awaiting_status' : 'stopped',
             lastCompletedCallId: callId,
             lastDisposition: String(record.disposition || ''),
             lastEndReason: String(record.endReason || ''),
             lastDuration: record.duration || null,
             lastCallEndedAt: admin.firestore.FieldValue.serverTimestamp(),
+            awaitingStatusLeadId: stillEnabled ? String(latest.currentLeadId || '') : '',
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
           }, { merge: true });
-
-          shouldAdvance = stillEnabled;
         });
-
-        if (shouldAdvance) {
-          await sleep(2000);
-
-          const latestAfterDelay = await sessionRef.get();
-          const latestData = latestAfterDelay.exists ? (latestAfterDelay.data() || {}) : {};
-
-          if (
-            latestData.enabled === true &&
-            !String(latestData.currentCallId || '').trim() &&
-            String(latestData.lastCompletedCallId || '') === callId
-          ) {
-            await startNextAtlantDialerCall(sessionDoc.id);
-          }
-        }
       }
     }
 
