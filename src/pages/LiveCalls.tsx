@@ -1,0 +1,227 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Radio, PhoneCall, PhoneOff, Clock3, Users, CheckCircle2, XCircle, Search } from 'lucide-react';
+import { firestoreService } from '../services/firestoreService';
+
+const toDate = (value: any) => {
+  if (!value) return null;
+  if (value?.toDate) return value.toDate();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatDuration = (seconds: number) => {
+  const safe = Math.max(0, Math.floor(Number(seconds || 0)));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+};
+
+export default function LiveCalls() {
+  const [calls, setCalls] = useState<any[]>([]);
+  const [scope, setScope] = useState<{ teamIds: string[]; all: boolean }>({ teamIds: [], all: false });
+  const [search, setSearch] = useState('');
+  const [now, setNow] = useState(Date.now());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const currentUser = {
+    id: localStorage.getItem('userId') || '',
+    role: localStorage.getItem('userRole') || 'Agent'
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    firestoreService.getLiveCallScope(currentUser.id, currentUser.role)
+      .then(result => {
+        if (!cancelled) setScope(result);
+      })
+      .catch(err => {
+        console.error('Failed to load Live Calls scope:', err);
+        if (!cancelled) setError('Unable to load team scope.');
+      });
+
+    const unsubscribe = firestoreService.subscribeAtlantLiveCalls(
+      items => {
+        if (!cancelled) {
+          setCalls(items);
+          setLoading(false);
+        }
+      },
+      err => {
+        console.error('Live Calls subscription failed:', err);
+        if (!cancelled) {
+          setError('Unable to load live calls.');
+          setLoading(false);
+        }
+      }
+    );
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [currentUser.id, currentUser.role]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const scopedCalls = useMemo(() => {
+    let items = calls;
+
+    if (!scope.all && currentUser.role === 'Team Leader') {
+      const allowed = new Set(scope.teamIds.map(String));
+      items = items.filter(call => allowed.has(String(call.teamId || '')));
+    }
+
+    const q = search.trim().toLowerCase();
+    if (q) {
+      items = items.filter(call => [
+        call.agentName,
+        call.agentEmail,
+        call.leadName,
+        call.phone,
+        call.teamName,
+        call.disposition,
+        call.mode
+      ].some(value => String(value || '').toLowerCase().includes(q)));
+    }
+
+    return items;
+  }, [calls, scope, search, currentUser.role]);
+
+  const activeCalls = scopedCalls.filter(call => call.active === true && ['dialing', 'in_call'].includes(String(call.state || '')));
+  const dialing = activeCalls.filter(call => call.state === 'dialing');
+  const inCall = activeCalls.filter(call => call.state === 'in_call');
+
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayCalls = scopedCalls.filter(call => {
+    const date = toDate(call.startedAt);
+    return !!date && date >= todayStart;
+  });
+
+  const answeredToday = todayCalls.filter(call => String(call.disposition || '').toLowerCase() === 'answered').length;
+  const failedToday = todayCalls.filter(call => ['no answer', 'rejected', 'failed'].includes(String(call.disposition || '').toLowerCase())).length;
+  const totalTalkToday = todayCalls.reduce((sum, call) => sum + Number(call.duration?.talk_time || 0), 0);
+
+  const cards = [
+    { label: 'Active Calls', value: activeCalls.length, icon: Radio, tone: 'text-blue-400 bg-blue-500/10 border-blue-500/20' },
+    { label: 'Dialing', value: dialing.length, icon: PhoneCall, tone: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+    { label: 'In Call', value: inCall.length, icon: Users, tone: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
+    { label: 'Answered Today', value: answeredToday, icon: CheckCircle2, tone: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' },
+    { label: 'No Answer / Failed', value: failedToday, icon: XCircle, tone: 'text-rose-400 bg-rose-500/10 border-rose-500/20' },
+    { label: 'Talk Time Today', value: formatDuration(totalTalkToday), icon: Clock3, tone: 'text-violet-400 bg-violet-500/10 border-violet-500/20' }
+  ];
+
+  const liveElapsed = (call: any) => {
+    const start = toDate(call.answeredAt) || toDate(call.startedAt);
+    if (!start) return '00:00';
+    return formatDuration((now - start.getTime()) / 1000);
+  };
+
+  const recentCalls = scopedCalls.slice(0, 100);
+
+  return (
+    <div className="p-8 max-w-[1600px] mx-auto space-y-6">
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
+              <Radio className="w-5 h-5 text-blue-400" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-semibold text-white tracking-tight">Live Calls</h1>
+              <p className="text-sm text-slate-400 mt-1">Real-time Atlant call activity for Manual and Auto Dialer calls.</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="relative w-full lg:w-80">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search agent, lead, phone, team..."
+            className="w-full bg-[#0A0F1C] border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 xl:grid-cols-6 gap-3">
+        {cards.map(card => (
+          <div key={card.label} className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-4">
+            <div className={`w-9 h-9 rounded-xl border flex items-center justify-center ${card.tone}`}>
+              <card.icon className="w-4 h-4" />
+            </div>
+            <p className="text-2xl font-semibold text-white mt-3">{card.value}</p>
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mt-1">{card.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-white">Live Floor</h2>
+            <p className="text-xs text-slate-500 mt-1">Updates automatically from Atlant webhooks.</p>
+          </div>
+          <span className="text-[10px] uppercase tracking-wider font-bold text-emerald-400 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> Live
+          </span>
+        </div>
+
+        {loading ? (
+          <div className="p-12 text-center text-slate-500">Loading live calls...</div>
+        ) : error ? (
+          <div className="p-12 text-center text-rose-400">{error}</div>
+        ) : activeCalls.length === 0 ? (
+          <div className="p-12 text-center">
+            <PhoneOff className="w-10 h-10 text-slate-700 mx-auto mb-3" />
+            <p className="text-sm text-slate-500">No active calls right now.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead className="bg-white/[0.02] border-b border-white/5">
+                <tr className="text-[10px] uppercase tracking-wider text-slate-500">
+                  <th className="px-5 py-3">Agent</th><th className="px-5 py-3">Lead</th><th className="px-5 py-3">Phone</th><th className="px-5 py-3">State</th><th className="px-5 py-3">Live Time</th><th className="px-5 py-3">Mode</th><th className="px-5 py-3">Team</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {activeCalls.map(call => (
+                  <tr key={call.id} className="hover:bg-white/[0.02]">
+                    <td className="px-5 py-4"><p className="text-sm text-white font-medium">{call.agentName || 'Agent'}</p><p className="text-[10px] text-slate-500">{call.agentEmail || ''}</p></td>
+                    <td className="px-5 py-4"><p className="text-sm text-slate-200">{call.leadName || 'Unknown Lead'}</p><p className="text-[10px] text-slate-500">{call.leadStatus || ''}</p></td>
+                    <td className="px-5 py-4 text-sm font-mono text-slate-300">{call.phone || '—'}</td>
+                    <td className="px-5 py-4"><span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase border ${call.state === 'in_call' ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25' : 'text-amber-300 bg-amber-500/10 border-amber-500/25'}`}>{call.state === 'in_call' ? 'In Call' : 'Dialing'}</span></td>
+                    <td className="px-5 py-4 text-sm font-mono text-white">{liveElapsed(call)}</td>
+                    <td className="px-5 py-4"><span className={`text-[10px] font-bold uppercase px-2 py-1 rounded border ${call.mode === 'auto' ? 'text-blue-300 bg-blue-500/10 border-blue-500/20' : 'text-violet-300 bg-violet-500/10 border-violet-500/20'}`}>{call.mode || 'manual'}</span></td>
+                    <td className="px-5 py-4 text-xs text-slate-400">{call.teamName || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-white/5"><h2 className="text-sm font-semibold text-white">Recent Calls</h2><p className="text-xs text-slate-500 mt-1">Latest tracked Manual and Auto calls.</p></div>
+        <div className="overflow-x-auto max-h-[520px] overflow-y-auto custom-scrollbar">
+          <table className="w-full text-left">
+            <thead className="bg-[#0A0F1C] sticky top-0 border-b border-white/5"><tr className="text-[10px] uppercase tracking-wider text-slate-500"><th className="px-5 py-3">Agent</th><th className="px-5 py-3">Lead</th><th className="px-5 py-3">Result</th><th className="px-5 py-3">Talk</th><th className="px-5 py-3">Mode</th><th className="px-5 py-3">Team</th></tr></thead>
+            <tbody className="divide-y divide-white/5">
+              {recentCalls.map(call => (
+                <tr key={call.id} className="hover:bg-white/[0.02]"><td className="px-5 py-3 text-sm text-white">{call.agentName || 'Agent'}</td><td className="px-5 py-3 text-sm text-slate-300">{call.leadName || call.phone || 'Unknown'}</td><td className="px-5 py-3 text-xs text-slate-300">{call.active ? (call.state === 'in_call' ? 'In Call' : 'Dialing') : (call.disposition || 'Ended')}</td><td className="px-5 py-3 text-xs font-mono text-slate-300">{formatDuration(Number(call.duration?.talk_time || 0))}</td><td className="px-5 py-3 text-[10px] uppercase font-bold text-slate-400">{call.mode || 'manual'}</td><td className="px-5 py-3 text-xs text-slate-500">{call.teamName || '—'}</td></tr>
+              ))}
+              {recentCalls.length === 0 && <tr><td colSpan={6} className="px-5 py-10 text-center text-sm text-slate-500">No tracked calls yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
