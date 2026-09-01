@@ -333,6 +333,326 @@ app.post('/api/atlant/call', async (req, res) => {
 });
 
 
+
+// Atlant Auto Dialer session support.
+// Existing manual Click2Call remains unchanged. Auto Dialer sessions are isolated
+// in their own collection and only control the next-call queue for signed-in Agents.
+const ATLANT_DIALER_SESSIONS_COL = 'atlant_dialer_sessions';
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function initiateAtlantProviderCall(agentExtension: string, destination: string) {
+  const cleanExtension = String(agentExtension || '').trim();
+  const cleanDestination = String(destination || '').trim();
+  const digitCount = cleanDestination.replace(/\D/g, '').length;
+
+  if (!cleanExtension) throw new Error('Atlant extension is not configured.');
+  if (!cleanDestination || digitCount === 0 || digitCount > 20) {
+    throw new Error('Invalid destination number.');
+  }
+
+  const apiKey = String(process.env.ATLANT_API_KEY || '').trim();
+  const rawHost = String(process.env.ATLANT_HOST || '').trim();
+
+  if (!apiKey || !rawHost) {
+    throw new Error('Atlant Click2Call is not configured on the server.');
+  }
+
+  const host = rawHost.replace(/^https?:\/\//i, '').replace(/\/+$/g, '');
+  if (!/^[a-z0-9.-]+(?::\d+)?$/i.test(host)) {
+    throw new Error('Atlant host configuration is invalid.');
+  }
+
+  const endpoint = `https://${host}/api/v1/${encodeURIComponent(apiKey)}/click2call`;
+
+  const atlantResponse = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      number: cleanDestination,
+      agent: cleanExtension,
+      get_call_id: 'true'
+    })
+  });
+
+  const rawBody = await atlantResponse.text();
+  let providerBody: any = {};
+
+  if (rawBody) {
+    try {
+      providerBody = JSON.parse(rawBody);
+    } catch {
+      providerBody = { message: rawBody };
+    }
+  }
+
+  if (!atlantResponse.ok) {
+    throw new Error(String(
+      providerBody?.error ||
+      providerBody?.message ||
+      `Atlant returned HTTP ${atlantResponse.status}.`
+    ));
+  }
+
+  const callId = String(providerBody?.call_id || '').trim();
+  if (!callId) throw new Error('Atlant did not return a Call ID.');
+
+  return { callId };
+}
+
+async function startNextAtlantDialerCall(userId: string) {
+  const sessionRef = db.collection(ATLANT_DIALER_SESSIONS_COL).doc(userId);
+  const sessionSnap = await sessionRef.get();
+
+  if (!sessionSnap.exists) return { started: false, reason: 'missing-session' };
+
+  const session = sessionSnap.data() || {};
+  if (session.enabled !== true) return { started: false, reason: 'disabled' };
+  if (String(session.currentCallId || '').trim()) {
+    return { started: false, reason: 'call-active' };
+  }
+
+  const queue = Array.isArray(session.queue) ? session.queue : [];
+  let nextIndex = Number(session.nextIndex || 0);
+
+  if (!Number.isFinite(nextIndex) || nextIndex < 0) nextIndex = 0;
+
+  if (nextIndex >= queue.length) {
+    await sessionRef.set({
+      enabled: false,
+      state: 'complete',
+      currentCallId: '',
+      currentLeadId: '',
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    return { started: false, reason: 'complete' };
+  }
+
+  const item = queue[nextIndex] || {};
+  const leadId = String(item.leadId || '').trim();
+  const leadName = String(item.name || '').trim();
+  const phone = String(item.phone || '').trim();
+  const agentExtension = String(session.agentExtension || '').trim();
+
+  try {
+    const provider = await initiateAtlantProviderCall(agentExtension, phone);
+
+    await sessionRef.set({
+      state: 'dialing',
+      currentIndex: nextIndex,
+      nextIndex: nextIndex + 1,
+      currentLeadId: leadId,
+      currentLeadName: leadName,
+      currentPhone: phone,
+      currentCallId: provider.callId,
+      lastError: '',
+      callStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    return {
+      started: true,
+      callId: provider.callId,
+      leadId,
+      leadName,
+      phone
+    };
+  } catch (error: any) {
+    const message = String(error?.message || 'Unable to initiate the next call.');
+
+    // Fail closed: never keep auto-dialing after a provider error.
+    await sessionRef.set({
+      enabled: false,
+      state: 'error',
+      lastError: message,
+      currentCallId: '',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    console.error(`Atlant Auto Dialer stopped for ${userId}:`, message);
+    return { started: false, reason: 'provider-error', error: message };
+  }
+}
+
+app.post('/api/atlant/dialer/start', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    const userDoc = await db.collection('users').doc(decoded.uid).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ success: false, error: 'CRM user profile was not found.' });
+    }
+
+    const userData = userDoc.data() || {};
+    if (String(userData.role || 'Agent') !== 'Agent') {
+      return res.status(403).json({ success: false, error: 'Auto Dialer is available to Agents only.' });
+    }
+
+    const agentExtension = String(userData.atlantExtension || '').trim();
+    if (!agentExtension) {
+      return res.status(400).json({
+        success: false,
+        error: 'Atlant extension is not configured for your CRM account.'
+      });
+    }
+
+    const rawQueue = Array.isArray(req.body?.queue) ? req.body.queue : [];
+    const queue = rawQueue
+      .slice(0, 1000)
+      .map((item: any) => ({
+        leadId: String(item?.leadId || '').trim(),
+        name: String(item?.name || '').trim().slice(0, 200),
+        phone: String(item?.phone || '').trim().slice(0, 40)
+      }))
+      .filter((item: any) => item.leadId && item.phone);
+
+    if (queue.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'There are no callable Leads in the current filtered list.'
+      });
+    }
+
+    const sessionRef = db.collection(ATLANT_DIALER_SESSIONS_COL).doc(decoded.uid);
+    const existing = await sessionRef.get();
+
+    if (existing.exists) {
+      const existingData = existing.data() || {};
+      if (existingData.enabled === true && String(existingData.currentCallId || '').trim()) {
+        return res.status(409).json({
+          success: false,
+          error: 'Auto Dialer already has an active call.'
+        });
+      }
+    }
+
+    await sessionRef.set({
+      userId: decoded.uid,
+      userEmail: decoded.email || userData.email || '',
+      agentExtension,
+      enabled: true,
+      state: 'starting',
+      queue,
+      queueSize: queue.length,
+      nextIndex: 0,
+      currentIndex: -1,
+      currentLeadId: '',
+      currentLeadName: '',
+      currentPhone: '',
+      currentCallId: '',
+      lastCompletedCallId: '',
+      lastDisposition: '',
+      lastEndReason: '',
+      lastError: '',
+      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: false });
+
+    const result = await startNextAtlantDialerCall(decoded.uid);
+
+    if (!result.started) {
+      return res.status(500).json({
+        success: false,
+        error: result.error || 'Auto Dialer could not start the first call.'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      session: {
+        enabled: true,
+        state: 'dialing',
+        queueSize: queue.length,
+        currentLeadId: result.leadId,
+        currentLeadName: result.leadName,
+        currentCallId: result.callId,
+        nextIndex: 1
+      }
+    });
+  } catch (error: any) {
+    console.error('Atlant Auto Dialer start error:', error);
+    const unauthorized = /token|auth|firebase id token/i.test(String(error?.message || ''));
+
+    return res.status(unauthorized ? 401 : 500).json({
+      success: false,
+      error: unauthorized ? 'Unauthorized' : 'Unable to start Auto Dialer.'
+    });
+  }
+});
+
+app.post('/api/atlant/dialer/stop', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    const sessionRef = db.collection(ATLANT_DIALER_SESSIONS_COL).doc(decoded.uid);
+    const sessionSnap = await sessionRef.get();
+
+    if (!sessionSnap.exists) {
+      return res.status(200).json({ success: true, session: null });
+    }
+
+    const current = sessionSnap.data() || {};
+    await sessionRef.set({
+      enabled: false,
+      state: String(current.currentCallId || '').trim() ? 'stopping' : 'stopped',
+      stoppedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    return res.status(200).json({ success: true });
+  } catch (error: any) {
+    console.error('Atlant Auto Dialer stop error:', error);
+    const unauthorized = /token|auth|firebase id token/i.test(String(error?.message || ''));
+
+    return res.status(unauthorized ? 401 : 500).json({
+      success: false,
+      error: unauthorized ? 'Unauthorized' : 'Unable to stop Auto Dialer.'
+    });
+  }
+});
+
+app.get('/api/atlant/dialer/status', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    const sessionSnap = await db.collection(ATLANT_DIALER_SESSIONS_COL).doc(decoded.uid).get();
+
+    if (!sessionSnap.exists) {
+      return res.status(200).json({ success: true, session: null });
+    }
+
+    const data = sessionSnap.data() || {};
+    return res.status(200).json({
+      success: true,
+      session: {
+        enabled: data.enabled === true,
+        state: data.state || 'stopped',
+        queueSize: Number(data.queueSize || (Array.isArray(data.queue) ? data.queue.length : 0)),
+        currentIndex: Number(data.currentIndex ?? -1),
+        nextIndex: Number(data.nextIndex || 0),
+        currentLeadId: data.currentLeadId || '',
+        currentLeadName: data.currentLeadName || '',
+        currentPhone: data.currentPhone || '',
+        currentCallId: data.currentCallId || '',
+        lastCompletedCallId: data.lastCompletedCallId || '',
+        lastDisposition: data.lastDisposition || '',
+        lastEndReason: data.lastEndReason || '',
+        lastError: data.lastError || ''
+      }
+    });
+  } catch (error: any) {
+    console.error('Atlant Auto Dialer status error:', error);
+    const unauthorized = /token|auth|firebase id token/i.test(String(error?.message || ''));
+
+    return res.status(unauthorized ? 401 : 500).json({
+      success: false,
+      error: unauthorized ? 'Unauthorized' : 'Unable to load Auto Dialer status.'
+    });
+  }
+});
+
+
+
 // Atlant outbound-call webhook receiver.
 // First integration/testing phase: append-only logging only.
 // This does NOT change Leads, statuses, queues, or any existing CRM workflow.
@@ -413,6 +733,75 @@ app.post('/api/atlant/webhook', async (req, res) => {
       `Atlant webhook received: ${eventType || 'unknown event'} ` +
       `${callId ? `(call ${callId})` : '(no call id)'}`
     );
+
+    // Correlate the provider Call ID with an active Auto Dialer session.
+    // "answered" only updates UI state. "hangup" is the terminal event that
+    // unlocks the next Lead after a 2-second safety delay.
+    if (callId && (eventType === 'outbound.call.answered' || eventType === 'outbound.call.hangup')) {
+      const sessionsSnapshot = await db
+        .collection(ATLANT_DIALER_SESSIONS_COL)
+        .where('currentCallId', '==', callId)
+        .limit(5)
+        .get();
+
+      for (const sessionDoc of sessionsSnapshot.docs) {
+        const sessionRef = sessionDoc.ref;
+
+        if (eventType === 'outbound.call.answered') {
+          const currentSession = sessionDoc.data() || {};
+          if (currentSession.enabled === true) {
+            await sessionRef.set({
+              state: 'in_call',
+              lastAnsweredCallId: callId,
+              answeredAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
+          }
+          continue;
+        }
+
+        let shouldAdvance = false;
+
+        await db.runTransaction(async transaction => {
+          const latestSnap = await transaction.get(sessionRef);
+          if (!latestSnap.exists) return;
+
+          const latest = latestSnap.data() || {};
+          if (String(latest.currentCallId || '') !== callId) return;
+          if (String(latest.lastCompletedCallId || '') === callId) return;
+
+          const stillEnabled = latest.enabled === true;
+
+          transaction.set(sessionRef, {
+            currentCallId: '',
+            state: stillEnabled ? 'waiting' : 'stopped',
+            lastCompletedCallId: callId,
+            lastDisposition: String(record.disposition || ''),
+            lastEndReason: String(record.endReason || ''),
+            lastDuration: record.duration || null,
+            lastCallEndedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+
+          shouldAdvance = stillEnabled;
+        });
+
+        if (shouldAdvance) {
+          await sleep(2000);
+
+          const latestAfterDelay = await sessionRef.get();
+          const latestData = latestAfterDelay.exists ? (latestAfterDelay.data() || {}) : {};
+
+          if (
+            latestData.enabled === true &&
+            !String(latestData.currentCallId || '').trim() &&
+            String(latestData.lastCompletedCallId || '') === callId
+          ) {
+            await startNextAtlantDialerCall(sessionDoc.id);
+          }
+        }
+      }
+    }
 
     return res.status(200).json({
       success: true,
