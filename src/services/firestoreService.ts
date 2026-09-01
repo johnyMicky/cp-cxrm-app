@@ -4168,6 +4168,43 @@ export const firestoreService = {
     return data;
   },
 
+  async continueAtlantAutoDialerAfterStatus(leadId: string, status: string) {
+    const cleanLeadId = String(leadId || '').trim();
+    const cleanStatus = String(status || '').trim();
+
+    if (!cleanLeadId || !cleanStatus) {
+      throw new Error('Lead and status are required.');
+    }
+
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) {
+      throw new Error('Your session has expired. Please sign in again.');
+    }
+
+    const token = await currentAuthUser.getIdToken();
+    const response = await fetch('/api/atlant/dialer/continue-after-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        leadId: cleanLeadId,
+        status: cleanStatus
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.success === false) {
+      throw new Error(
+        data?.error ||
+        `Unable to continue Auto Dialer after status (${response.status}).`
+      );
+    }
+
+    return data;
+  },
+
   async getAtlantAutoDialerStatus() {
     const currentAuthUser = auth.currentUser;
     if (!currentAuthUser) return null;
