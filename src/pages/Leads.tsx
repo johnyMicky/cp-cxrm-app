@@ -166,6 +166,8 @@ export default function Leads() {
   
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [callingLeadId, setCallingLeadId] = useState<string | null>(null);
+  const [autoDialerSession, setAutoDialerSession] = useState<any>(null);
+  const [isAutoDialerChanging, setIsAutoDialerChanging] = useState(false);
   const [quickNoteId, setQuickNoteId] = useState<string | null>(null);
   const [quickNoteText, setQuickNoteText] = useState('');
   const [isAssigning, setIsAssigning] = useState(false);
@@ -387,6 +389,66 @@ export default function Leads() {
     }
   };
 
+  const refreshAutoDialerStatus = async () => {
+    if (currentUser.role !== 'Agent') return;
+
+    try {
+      const session = await firestoreService.getAtlantAutoDialerStatus();
+      setAutoDialerSession(session);
+    } catch (err) {
+      console.error('Failed to load Auto Dialer status:', err);
+    }
+  };
+
+  const handleAutoDialerToggle = async () => {
+    if (currentUser.role !== 'Agent' || isAutoDialerChanging) return;
+
+    setIsAutoDialerChanging(true);
+    try {
+      if (autoDialerSession?.enabled) {
+        await firestoreService.stopAtlantAutoDialer();
+        showToastMessage('Auto Dialer stopped. The current call will not be interrupted.');
+        await refreshAutoDialerStatus();
+        return;
+      }
+
+      const queue = filteredLeads
+        .filter((lead: any) => String(lead?.phone || '').trim())
+        .slice(0, 1000)
+        .map((lead: any) => ({
+          leadId: String(lead.id || ''),
+          name: String(lead.name || ''),
+          phone: String(lead.phone || '')
+        }));
+
+      if (queue.length === 0) {
+        showToastMessage('No callable Leads match the current filters.');
+        return;
+      }
+
+      const result = await firestoreService.startAtlantAutoDialer(queue);
+      setAutoDialerSession(result?.session || null);
+      showToastMessage(`Auto Dialer started with ${queue.length} Lead${queue.length === 1 ? '' : 's'}.`);
+    } catch (err: any) {
+      console.error('Auto Dialer toggle failed:', err);
+      showToastMessage(`Auto Dialer: ${err?.message || 'Unable to change state'}`);
+      await refreshAutoDialerStatus();
+    } finally {
+      setIsAutoDialerChanging(false);
+    }
+  };
+
+  const getAutoDialerStateLabel = () => {
+    const state = String(autoDialerSession?.state || '');
+    if (state === 'dialing') return 'Dialing';
+    if (state === 'in_call') return 'In Call';
+    if (state === 'waiting') return 'Next call in 2s';
+    if (state === 'stopping') return 'Stopping after call';
+    if (state === 'complete') return 'Queue complete';
+    if (state === 'error') return 'Stopped — error';
+    return autoDialerSession?.enabled ? 'Running' : 'Off';
+  };
+
   const handleQuickNote = async (leadId: string) => {
     if (!quickNoteText.trim()) return;
     try {
@@ -447,6 +509,32 @@ export default function Leads() {
       console.error('Failed to fetch agents:', err);
     }
   };
+
+  useEffect(() => {
+    if (currentUser.role !== 'Agent') {
+      setAutoDialerSession(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const session = await firestoreService.getAtlantAutoDialerStatus();
+        if (!cancelled) setAutoDialerSession(session);
+      } catch (err) {
+        console.error('Auto Dialer polling failed:', err);
+      }
+    };
+
+    poll();
+    const timer = window.setInterval(poll, 1200);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [currentUser.id, currentUser.role]);
 
   useEffect(() => {
     fetchLeads();
@@ -1877,13 +1965,65 @@ export default function Leads() {
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Agent</th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Source</th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Phone</th>
+                <th className="px-6 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  <div className="flex items-center gap-3">
+                    <span>Phone</span>
+                    {currentUser.role === 'Agent' && (
+                      <div className="flex items-center gap-2 normal-case tracking-normal">
+                        <span className="text-[9px] font-bold text-slate-500 uppercase">Auto</span>
+                        <button
+                          type="button"
+                          onClick={handleAutoDialerToggle}
+                          disabled={isAutoDialerChanging}
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full border transition-colors ${
+                            autoDialerSession?.enabled
+                              ? 'bg-emerald-500/20 border-emerald-500/50'
+                              : 'bg-white/5 border-white/10'
+                          } disabled:opacity-50`}
+                          title={autoDialerSession?.enabled ? 'Turn Auto Dialer off' : 'Turn Auto Dialer on for current filtered Leads'}
+                        >
+                          <span
+                            className={`inline-block h-3.5 w-3.5 transform rounded-full transition-transform ${
+                              autoDialerSession?.enabled
+                                ? 'translate-x-[17px] bg-emerald-400'
+                                : 'translate-x-1 bg-slate-500'
+                            }`}
+                          />
+                        </button>
+                        <span className={`text-[9px] font-semibold ${
+                          autoDialerSession?.state === 'in_call'
+                            ? 'text-emerald-400'
+                            : autoDialerSession?.enabled
+                              ? 'text-blue-400'
+                              : autoDialerSession?.state === 'error'
+                                ? 'text-rose-400'
+                                : 'text-slate-500'
+                        }`}>
+                          {getAutoDialerStateLabel()}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </th>
                 <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
               {visibleLeads.map((lead) => (
-                <tr key={lead.id} className={`hover:bg-white/[0.02] transition-colors group ${selectedLeads.includes(lead.id) ? 'bg-blue-500/[0.03]' : ''}`}>
+                <tr
+                  key={lead.id}
+                  className={`transition-colors group ${
+                    autoDialerSession?.currentLeadId === lead.id
+                      ? autoDialerSession?.state === 'in_call'
+                        ? 'bg-emerald-500/[0.10] ring-1 ring-inset ring-emerald-500/30'
+                        : autoDialerSession?.state === 'waiting'
+                          ? 'bg-amber-500/[0.08] ring-1 ring-inset ring-amber-500/25'
+                          : 'bg-blue-500/[0.09] ring-1 ring-inset ring-blue-500/30'
+                      : selectedLeads.includes(lead.id)
+                        ? 'bg-blue-500/[0.03] hover:bg-white/[0.02]'
+                        : 'hover:bg-white/[0.02]'
+                  }`}
+                >
                   <td className="px-6 py-4">
                     <button 
                       onClick={() => handleSelectLead(lead.id)}
@@ -1959,11 +2099,23 @@ export default function Leads() {
                         )}
 
 
+                        {autoDialerSession?.currentLeadId === lead.id && (
+                          <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border ${
+                            autoDialerSession?.state === 'in_call'
+                              ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
+                              : autoDialerSession?.state === 'waiting'
+                                ? 'text-amber-300 border-amber-500/30 bg-amber-500/10'
+                                : 'text-blue-300 border-blue-500/30 bg-blue-500/10'
+                          }`}>
+                            {getAutoDialerStateLabel()}
+                          </span>
+                        )}
+
                         {lead.phone && (
                           <button
                             type="button"
                             onClick={() => handleAtlantCall(lead)}
-                            disabled={callingLeadId !== null}
+                            disabled={callingLeadId !== null || Boolean(autoDialerSession?.enabled)}
                             className={`p-1.5 rounded-lg transition-colors ${
                               callingLeadId === lead.id
                                 ? 'bg-blue-500/10 text-blue-400'
