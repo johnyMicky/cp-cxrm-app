@@ -429,6 +429,76 @@ app.post('/api/atlant/webhook', async (req, res) => {
 });
 
 
+// Read-only Atlant webhook debug endpoint.
+// Protected by the same webhook secret and intended only for integration testing.
+// It does not modify or delete any CRM data.
+app.get('/api/atlant/webhook-events', async (req, res) => {
+  try {
+    const configuredSecret = String(process.env.ATLANT_WEBHOOK_SECRET || '').trim();
+
+    if (!configuredSecret) {
+      return res.status(503).json({
+        success: false,
+        error: 'Atlant webhook debug endpoint is not configured.'
+      });
+    }
+
+    const suppliedSecret = getAtlantWebhookSecret(req);
+    if (!suppliedSecret || suppliedSecret !== configuredSecret) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const requestedLimit = Number(req.query.limit || 50);
+    const safeLimit = Math.min(
+      Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 50, 1),
+      200
+    );
+
+    const snapshot = await db
+      .collection(ATLANT_WEBHOOK_EVENTS_COL)
+      .orderBy('receivedAt', 'desc')
+      .limit(safeLimit)
+      .get();
+
+    const events = snapshot.docs.map(docSnap => {
+      const data = docSnap.data() || {};
+      const receivedAt = data.receivedAt?.toDate
+        ? data.receivedAt.toDate().toISOString()
+        : (data.receivedAtIso || null);
+
+      return {
+        id: docSnap.id,
+        eventType: data.eventType || '',
+        callId: data.callId || '',
+        callType: data.callType || '',
+        callingNumber: data.callingNumber || '',
+        calledNumber: data.calledNumber || '',
+        disposition: data.disposition || '',
+        endReason: data.endReason || '',
+        startTime: data.startTime || null,
+        endTime: data.endTime || null,
+        duration: data.duration || null,
+        cdrUrl: data.cdrUrl || '',
+        agent: data.agent || null,
+        receivedAt
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: events.length,
+      events
+    });
+  } catch (error: any) {
+    console.error('Atlant webhook debug read error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Unable to load Atlant webhook events.'
+    });
+  }
+});
+
+
 // Helper for chunked deletion
 async function deleteInChunks(docRefs: admin.firestore.DocumentReference[]) {
   const CHUNK_SIZE = 200;
