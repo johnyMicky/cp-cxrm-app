@@ -49,6 +49,7 @@ const FINANCE_EXPENSES_COL = "finance_expenses";
 const FINANCE_PAYROLL_CONFIG_COL = "finance_payroll_config";
 const FINANCE_PAYROLL_MONTHLY_COL = "finance_payroll_monthly";
 const LEAD_STATUSES_COL = "lead_statuses";
+const ATLANT_LIVE_CALLS_COL = "atlant_live_calls";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const DEFAULT_LEAD_STATUS_NAMES = [
@@ -4054,6 +4055,54 @@ export const firestoreService = {
     );
 
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+
+  async getLiveCallScope(userId: string, role: string) {
+    const cleanUserId = String(userId || '').trim();
+    const cleanRole = String(role || '').trim();
+
+    if (!cleanUserId) return { teamIds: [] as string[], all: false };
+    if (['Administrator', 'Manager'].includes(cleanRole)) {
+      return { teamIds: [] as string[], all: true };
+    }
+
+    if (cleanRole === 'Team Leader') {
+      const teams = await this.getTeams();
+      const teamIds = (teams || [])
+        .filter((team: any) => {
+          const ids = Array.isArray(team?.teamLeaderIds)
+            ? team.teamLeaderIds.map((value: any) => String(value))
+            : (team?.teamLeaderId ? [String(team.teamLeaderId)] : []);
+          return ids.includes(cleanUserId);
+        })
+        .map((team: any) => String(team.id));
+
+      return { teamIds, all: false };
+    }
+
+    return { teamIds: [] as string[], all: false };
+  },
+
+  subscribeAtlantLiveCalls(
+    callback: (calls: any[]) => void,
+    onError?: (error: any) => void
+  ) {
+    const q = query(
+      collection(db, ATLANT_LIVE_CALLS_COL),
+      orderBy('startedAt', 'desc'),
+      limit(250)
+    );
+
+    return onSnapshot(
+      q,
+      snapshot => {
+        callback(snapshot.docs.map(item => ({ id: item.id, ...item.data() })));
+      },
+      error => {
+        console.error('Atlant Live Calls listener failed:', error);
+        onError?.(error);
+      }
+    );
   },
 
   // Atlant Click2Call
