@@ -442,6 +442,7 @@ export default function Leads() {
     const state = String(autoDialerSession?.state || '');
     if (state === 'dialing') return 'Dialing';
     if (state === 'in_call') return 'In Call';
+    if (state === 'awaiting_status') return 'Select Status';
     if (state === 'waiting') return 'Next call in 2s';
     if (state === 'stopping') return 'Stopping after call';
     if (state === 'complete') return 'Queue complete';
@@ -470,6 +471,35 @@ export default function Leads() {
         action: 'Status Changed',
         details: `Status changed to ${newStatus} from list`
       });
+
+      const shouldContinueAutoDialer =
+        currentUser.role === 'Agent' &&
+        autoDialerSession?.enabled === true &&
+        String(autoDialerSession?.state || '') === 'awaiting_status' &&
+        String(
+          autoDialerSession?.awaitingStatusLeadId ||
+          autoDialerSession?.currentLeadId ||
+          ''
+        ) === String(leadId);
+
+      if (shouldContinueAutoDialer) {
+        showToastMessage('Status saved. Next call starts in 2 seconds...');
+
+        try {
+          await firestoreService.continueAtlantAutoDialerAfterStatus(leadId, newStatus);
+          await refreshAutoDialerStatus();
+        } catch (dialerErr: any) {
+          console.error('Failed to continue Auto Dialer after status:', dialerErr);
+          showToastMessage(
+            `Status saved, but Auto Dialer could not continue: ${dialerErr?.message || 'Unknown error'}`
+          );
+        }
+
+        // Refresh Leads without clearing the Agent's current filters/selection state.
+        await fetchLeads();
+        return;
+      }
+
       handleSuccess('Status updated successfully');
     } catch (err) {
       console.error('Failed to update status:', err);
@@ -2016,7 +2046,7 @@ export default function Leads() {
                     autoDialerSession?.currentLeadId === lead.id
                       ? autoDialerSession?.state === 'in_call'
                         ? 'bg-emerald-500/[0.10] ring-1 ring-inset ring-emerald-500/30'
-                        : autoDialerSession?.state === 'waiting'
+                        : ['awaiting_status', 'waiting'].includes(String(autoDialerSession?.state || ''))
                           ? 'bg-amber-500/[0.08] ring-1 ring-inset ring-amber-500/25'
                           : 'bg-blue-500/[0.09] ring-1 ring-inset ring-blue-500/30'
                       : selectedLeads.includes(lead.id)
@@ -2103,7 +2133,7 @@ export default function Leads() {
                           <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border ${
                             autoDialerSession?.state === 'in_call'
                               ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
-                              : autoDialerSession?.state === 'waiting'
+                              : ['awaiting_status', 'waiting'].includes(String(autoDialerSession?.state || ''))
                                 ? 'text-amber-300 border-amber-500/30 bg-amber-500/10'
                                 : 'text-blue-300 border-blue-500/30 bg-blue-500/10'
                           }`}>
