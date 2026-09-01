@@ -333,6 +333,102 @@ app.post('/api/atlant/call', async (req, res) => {
 });
 
 
+// Atlant outbound-call webhook receiver.
+// First integration/testing phase: append-only logging only.
+// This does NOT change Leads, statuses, queues, or any existing CRM workflow.
+const ATLANT_WEBHOOK_EVENTS_COL = 'atlant_webhook_events';
+
+function getAtlantWebhookSecret(req: express.Request) {
+  const querySecret = String(req.query?.token || '').trim();
+  const headerSecret = String(req.headers['x-atlant-webhook-secret'] || '').trim();
+  return headerSecret || querySecret;
+}
+
+app.post('/api/atlant/webhook', async (req, res) => {
+  try {
+    const configuredSecret = String(process.env.ATLANT_WEBHOOK_SECRET || '').trim();
+
+    if (!configuredSecret) {
+      console.error('Atlant webhook secret is not configured.');
+      return res.status(503).json({
+        success: false,
+        error: 'Atlant webhook receiver is not configured.'
+      });
+    }
+
+    const suppliedSecret = getAtlantWebhookSecret(req);
+    if (!suppliedSecret || suppliedSecret !== configuredSecret) {
+      console.warn('Rejected Atlant webhook request with invalid secret.');
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const data = payload?.data && typeof payload.data === 'object' ? payload.data : {};
+
+    const eventType = String(
+      payload?.event ||
+      payload?.event_type ||
+      payload?.type ||
+      data?.event ||
+      ''
+    ).trim();
+
+    const callId = String(
+      data?.id ||
+      data?.call_id ||
+      payload?.call_id ||
+      payload?.id ||
+      ''
+    ).trim();
+
+    const agent = data?.agent && typeof data.agent === 'object' ? data.agent : {};
+
+    const record = {
+      provider: 'atlant',
+      eventType,
+      callId,
+      callType: String(data?.type || '').trim(),
+      callingNumber: String(data?.calling_number || '').trim(),
+      calledNumber: String(data?.called_number || '').trim(),
+      disposition: String(data?.disposition || '').trim(),
+      endReason: String(data?.end_reason || '').trim(),
+      startTime: data?.start_time || null,
+      endTime: data?.end_time || null,
+      duration: data?.duration || null,
+      cdrUrl: String(data?.cdr_url || '').trim(),
+      agent: {
+        id: agent?.id ?? null,
+        name: String(agent?.name || '').trim(),
+        email: String(agent?.email || '').trim()
+      },
+      payload,
+      receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+      receivedAtIso: new Date().toISOString(),
+      sourceIp: getRequestIp(req)
+    };
+
+    const created = await db.collection(ATLANT_WEBHOOK_EVENTS_COL).add(record);
+
+    console.log(
+      `Atlant webhook received: ${eventType || 'unknown event'} ` +
+      `${callId ? `(call ${callId})` : '(no call id)'}`
+    );
+
+    return res.status(200).json({
+      success: true,
+      received: true,
+      id: created.id
+    });
+  } catch (error: any) {
+    console.error('Atlant webhook receiver error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Unable to process Atlant webhook.'
+    });
+  }
+});
+
+
 // Helper for chunked deletion
 async function deleteInChunks(docRefs: admin.firestore.DocumentReference[]) {
   const CHUNK_SIZE = 200;
