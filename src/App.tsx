@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X, Camera, Loader2 } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X, Camera, Loader2, Radio } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -19,6 +19,7 @@ import SettingsPage from './pages/Settings';
 import WorkLogs from './pages/WorkLogs';
 import SecurityLogs from './pages/SecurityLogs';
 import Finance from './pages/Finance';
+import LiveCalls from './pages/LiveCalls';
 import SecureInfo from './pages/SecureInfo';
 import Login from './pages/Login';
 import ChatPanel from './components/ChatPanel';
@@ -200,6 +201,7 @@ function Sidebar({
     { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'JOR', path: '/jor', icon: CheckCircle2, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Finance', path: '/finance', icon: DollarSign, roles: ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'] },
+    { name: 'Live Calls', path: '/live-calls', icon: Radio, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Secure Info', path: '/secure-info', icon: LockKeyhole, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent', 'Financial Manager'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator', 'Team Leader'] },
     { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager', 'Team Leader'] },
@@ -847,6 +849,14 @@ export default function App() {
                         element={
                           ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(currentUserRole)
                             ? <Finance />
+                            : <Navigate to="/" replace />
+                        }
+                      />
+                      <Route
+                        path="/live-calls"
+                        element={
+                          ['Administrator', 'Manager', 'Team Leader'].includes(currentUserRole)
+                            ? <LiveCalls />
                             : <Navigate to="/" replace />
                         }
                       />
