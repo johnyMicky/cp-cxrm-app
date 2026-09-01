@@ -10,7 +10,12 @@ import {
   Search,
   Circle,
   LogOut,
-  UserRoundCheck
+  UserRoundCheck,
+  SlidersHorizontal,
+  RotateCcw,
+  ChevronDown,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
 
@@ -46,20 +51,44 @@ const formatLastSeen = (value: any, now: number) => {
   return `${days}d ago`;
 };
 
+const FILTER_STORAGE_PREFIX = 'cpcrm_live_calls_filters_v3';
+
+const getSavedDashboardFilters = (userId: string) => {
+  try {
+    const raw = localStorage.getItem(`${FILTER_STORAGE_PREFIX}:${userId || 'unknown'}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
 export default function LiveCalls() {
   const [calls, setCalls] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [scope, setScope] = useState<{ teamIds: string[]; all: boolean }>({ teamIds: [], all: false });
-  const [search, setSearch] = useState('');
-  const [now, setNow] = useState(Date.now());
-  const [loading, setLoading] = useState(true);
-  const [usersLoading, setUsersLoading] = useState(true);
-  const [error, setError] = useState('');
-
   const currentUser = {
     id: localStorage.getItem('userId') || '',
     role: localStorage.getItem('userRole') || 'Agent'
   };
+
+  const savedFilters = getSavedDashboardFilters(currentUser.id);
+
+  const [search, setSearch] = useState(() => String(savedFilters?.search || ''));
+  const [presenceFilter, setPresenceFilter] = useState(() => String(savedFilters?.presenceFilter || 'all'));
+  const [roleFilter, setRoleFilter] = useState(() => String(savedFilters?.roleFilter || 'all'));
+  const [teamFilter, setTeamFilter] = useState(() => String(savedFilters?.teamFilter || 'all'));
+  const [modeFilter, setModeFilter] = useState(() => String(savedFilters?.modeFilter || 'all'));
+  const [resultFilter, setResultFilter] = useState(() => String(savedFilters?.resultFilter || 'all'));
+  const [periodFilter, setPeriodFilter] = useState(() => String(savedFilters?.periodFilter || 'today'));
+  const [showFilterPanel, setShowFilterPanel] = useState(() => Boolean(savedFilters?.showFilterPanel ?? true));
+  const [showCards, setShowCards] = useState(() => Boolean(savedFilters?.showCards ?? true));
+  const [showPresence, setShowPresence] = useState(() => Boolean(savedFilters?.showPresence ?? true));
+  const [showActiveCalls, setShowActiveCalls] = useState(() => Boolean(savedFilters?.showActiveCalls ?? true));
+  const [showRecentCalls, setShowRecentCalls] = useState(() => Boolean(savedFilters?.showRecentCalls ?? true));
+  const [now, setNow] = useState(Date.now());
+  const [loading, setLoading] = useState(true);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -117,6 +146,44 @@ export default function LiveCalls() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `${FILTER_STORAGE_PREFIX}:${currentUser.id || 'unknown'}`,
+        JSON.stringify({
+          search,
+          presenceFilter,
+          roleFilter,
+          teamFilter,
+          modeFilter,
+          resultFilter,
+          periodFilter,
+          showFilterPanel,
+          showCards,
+          showPresence,
+          showActiveCalls,
+          showRecentCalls
+        })
+      );
+    } catch {
+      // Dashboard preferences are optional; ignore storage failures.
+    }
+  }, [
+    currentUser.id,
+    search,
+    presenceFilter,
+    roleFilter,
+    teamFilter,
+    modeFilter,
+    resultFilter,
+    periodFilter,
+    showFilterPanel,
+    showCards,
+    showPresence,
+    showActiveCalls,
+    showRecentCalls
+  ]);
+
   const scopedCalls = useMemo(() => {
     let items = calls;
 
@@ -128,6 +195,37 @@ export default function LiveCalls() {
     return items;
   }, [calls, scope, currentUser.role]);
 
+  const roleOptions = useMemo(() => {
+    return Array.from(new Set(users.map(user => String(user.role || 'Agent')).filter(Boolean))).sort();
+  }, [users]);
+
+  const teamOptions = useMemo(() => {
+    const items = users
+      .map(user => ({ id: String(user.teamId || ''), name: String(user.teamName || '').trim() }))
+      .filter(item => item.id || item.name);
+
+    const byKey = new Map<string, { id: string; name: string }>();
+    items.forEach(item => {
+      const key = item.id || item.name.toLowerCase();
+      if (!byKey.has(key)) byKey.set(key, item);
+    });
+
+    return Array.from(byKey.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [users]);
+
+  const getUserPresenceKey = (user: any) => {
+    const call = scopedCalls.find(
+      item => item.active === true && String(item.agentId || '') === String(user.id || '')
+    );
+
+    if (call?.state === 'in_call') return 'in_call';
+    if (call?.state === 'dialing') return 'dialing';
+
+    const lastSeen = toDate(user.lastSeen)?.getTime() || 0;
+    const fresh = user.isOnline === true && lastSeen > 0 && now - lastSeen <= 120000;
+    return fresh ? 'idle' : 'offline';
+  };
+
   const scopedUsers = useMemo(() => {
     let items = users;
 
@@ -136,6 +234,31 @@ export default function LiveCalls() {
       items = items.filter(user => {
         if (String(user.id || '') === String(currentUser.id || '')) return true;
         return allowed.has(String(user.teamId || ''));
+      });
+    }
+
+    if (roleFilter !== 'all') {
+      items = items.filter(user => String(user.role || 'Agent') === roleFilter);
+    }
+
+    if (teamFilter !== 'all') {
+      items = items.filter(user => String(user.teamId || user.teamName || '') === teamFilter);
+    }
+
+    if (presenceFilter !== 'all') {
+      items = items.filter(user => {
+        const key = getUserPresenceKey(user);
+        if (presenceFilter === 'online') return ['idle', 'dialing', 'in_call'].includes(key);
+        return key === presenceFilter;
+      });
+    }
+
+    if (modeFilter !== 'all') {
+      items = items.filter(user => {
+        const call = scopedCalls.find(
+          item => item.active === true && String(item.agentId || '') === String(user.id || '')
+        );
+        return String(call?.mode || '') === modeFilter;
       });
     }
 
@@ -177,18 +300,62 @@ export default function LiveCalls() {
 
       return String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''));
     });
-  }, [users, scope, search, currentUser.id, currentUser.role, scopedCalls, now]);
+  }, [
+    users,
+    scope,
+    search,
+    currentUser.id,
+    currentUser.role,
+    scopedCalls,
+    now,
+    presenceFilter,
+    roleFilter,
+    teamFilter,
+    modeFilter
+  ]);
 
-  const activeCalls = scopedCalls.filter(call =>
+  const filteredCalls = useMemo(() => {
+    let items = scopedCalls;
+
+    if (teamFilter !== 'all') {
+      items = items.filter(call => String(call.teamId || call.teamName || '') === teamFilter);
+    }
+
+    if (modeFilter !== 'all') {
+      items = items.filter(call => String(call.mode || '') === modeFilter);
+    }
+
+    const q = search.trim().toLowerCase();
+    if (q) {
+      items = items.filter(call => [
+        call.agentName,
+        call.agentEmail,
+        call.leadName,
+        call.phone,
+        call.teamName,
+        call.disposition,
+        call.mode
+      ].some(value => String(value || '').toLowerCase().includes(q)));
+    }
+
+    return items;
+  }, [scopedCalls, teamFilter, modeFilter, search]);
+
+  const activeCalls = filteredCalls.filter(call =>
     call.active === true &&
     ['dialing', 'in_call'].includes(String(call.state || ''))
-  );
+  ).filter(call => {
+    if (presenceFilter === 'all' || presenceFilter === 'online') return true;
+    if (presenceFilter === 'dialing') return call.state === 'dialing';
+    if (presenceFilter === 'in_call') return call.state === 'in_call';
+    return false;
+  });
   const dialing = activeCalls.filter(call => call.state === 'dialing');
   const inCall = activeCalls.filter(call => call.state === 'in_call');
 
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
-  const todayCalls = scopedCalls.filter(call => {
+  const todayCalls = filteredCalls.filter(call => {
     const date = toDate(call.startedAt);
     return !!date && date >= todayStart;
   });
@@ -272,22 +439,51 @@ export default function LiveCalls() {
     };
   };
 
-  const recentCalls = scopedCalls
-    .filter(call => {
-      const q = search.trim().toLowerCase();
-      if (!q) return true;
+  const recentCalls = useMemo(() => {
+    const nowDate = new Date(now);
+    const todayStart = new Date(nowDate);
+    todayStart.setHours(0, 0, 0, 0);
 
-      return [
-        call.agentName,
-        call.agentEmail,
-        call.leadName,
-        call.phone,
-        call.teamName,
-        call.disposition,
-        call.mode
-      ].some(value => String(value || '').toLowerCase().includes(q));
-    })
-    .slice(0, 100);
+    const rangeStart = (() => {
+      if (periodFilter === 'all') return null;
+      if (periodFilter === 'today') return todayStart;
+      const date = new Date(nowDate);
+      if (periodFilter === '7d') date.setDate(date.getDate() - 7);
+      if (periodFilter === '30d') date.setDate(date.getDate() - 30);
+      return date;
+    })();
+
+    return filteredCalls
+      .filter(call => {
+        if (resultFilter !== 'all') {
+          const result = String(call.disposition || '').toLowerCase();
+          if (resultFilter === 'failed') {
+            if (!['no answer', 'rejected', 'failed'].includes(result)) return false;
+          } else if (result !== resultFilter) {
+            return false;
+          }
+        }
+
+        if (rangeStart) {
+          const started = toDate(call.startedAt);
+          if (!started || started < rangeStart) return false;
+        }
+
+        return true;
+      })
+      .slice(0, 100);
+  }, [filteredCalls, resultFilter, periodFilter, now]);
+
+  const resetDashboardFilters = () => {
+    setSearch('');
+    setPresenceFilter('all');
+    setRoleFilter('all');
+    setTeamFilter('all');
+    setModeFilter('all');
+    setResultFilter('all');
+    setPeriodFilter('today');
+  };
+
 
   return (
     <div className="p-8 max-w-[1700px] mx-auto space-y-6">
@@ -306,17 +502,137 @@ export default function LiveCalls() {
           </div>
         </div>
 
-        <div className="relative w-full lg:w-96">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search user, role, team, lead, phone..."
-            className="w-full bg-[#0A0F1C] border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-          />
+        <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
+          <div className="relative w-full lg:w-96">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search user, role, team, lead, phone..."
+              className="w-full bg-[#0A0F1C] border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowFilterPanel(value => !value)}
+            className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-colors ${
+              showFilterPanel
+                ? 'bg-blue-500/10 border-blue-500/30 text-blue-300'
+                : 'bg-[#0A0F1C] border-white/10 text-slate-300 hover:text-white'
+            }`}
+          >
+            <SlidersHorizontal className="w-4 h-4" />
+            Filters
+            <ChevronDown className={`w-4 h-4 transition-transform ${showFilterPanel ? 'rotate-180' : ''}`} />
+          </button>
         </div>
       </div>
 
+      {showFilterPanel && (
+        <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-4 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-white">Dashboard Filters</h2>
+              <p className="text-xs text-slate-500 mt-1">Your choices are saved for this manager account.</p>
+            </div>
+            <button
+              type="button"
+              onClick={resetDashboardFilters}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-white/10 text-xs text-slate-300 hover:text-white hover:bg-white/[0.03]"
+            >
+              <RotateCcw className="w-3.5 h-3.5" /> Reset
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+            <label className="space-y-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Presence</span>
+              <select value={presenceFilter} onChange={e => setPresenceFilter(e.target.value)} className="w-full bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30">
+                <option value="all">All users</option>
+                <option value="online">Online only</option>
+                <option value="idle">Online / Idle</option>
+                <option value="dialing">Dialing</option>
+                <option value="in_call">In Call</option>
+                <option value="offline">Logged Out</option>
+              </select>
+            </label>
+
+            <label className="space-y-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Role</span>
+              <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} className="w-full bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30">
+                <option value="all">All roles</option>
+                {roleOptions.map(role => <option key={role} value={role}>{role}</option>)}
+              </select>
+            </label>
+
+            <label className="space-y-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Team</span>
+              <select value={teamFilter} onChange={e => setTeamFilter(e.target.value)} className="w-full bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30">
+                <option value="all">All teams</option>
+                {teamOptions.map(team => (
+                  <option key={team.id || team.name} value={team.id || team.name}>{team.name || team.id}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="space-y-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Call Mode</span>
+              <select value={modeFilter} onChange={e => setModeFilter(e.target.value)} className="w-full bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30">
+                <option value="all">Auto + Manual</option>
+                <option value="auto">Auto only</option>
+                <option value="manual">Manual only</option>
+              </select>
+            </label>
+
+            <label className="space-y-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Result</span>
+              <select value={resultFilter} onChange={e => setResultFilter(e.target.value)} className="w-full bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30">
+                <option value="all">All results</option>
+                <option value="answered">Answered</option>
+                <option value="no answer">No Answer</option>
+                <option value="rejected">Rejected</option>
+                <option value="failed">No Answer / Rejected / Failed</option>
+              </select>
+            </label>
+
+            <label className="space-y-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">History</span>
+              <select value={periodFilter} onChange={e => setPeriodFilter(e.target.value)} className="w-full bg-[#0F172A] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/30">
+                <option value="today">Today</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All available</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="pt-3 border-t border-white/5 flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mr-1">Visible Sections</span>
+            {[
+              ['Summary Cards', showCards, setShowCards],
+              ['Team Presence', showPresence, setShowPresence],
+              ['Active Calls', showActiveCalls, setShowActiveCalls],
+              ['Recent Calls', showRecentCalls, setShowRecentCalls]
+            ].map(([label, visible, setter]: any) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setter((value: boolean) => !value)}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+                  visible
+                    ? 'text-blue-300 bg-blue-500/10 border-blue-500/20'
+                    : 'text-slate-500 bg-white/[0.02] border-white/10'
+                }`}
+              >
+                {visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {showCards && (
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
         {cards.map(card => (
           <div key={card.label} className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-4">
@@ -330,7 +646,9 @@ export default function LiveCalls() {
           </div>
         ))}
       </div>
+      )}
 
+      {showPresence && (
       <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl overflow-hidden">
         <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
           <div>
@@ -454,7 +772,9 @@ export default function LiveCalls() {
           </div>
         )}
       </div>
+      )}
 
+      {showActiveCalls && (
       <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl overflow-hidden">
         <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
           <div>
@@ -525,7 +845,9 @@ export default function LiveCalls() {
           </div>
         )}
       </div>
+      )}
 
+      {showRecentCalls && (
       <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl overflow-hidden">
         <div className="px-5 py-4 border-b border-white/5">
           <h2 className="text-sm font-semibold text-white">Recent Calls</h2>
@@ -575,6 +897,7 @@ export default function LiveCalls() {
           </table>
         </div>
       </div>
+      )}
     </div>
   );
 }
