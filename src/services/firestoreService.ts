@@ -4120,6 +4120,74 @@ export const firestoreService = {
     return data;
   },
 
+
+  async startAtlantAutoDialer(queue: Array<{ leadId: string; name?: string; phone: string }>) {
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) {
+      throw new Error('Your session has expired. Please sign in again.');
+    }
+
+    const token = await currentAuthUser.getIdToken();
+    const response = await fetch('/api/atlant/dialer/start', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ queue })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.success === false) {
+      throw new Error(data?.error || `Unable to start Auto Dialer (${response.status}).`);
+    }
+
+    return data;
+  },
+
+  async stopAtlantAutoDialer() {
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) {
+      throw new Error('Your session has expired. Please sign in again.');
+    }
+
+    const token = await currentAuthUser.getIdToken();
+    const response = await fetch('/api/atlant/dialer/stop', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.success === false) {
+      throw new Error(data?.error || `Unable to stop Auto Dialer (${response.status}).`);
+    }
+
+    return data;
+  },
+
+  async getAtlantAutoDialerStatus() {
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) return null;
+
+    const token = await currentAuthUser.getIdToken();
+    const response = await fetch('/api/atlant/dialer/status', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.success === false) {
+      throw new Error(data?.error || `Unable to load Auto Dialer status (${response.status}).`);
+    }
+
+    return data?.session || null;
+  },
+
   async resetSystem(userId: string) {
     try {
       const response = await fetch('/api/admin/reset-all', {
