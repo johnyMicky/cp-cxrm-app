@@ -726,6 +726,54 @@ export const firestoreService = {
     await signOut(auth);
   },
 
+  async touchOwnPresence() {
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) return;
+
+    await updateDoc(doc(db, USERS_COL, currentAuthUser.uid), {
+      isOnline: true,
+      lastSeen: serverTimestamp()
+    }).catch(error => {
+      console.error('Presence heartbeat failed:', error);
+    });
+  },
+
+  subscribeUsers(
+    callback: (users: any[]) => void,
+    onError?: (error: any) => void
+  ) {
+    return onSnapshot(
+      collection(db, USERS_COL),
+      snapshot => {
+        const users = snapshot.docs.map(docSnap => {
+          const data = docSnap.data();
+          const email = normalizeEmail(data.email || '');
+          const adminUser = isAdminEmail(email);
+
+          return {
+            id: docSnap.id,
+            name: data.name || (adminUser ? 'Admin User' : ''),
+            email: data.email || '',
+            role: adminUser ? 'Administrator' : (data.role || 'Agent'),
+            avatar: data.avatar || `https://i.pravatar.cc/150?u=${docSnap.id}`,
+            isOnline: data.isOnline === true,
+            lastSeen: data.lastSeen || null,
+            createdAt: data.createdAt || null,
+            teamId: data.teamId || '',
+            teamName: data.teamName || '',
+            atlantExtension: data.atlantExtension || ''
+          };
+        });
+
+        callback(users);
+      },
+      error => {
+        console.error('Users live subscription failed:', error);
+        onError?.(error);
+      }
+    );
+  },
+
   async getUsers() {
     try {
       const querySnapshot = await getDocs(collection(db, USERS_COL));
