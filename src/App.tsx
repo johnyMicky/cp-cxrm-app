@@ -95,6 +95,37 @@ function Sidebar({
     notificationsRef.current = notifications;
   }, [notifications]);
 
+  // Presence heartbeat for Live Monitor.
+  // Explicit logout still writes isOnline=false; if the browser closes unexpectedly,
+  // Live Calls treats an old lastSeen heartbeat as Logged Out/Offline.
+  useEffect(() => {
+    if (!currentUserId || currentUserId === '1') return;
+
+    let cancelled = false;
+
+    const heartbeat = async () => {
+      if (cancelled) return;
+      await firestoreService.touchOwnPresence();
+    };
+
+    heartbeat();
+    const interval = window.setInterval(heartbeat, 30000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') heartbeat();
+    };
+
+    window.addEventListener('focus', heartbeat);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', heartbeat);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [currentUserId]);
+
   useEffect(() => {
     if (!currentUserId || currentUserId === '1') return;
 
