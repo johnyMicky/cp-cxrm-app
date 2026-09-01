@@ -315,9 +315,39 @@ app.post('/api/atlant/call', async (req, res) => {
       });
     }
 
+    const manualCallId = String(providerBody?.call_id || '').trim();
+
+    if (manualCallId) {
+      const matchedLead = await findLeadForLiveCall(decoded.uid, destination);
+
+      await db.collection(ATLANT_LIVE_CALLS_COL).doc(manualCallId).set({
+        callId: manualCallId,
+        provider: 'atlant',
+        mode: 'manual',
+        active: true,
+        state: 'dialing',
+        agentId: decoded.uid,
+        agentName: String(userData.name || decoded.name || decoded.email || 'Agent'),
+        agentEmail: String(decoded.email || userData.email || ''),
+        agentExtension,
+        teamId: String(userData.teamId || ''),
+        teamName: String(userData.teamName || ''),
+        leadId: matchedLead?.id || '',
+        leadName: matchedLead?.name || '',
+        leadStatus: matchedLead?.status || '',
+        leadCountry: matchedLead?.country || '',
+        leadSource: matchedLead?.source || '',
+        phone: destination,
+        disposition: '',
+        endReason: '',
+        startedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    }
+
     return res.status(200).json({
       success: true,
-      callId: providerBody?.call_id || null,
+      callId: manualCallId || null,
       agent: agentExtension
     });
   } catch (error: any) {
@@ -338,8 +368,69 @@ app.post('/api/atlant/call', async (req, res) => {
 // Existing manual Click2Call remains unchanged. Auto Dialer sessions are isolated
 // in their own collection and only control the next-call queue for signed-in Agents.
 const ATLANT_DIALER_SESSIONS_COL = 'atlant_dialer_sessions';
+const ATLANT_LIVE_CALLS_COL = 'atlant_live_calls';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function findLeadForLiveCall(agentId: string, destination: string) {
+  const cleanAgentId = String(agentId || '').trim();
+  const cleanDestination = String(destination || '').trim();
+  if (!cleanDestination) return null;
+
+  try {
+    let snap;
+    if (cleanAgentId) {
+      snap = await db.collection('leads')
+        .where('assigned_to', '==', cleanAgentId)
+        .where('phone', '==', cleanDestination)
+        .limit(1)
+        .get();
+    } else {
+      snap = await db.collection('leads')
+        .where('phone', '==', cleanDestination)
+        .limit(1)
+        .get();
+    }
+
+    if (!snap.empty) {
+      const leadDoc = snap.docs[0];
+      const data = leadDoc.data() || {};
+      return {
+        id: leadDoc.id,
+        name: String(data.name || '').trim(),
+        status: String(data.status || '').trim(),
+        country: String(data.country || '').trim(),
+        source: String(data.source || '').trim()
+      };
+    }
+  } catch (error) {
+    console.warn('Live Call lead lookup failed:', error);
+  }
+
+  return null;
+}
+
+async function resolveCrmAgentForAtlantWebhook(agentPayload: any) {
+  const email = String(agentPayload?.email || '').trim().toLowerCase();
+  if (!email) return null;
+
+  try {
+    const snap = await db.collection('users').where('email', '==', email).limit(1).get();
+    if (snap.empty) return null;
+    const userDoc = snap.docs[0];
+    const data = userDoc.data() || {};
+    return {
+      id: userDoc.id,
+      name: String(data.name || agentPayload?.name || '').trim(),
+      email: String(data.email || email).trim(),
+      teamId: String(data.teamId || '').trim(),
+      teamName: String(data.teamName || '').trim()
+    };
+  } catch (error) {
+    console.warn('Live Call agent lookup failed:', error);
+    return null;
+  }
+}
 
 async function initiateAtlantProviderCall(agentExtension: string, destination: string) {
   const cleanExtension = String(agentExtension || '').trim();
@@ -452,6 +543,33 @@ async function startNextAtlantDialerCall(userId: string) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
+    const matchedLead = leadId ? await db.collection('leads').doc(leadId).get() : null;
+    const matchedLeadData = matchedLead?.exists ? (matchedLead.data() || {}) : {};
+
+    await db.collection(ATLANT_LIVE_CALLS_COL).doc(provider.callId).set({
+      callId: provider.callId,
+      provider: 'atlant',
+      mode: 'auto',
+      active: true,
+      state: 'dialing',
+      agentId: userId,
+      agentName: String(session.userName || session.userEmail || 'Agent'),
+      agentEmail: String(session.userEmail || ''),
+      agentExtension,
+      teamId: String(session.teamId || ''),
+      teamName: String(session.teamName || ''),
+      leadId,
+      leadName: leadName || String((matchedLeadData as any).name || ''),
+      leadStatus: String((matchedLeadData as any).status || ''),
+      leadCountry: String((matchedLeadData as any).country || ''),
+      leadSource: String((matchedLeadData as any).source || ''),
+      phone,
+      disposition: '',
+      endReason: '',
+      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
     return {
       started: true,
       callId: provider.callId,
@@ -531,6 +649,9 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
     await sessionRef.set({
       userId: decoded.uid,
       userEmail: decoded.email || userData.email || '',
+      userName: userData.name || decoded.name || decoded.email || 'Agent',
+      teamId: userData.teamId || '',
+      teamName: userData.teamName || '',
       agentExtension,
       enabled: true,
       state: 'starting',
@@ -849,6 +970,58 @@ app.post('/api/atlant/webhook', async (req, res) => {
       `Atlant webhook received: ${eventType || 'unknown event'} ` +
       `${callId ? `(call ${callId})` : '(no call id)'}`
     );
+
+    if (callId && (eventType === 'outbound.call.answered' || eventType === 'outbound.call.hangup')) {
+      const liveRef = db.collection(ATLANT_LIVE_CALLS_COL).doc(callId);
+      const liveSnap = await liveRef.get();
+
+      if (!liveSnap.exists) {
+        const crmAgent = await resolveCrmAgentForAtlantWebhook(agent);
+        const matchedLead = await findLeadForLiveCall(crmAgent?.id || '', record.calledNumber);
+
+        await liveRef.set({
+          callId,
+          provider: 'atlant',
+          mode: 'manual',
+          active: eventType !== 'outbound.call.hangup',
+          state: eventType === 'outbound.call.answered' ? 'in_call' : 'ended',
+          agentId: crmAgent?.id || '',
+          agentName: crmAgent?.name || String(agent?.name || 'Agent'),
+          agentEmail: crmAgent?.email || String(agent?.email || ''),
+          teamId: crmAgent?.teamId || '',
+          teamName: crmAgent?.teamName || '',
+          leadId: matchedLead?.id || '',
+          leadName: matchedLead?.name || '',
+          leadStatus: matchedLead?.status || '',
+          leadCountry: matchedLead?.country || '',
+          leadSource: matchedLead?.source || '',
+          phone: record.calledNumber,
+          startedAt: record.startTime || admin.firestore.FieldValue.serverTimestamp(),
+          createdFromWebhook: true
+        }, { merge: true });
+      }
+
+      if (eventType === 'outbound.call.answered') {
+        await liveRef.set({
+          active: true,
+          state: 'in_call',
+          answeredAt: admin.firestore.FieldValue.serverTimestamp(),
+          disposition: String(record.disposition || ''),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+      } else {
+        await liveRef.set({
+          active: false,
+          state: 'ended',
+          disposition: String(record.disposition || ''),
+          endReason: String(record.endReason || ''),
+          duration: record.duration || null,
+          cdrUrl: String(record.cdrUrl || ''),
+          endedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+      }
+    }
 
     // Correlate the provider Call ID with an active Auto Dialer session.
     // "answered" only updates UI state. "hangup" is the terminal event that
