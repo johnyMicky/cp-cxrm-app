@@ -547,22 +547,56 @@ export default function Leads() {
     }
 
     let cancelled = false;
+    let timer: number | null = null;
+
+    const scheduleNext = (delay: number) => {
+      if (cancelled) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(poll, delay);
+    };
 
     const poll = async () => {
+      if (cancelled) return;
+
+      if (document.visibilityState !== 'visible') {
+        scheduleNext(5000);
+        return;
+      }
+
       try {
         const session = await firestoreService.getAtlantAutoDialerStatus();
-        if (!cancelled) setAutoDialerSession(session);
+
+        if (!cancelled) {
+          setAutoDialerSession(session);
+
+          const active = Boolean(
+            session?.enabled ||
+            ['dialing', 'in_call', 'awaiting_status', 'waiting', 'stopping'].includes(
+              String(session?.state || '')
+            )
+          );
+
+          scheduleNext(active ? 1800 : 5000);
+        }
       } catch (err) {
         console.error('Auto Dialer polling failed:', err);
+        scheduleNext(5000);
       }
     };
 
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        poll();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
     poll();
-    const timer = window.setInterval(poll, 1200);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [currentUser.id, currentUser.role]);
 
@@ -1037,7 +1071,7 @@ export default function Leads() {
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6 relative">
       {showToast && (
-        <div className="fixed bottom-8 right-8 z-[100] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300 max-w-md">
+        <div className="fixed bottom-8 right-8 z-[100] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 max-w-md">
           <CheckCircle2 className="w-5 h-5 shrink-0" />
           <span className="font-medium text-sm leading-tight">{toastMessage}</span>
         </div>
@@ -1052,7 +1086,7 @@ export default function Leads() {
           {currentUser.role === 'Administrator' && selectedLeads.length === 0 && (
             <button 
               onClick={() => setIsDeleteAllModalOpen(true)}
-              className="shimmer-btn bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-rose-500/20"
+              className="shimmer-btn bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-lg text-sm font-medium flex items-center space-x-2 border border-rose-500/20"
             >
               <AlertTriangle className="w-4 h-4" />
               <span>Delete All Leads</span>
@@ -1062,7 +1096,7 @@ export default function Leads() {
           {selectedLeads.length > 0 && currentUser.role !== 'Agent' && (
             <button 
               onClick={() => setIsDeleteAllModalOpen(true)}
-              className="shimmer-btn bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-rose-500/20"
+              className="shimmer-btn bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center space-x-2 shadow-lg shadow-rose-500/20"
             >
               <X className="w-4 h-4" />
               <span>Delete {selectedLeads.length} Selected</span>
@@ -1072,7 +1106,7 @@ export default function Leads() {
           {currentUser.role !== 'Agent' && (
             <button 
               onClick={() => setIsImportOpen(true)}
-              className="shimmer-btn bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 border border-white/10"
+              className="shimmer-btn bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-2 rounded-lg text-sm font-medium flex items-center space-x-2 border border-white/10"
             >
               <Upload className="w-4 h-4" />
               <span>Import Leads</span>
@@ -1081,7 +1115,7 @@ export default function Leads() {
           {currentUser.role !== 'Agent' && (
             <button 
               onClick={() => setIsFormOpen(true)}
-              className="shimmer-btn bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center space-x-2 shadow-lg shadow-blue-500/20"
+              className="shimmer-btn bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center space-x-2 shadow-lg shadow-blue-500/20"
             >
               <Plus className="w-4 h-4" />
               <span>Add Lead</span>
@@ -1121,12 +1155,12 @@ export default function Leads() {
                 placeholder="Search leads by name, email, phone, or country..." 
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-4 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all"
+                className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-4 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50"
               />
             </div>
             <button 
               onClick={() => setShowFilters(!showFilters)}
-              className={`shimmer-btn flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${showFilters ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'}`}
+              className={`shimmer-btn flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium border ${showFilters ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'}`}
             >
               <Filter className="w-4 h-4" />
               <span>Filters</span>
@@ -1137,7 +1171,7 @@ export default function Leads() {
           </div>
 
           {selectedLeads.length > 0 && (
-            <div className="flex items-center space-x-3 animate-in fade-in slide-in-from-right-4 duration-200">
+            <div className="flex items-center space-x-3">
               <span className="text-sm font-medium text-blue-400">{selectedLeads.length} selected</span>
               <div className="h-4 w-px bg-white/10 mx-2" />
               
@@ -1147,19 +1181,19 @@ export default function Leads() {
                     e.stopPropagation();
                     setActiveDropdown(activeDropdown === 'bulkStatus' ? null : 'bulkStatus');
                   }}
-                  className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${activeDropdown === 'bulkStatus' ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'}`}
+                  className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium border ${activeDropdown === 'bulkStatus' ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'}`}
                 >
                   <Tag className="w-3.5 h-3.5" />
                   <span>Status</span>
                   <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'bulkStatus' ? 'rotate-180' : ''}`} />
                 </button>
                 {activeDropdown === 'bulkStatus' && (
-                  <div className="absolute right-0 top-full mt-2 w-48 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 animate-in fade-in zoom-in duration-150">
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50">
                     {reshuffleSourceStatuses.map(status => (
                       <button 
                         key={status}
                         onClick={() => handleBulkStatusUpdate(status)}
-                        className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
+                        className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white"
                       >
                         {status}
                       </button>
@@ -1174,14 +1208,14 @@ export default function Leads() {
                     e.stopPropagation();
                     setActiveDropdown(activeDropdown === 'bulkAssign' ? null : 'bulkAssign');
                   }}
-                  className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${activeDropdown === 'bulkAssign' ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'}`}
+                  className={`flex items-center space-x-2 px-3 py-1.5 rounded-lg text-xs font-medium border ${activeDropdown === 'bulkAssign' ? 'bg-blue-600/20 border-blue-500/50 text-blue-400' : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'}`}
                 >
                   <UserPlus className="w-3.5 h-3.5" />
                   <span>Assign</span>
                   <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'bulkAssign' ? 'rotate-180' : ''}`} />
                 </button>
                 {activeDropdown === 'bulkAssign' && (
-                  <div className="absolute right-0 top-full mt-2 w-64 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50 animate-in fade-in zoom-in duration-150" onClick={(e) => e.stopPropagation()}>
+                  <div className="absolute right-0 top-full mt-2 w-64 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50" onClick={(e) => e.stopPropagation()}>
                     <div className="px-4 py-2 border-b border-white/5 flex items-center justify-between">
                       <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Select Agents</span>
                       <button 
@@ -1198,7 +1232,7 @@ export default function Leads() {
                           onClick={() => setSelectedBulkAgents(prev => 
                             prev.includes(agent.id) ? prev.filter(id => id !== agent.id) : [...prev, agent.id]
                           )}
-                          className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+                          className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white flex items-center justify-between"
                         >
                           <div className="flex items-center space-x-2">
                             <img src={agent.avatar} alt="" className="w-5 h-5 rounded-full" />
@@ -1212,7 +1246,7 @@ export default function Leads() {
                       <button 
                         onClick={handleBulkAssign}
                         disabled={selectedBulkAgents.length === 0 || isAssigning}
-                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center space-x-2"
+                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2 rounded-lg text-xs font-medium flex items-center justify-center space-x-2"
                       >
                         {isAssigning ? (
                           <>
@@ -1242,7 +1276,7 @@ export default function Leads() {
                   setIsReshuffleTargetOpen(false);
                   setIsReshuffleModalOpen(true);
                 }}
-                className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-xs font-medium text-amber-400 border border-amber-500/20 transition-colors"
+                className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-xs font-medium text-amber-400 border border-amber-500/20"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
                 <span>Reshuffle</span>
@@ -1252,8 +1286,8 @@ export default function Leads() {
         </div>
 
         {isReshuffleModalOpen && (
-          <div className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto p-4 md:p-6 bg-black/60 backdrop-blur-sm">
-            <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md max-h-[calc(100vh-2rem)] md:max-h-[calc(100vh-3rem)] shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200 flex flex-col">
+          <div className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto p-4 md:p-6 bg-black/60">
+            <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md max-h-[calc(100vh-2rem)] md:max-h-[calc(100vh-3rem)] shadow-2xl overflow-hidden flex flex-col">
               <div className="flex items-center justify-between p-4 md:p-5 border-b border-white/5 bg-white/[0.02] shrink-0">
                 <h2 className="text-xl font-semibold text-white tracking-tight flex items-center space-x-2">
                   <RefreshCw className="w-5 h-5 text-amber-400" />
@@ -1262,7 +1296,7 @@ export default function Leads() {
                 <button 
                   onClick={() => !isReshuffling && setIsReshuffleModalOpen(false)}
                   disabled={isReshuffling}
-                  className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+                  className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white disabled:opacity-50"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -1277,7 +1311,7 @@ export default function Leads() {
                         onClick={() => setReshuffleStatuses(prev => 
                           prev.includes(status) ? prev.filter(s => s !== status) : [...prev, status]
                         )}
-                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all ${
+                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs ${
                           reshuffleStatuses.includes(status)
                             ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
                             : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'
@@ -1306,7 +1340,7 @@ export default function Leads() {
                       <button
                         type="button"
                         onClick={() => setIsReshuffleTargetOpen(open => !open)}
-                        className={`w-full flex items-center justify-between gap-3 bg-[#111827] border rounded-lg px-3 py-2 text-sm text-left transition-colors ${
+                        className={`w-full flex items-center justify-between gap-3 bg-[#111827] border rounded-lg px-3 py-2 text-sm text-left ${
                           isReshuffleTargetOpen
                             ? 'border-blue-500/60 text-white'
                             : 'border-white/10 text-slate-200 hover:border-white/20'
@@ -1332,7 +1366,7 @@ export default function Leads() {
                               setReshuffleTargetStatus('');
                               setIsReshuffleTargetOpen(false);
                             }}
-                            className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm text-left transition-colors ${
+                            className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm text-left ${
                               reshuffleTargetStatus === ''
                                 ? 'bg-blue-600/20 text-blue-300'
                                 : 'text-slate-300 hover:bg-white/5 hover:text-white'
@@ -1352,7 +1386,7 @@ export default function Leads() {
                                 setReshuffleTargetStatus(status);
                                 setIsReshuffleTargetOpen(false);
                               }}
-                              className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm text-left transition-colors ${
+                              className={`w-full flex items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-sm text-left ${
                                 reshuffleTargetStatus === status
                                   ? 'bg-blue-600/20 text-blue-300'
                                   : 'text-slate-300 hover:bg-white/5 hover:text-white'
@@ -1385,7 +1419,7 @@ export default function Leads() {
                         onClick={() => setReshuffleAgents(prev => 
                           prev.includes(agent.id) ? prev.filter(id => id !== agent.id) : [...prev, agent.id]
                         )}
-                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all ${
+                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs ${
                           reshuffleAgents.includes(agent.id)
                             ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
                             : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'
@@ -1449,7 +1483,7 @@ export default function Leads() {
               <div className="flex items-center justify-end space-x-3 p-4 md:p-5 border-t border-white/5 bg-[#0A0F1C] shrink-0">
                 <button 
                   onClick={() => setIsReshuffleModalOpen(false)}
-                  className="px-6 py-2.5 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                  className="px-6 py-2.5 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-white/5"
                 >
                   Cancel
                 </button>
@@ -1464,7 +1498,7 @@ export default function Leads() {
                       )
                     )
                   }
-                  className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 shadow-lg shadow-amber-500/20"
+                  className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg text-sm font-medium flex items-center space-x-2 shadow-lg shadow-amber-500/20"
                 >
                   <RefreshCw className="w-4 h-4" />
                   <span>Review Reshuffle</span>
@@ -1474,7 +1508,7 @@ export default function Leads() {
           </div>
         )}
         {isReshuffleConfirmOpen && !isReshuffling && (
-          <div className="fixed inset-0 z-[180] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[180] flex items-center justify-center p-4 bg-black/80">
             <div className="w-full max-w-lg rounded-2xl border border-amber-500/30 bg-[#0A0F1C] shadow-2xl overflow-hidden">
               <div className="p-5 border-b border-white/5 flex items-start gap-3">
                 <div className="p-2 rounded-xl bg-amber-500/10">
@@ -1550,7 +1584,7 @@ export default function Leads() {
         )}
 
         {isReshuffling && !reshuffleResult && (
-          <div className="fixed inset-0 z-[190] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[190] flex items-center justify-center p-4 bg-black/85">
             <div className="w-full max-w-md rounded-2xl border border-blue-500/20 bg-[#0A0F1C] shadow-2xl p-6">
               <div className="flex items-center gap-3">
                 <RefreshCw className="w-6 h-6 text-blue-400 animate-spin" />
@@ -1576,7 +1610,7 @@ export default function Leads() {
 
                 <div className="mt-3 h-3 rounded-full bg-white/5 overflow-hidden border border-white/5">
                   <div
-                    className="h-full bg-blue-600 transition-all duration-300"
+                    className="h-full bg-blue-600"
                     style={{ width: `${Math.max(0, Math.min(100, reshuffleProgress.percent))}%` }}
                   />
                 </div>
@@ -1590,7 +1624,7 @@ export default function Leads() {
         )}
 
         {reshuffleResult && (
-          <div className="fixed inset-0 z-[195] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[195] flex items-center justify-center p-4 bg-black/85">
             <div className="w-full max-w-2xl max-h-[88vh] overflow-hidden rounded-2xl border border-emerald-500/20 bg-[#0A0F1C] shadow-2xl flex flex-col">
               <div className="p-5 border-b border-white/5 flex items-start gap-3 shrink-0">
                 <div className="p-2 rounded-xl bg-emerald-500/10">
@@ -1652,12 +1686,12 @@ export default function Leads() {
 
 
         {showFilters && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-[#0A0F1C] p-4 rounded-xl border border-white/5 shadow-sm animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-[#0A0F1C] p-4 rounded-xl border border-white/5 shadow-sm">
             <div className="space-y-1.5 relative">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Status</label>
               <button 
                 onClick={() => setActiveDropdown(activeDropdown === 'status' ? null : 'status')}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white flex items-center justify-between hover:bg-white/10 transition-colors"
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white flex items-center justify-between hover:bg-white/10"
               >
                 <span className="truncate">
                   {filters.statuses.length === 0 ? 'All Statuses' : `${filters.statuses.length} Selected`}
@@ -1682,7 +1716,7 @@ export default function Leads() {
                   </div>
                   <button 
                     onClick={() => setFilters(prev => ({ ...prev, statuses: [] }))}
-                    className="w-full text-left px-4 py-2 text-xs text-blue-400 font-medium hover:bg-white/5 transition-colors border-b border-white/5 mb-1"
+                    className="w-full text-left px-4 py-2 text-xs text-blue-400 font-medium hover:bg-white/5 border-b border-white/5 mb-1"
                   >
                     Clear All
                   </button>
@@ -1690,7 +1724,7 @@ export default function Leads() {
                     <button 
                       key={status}
                       onClick={() => toggleStatusFilter(status)}
-                      className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+                      className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white flex items-center justify-between"
                     >
                       <span>{status}</span>
                       {filters.statuses.includes(status) && <CheckSquare className="w-3 h-3 text-blue-500" />}
@@ -1808,7 +1842,7 @@ export default function Leads() {
                 <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Agent</label>
                 <button 
                   onClick={() => setActiveDropdown(activeDropdown === 'agent' ? null : 'agent')}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white flex items-center justify-between hover:bg-white/10 transition-colors"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white flex items-center justify-between hover:bg-white/10"
                 >
                   <span className="truncate">
                     {filters.agents.length === 0 ? 'All Agents' : `${filters.agents.length} Selected`}
@@ -1833,7 +1867,7 @@ export default function Leads() {
                     </div>
                     <button 
                       onClick={() => setFilters(prev => ({ ...prev, agents: [] }))}
-                      className="w-full text-left px-4 py-2 text-xs text-blue-400 font-medium hover:bg-white/5 transition-colors border-b border-white/5 mb-1"
+                      className="w-full text-left px-4 py-2 text-xs text-blue-400 font-medium hover:bg-white/5 border-b border-white/5 mb-1"
                     >
                       Clear All
                     </button>
@@ -1841,7 +1875,7 @@ export default function Leads() {
                       <button 
                         key={agent.id}
                         onClick={() => toggleAgentFilter(agent.id)}
-                        className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-between"
+                        className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white flex items-center justify-between"
                       >
                         <span>{agent.name}</span>
                         {filters.agents.includes(agent.id) && <CheckSquare className="w-3 h-3 text-blue-500" />}
@@ -1982,7 +2016,7 @@ export default function Leads() {
                 <th className="px-6 py-4 w-10">
                   <button 
                     onClick={handleSelectAll}
-                    className="text-slate-500 hover:text-blue-400 transition-colors"
+                    className="text-slate-500 hover:text-blue-400"
                   >
                     {selectedLeads.length === filteredLeads.length && filteredLeads.length > 0 ? (
                       <CheckSquare className="w-4 h-4 text-blue-500" />
@@ -2005,7 +2039,7 @@ export default function Leads() {
                           type="button"
                           onClick={handleAutoDialerToggle}
                           disabled={isAutoDialerChanging}
-                          className={`relative inline-flex h-5 w-9 items-center rounded-full border transition-colors ${
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full border ${
                             autoDialerSession?.enabled
                               ? 'bg-emerald-500/20 border-emerald-500/50'
                               : 'bg-white/5 border-white/10'
@@ -2057,7 +2091,7 @@ export default function Leads() {
                   <td className="px-6 py-4">
                     <button 
                       onClick={() => handleSelectLead(lead.id)}
-                      className="text-slate-500 hover:text-blue-400 transition-colors"
+                      className="text-slate-500 hover:text-blue-400"
                     >
                       {selectedLeads.includes(lead.id) ? (
                         <CheckSquare className="w-4 h-4 text-blue-500" />
@@ -2081,7 +2115,7 @@ export default function Leads() {
                     <select 
                       value={normalizeStatus(lead.status)}
                       onChange={(e) => handleStatusChange(lead.id, e.target.value)}
-                      className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border bg-transparent focus:outline-none cursor-pointer transition-colors ${getStatusStyles(lead.status)}`}
+                      className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border bg-transparent focus:outline-none cursor-pointer ${getStatusStyles(lead.status)}`}
                     >
                       {statuses.map(s => (
                         <option key={s} value={s} className="bg-[#0A0F1C] text-slate-300">{s}</option>
@@ -2115,11 +2149,11 @@ export default function Leads() {
                         {lead.phone ? (
                           <button 
                             onClick={() => handleCopy(lead.phone, lead.id)}
-                            className="group/copy relative flex items-center space-x-2 text-sm text-slate-300 hover:text-blue-400 transition-colors"
+                            className="group/copy relative flex items-center space-x-2 text-sm text-slate-300 hover:text-blue-400"
                           >
                             <span>{lead.phone}</span>
                             {copiedId === lead.id ? (
-                              <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded animate-in fade-in zoom-in duration-200">Copied!</span>
+                              <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">Copied!</span>
                             ) : (
                               <Tag className="w-3 h-3 opacity-0 group-hover/copy:opacity-100 transition-opacity" />
                             )}
@@ -2146,7 +2180,7 @@ export default function Leads() {
                             type="button"
                             onClick={() => handleAtlantCall(lead)}
                             disabled={callingLeadId !== null || Boolean(autoDialerSession?.enabled)}
-                            className={`p-1.5 rounded-lg transition-colors ${
+                            className={`p-1.5 rounded-lg ${
                               callingLeadId === lead.id
                                 ? 'bg-blue-500/10 text-blue-400'
                                 : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10'
@@ -2162,7 +2196,7 @@ export default function Leads() {
                             setQuickNoteId(quickNoteId === lead.id ? null : lead.id);
                             setQuickNoteText('');
                           }}
-                          className={`p-1 rounded hover:bg-white/5 transition-colors ${quickNoteId === lead.id ? 'text-blue-400' : 'text-slate-500'}`}
+                          className={`p-1 rounded hover:bg-white/5 ${quickNoteId === lead.id ? 'text-blue-400' : 'text-slate-500'}`}
                           title="Quick Note"
                         >
                           <MessageSquare className="w-3.5 h-3.5" />
@@ -2170,7 +2204,7 @@ export default function Leads() {
                       </div>
 
                       {quickNoteId === lead.id && (
-                        <div className="flex items-center space-x-2 animate-in slide-in-from-top-1 duration-200">
+                        <div className="flex items-center space-x-2">
                           <input 
                             type="text"
                             autoFocus
@@ -2182,13 +2216,13 @@ export default function Leads() {
                           />
                           <button 
                             onClick={() => handleQuickNote(lead.id)}
-                            className="p-1 text-emerald-500 hover:text-emerald-400 transition-colors"
+                            className="p-1 text-emerald-500 hover:text-emerald-400"
                           >
                             <Send className="w-3 h-3" />
                           </button>
                           <button 
                             onClick={() => setQuickNoteId(null)}
-                            className="p-1 text-slate-500 hover:text-slate-400 transition-colors"
+                            className="p-1 text-slate-500 hover:text-slate-400"
                           >
                             <X className="w-3 h-3" />
                           </button>
@@ -2199,7 +2233,7 @@ export default function Leads() {
                   <td className="px-6 py-4 text-right">
                     <Link 
                       to={`/leads/${lead.id}`}
-                      className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                      className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-white/10"
                     >
                       <ArrowRight className="w-4 h-4" />
                     </Link>
@@ -2212,7 +2246,7 @@ export default function Leads() {
             <div className="p-4 border-t border-white/5 flex items-center justify-center">
               <button
                 onClick={() => setVisibleLeadCount(count => count + 100)}
-                className="px-5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-medium text-slate-300 hover:text-white transition-colors"
+                className="px-5 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-medium text-slate-300 hover:text-white"
               >
                 Load 100 More ({filteredLeads.length - visibleLeadCount} remaining)
               </button>
@@ -2242,8 +2276,8 @@ export default function Leads() {
       )}
 
       {isDeleteAllModalOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60">
+          <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
             <div className="flex items-center justify-between p-6 border-b border-white/5 bg-white/[0.02]">
               <h2 className="text-xl font-semibold text-white tracking-tight flex items-center space-x-2">
                 <AlertTriangle className="w-5 h-5 text-rose-500" />
@@ -2251,7 +2285,7 @@ export default function Leads() {
               </h2>
               <button 
                 onClick={() => setIsDeleteAllModalOpen(false)}
-                className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-colors"
+                className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2275,14 +2309,14 @@ export default function Leads() {
             <div className="flex items-center justify-end space-x-3 p-6 border-t border-white/5 bg-white/[0.01]">
               <button 
                 onClick={() => setIsDeleteAllModalOpen(false)}
-                className="px-6 py-2.5 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+                className="px-6 py-2.5 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-white/5"
               >
                 Cancel
               </button>
               <button 
                 onClick={handleDeleteAll}
                 disabled={isDeletingAll}
-                className="bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 shadow-lg shadow-rose-500/20"
+                className="bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg text-sm font-medium flex items-center space-x-2 shadow-lg shadow-rose-500/20"
               >
                 {isDeletingAll ? (
                   <>
@@ -2302,8 +2336,8 @@ export default function Leads() {
       )}
 
       {deleteSummary && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="bg-[#0A0F1C] border border-white/10 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in duration-300">
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80">
+          <div className="bg-[#0A0F1C] border border-white/10 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden">
             <div className="p-8 text-center border-b border-white/5 bg-white/[0.02]">
               <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
                 <CheckCircle2 className="w-10 h-10 text-emerald-500" />
@@ -2344,7 +2378,7 @@ export default function Leads() {
                   setDeleteSummary(null);
                   fetchLeads();
                 }}
-                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold transition-all shadow-lg shadow-blue-500/20 active:scale-[0.98]"
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold shadow-lg shadow-blue-500/20 active:scale-[0.98]"
               >
                 Done
               </button>
@@ -2354,8 +2388,8 @@ export default function Leads() {
       )}
 
       {distributionResult && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="bg-[#0A0F1C] border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in duration-300">
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80">
+          <div className="bg-[#0A0F1C] border border-white/10 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden">
             <div className="p-8 text-center border-b border-white/5 bg-white/[0.02]">
               <div className="w-20 h-20 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
                 <CheckCircle2 className="w-10 h-10 text-emerald-500" />
@@ -2368,7 +2402,7 @@ export default function Leads() {
               <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Assignment Summary</h4>
               <div className="grid grid-cols-1 gap-3">
                 {Object.entries(distributionResult).map(([name, count]) => (
-                  <div key={name} className="flex items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10 transition-all">
+                  <div key={name} className="flex items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-white/10">
                     <div className="flex items-center space-x-3">
                       <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center overflow-hidden">
                         <img 
@@ -2391,7 +2425,7 @@ export default function Leads() {
             <div className="p-6 bg-white/[0.02] border-t border-white/5">
               <button 
                 onClick={() => setDistributionResult(null)}
-                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold transition-all shadow-lg shadow-blue-500/20 active:scale-[0.98]"
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold shadow-lg shadow-blue-500/20 active:scale-[0.98]"
               >
                 Got it, thanks!
               </button>
