@@ -10,7 +10,9 @@ import {
   Loader2,
   Route,
   Truck,
-  AlertTriangle
+  AlertTriangle,
+  History,
+  CalendarDays
 } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
 
@@ -49,6 +51,9 @@ export default function AgentFinancePanel() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [splits, setSplits] = useState<SplitRow[]>([]);
+  const [historyStatus, setHistoryStatus] = useState('All');
+  const [historyMonth, setHistoryMonth] = useState('All');
+
 
   const [form, setForm] = useState({
     depositType: 'Received',
@@ -250,6 +255,133 @@ export default function AgentFinancePanel() {
       String(record.status || '')
     )
   );
+
+  const financeHistory = useMemo(() => {
+    const rows = Array.isArray(portfolio?.records) ? portfolio.records : [];
+
+    return rows.map((record: any) => {
+      const allocations = Array.isArray(record.allocations) ? record.allocations : [];
+      const allocation = allocations.find(
+        (item: any) => String(item.userId || '') === String(currentUserId)
+      );
+
+      const attributedAmount = Number(allocation?.amount || 0);
+      const status = String(record.status || 'Pending');
+
+      const effectiveDate =
+        status === 'Approved'
+          ? (toDate(record.approvedAt) || toDate(record.submittedAt) || toDate(record.depositDate))
+          : status === 'Rejected'
+            ? (toDate(record.rejectedAt) || toDate(record.submittedAt) || toDate(record.depositDate))
+            : (toDate(record.submittedAt) || toDate(record.depositDate));
+
+      const monthKey =
+        status === 'Approved' && String(record.financeMonth || '').trim()
+          ? String(record.financeMonth)
+          : effectiveDate
+            ? `${effectiveDate.getFullYear()}-${String(effectiveDate.getMonth() + 1).padStart(2, '0')}`
+            : String(record.depositDate || '').slice(0, 7);
+
+      const monthLabel = (() => {
+        const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+        if (!match) return monthKey || '—';
+        return new Date(Number(match[1]), Number(match[2]) - 1, 1).toLocaleDateString(
+          undefined,
+          { month: 'long', year: 'numeric' }
+        );
+      })();
+
+      const typeLabel =
+        String(record.depositType || '') === 'On Solution' || record.solutionName
+          ? 'Solution'
+          : 'Received';
+
+      return {
+        ...record,
+        attributedAmount,
+        status,
+        effectiveDate,
+        monthKey,
+        monthLabel,
+        typeLabel,
+        rejectionComment:
+          String(
+            record.rejectReason ||
+            record.solutionRejectReason ||
+            record.arrivalRejectReason ||
+            ''
+          ).trim(),
+        reviewedBy:
+          status === 'Approved'
+            ? String(record.approvedByName || record.solutionApprovedByName || '')
+            : status === 'Rejected'
+              ? String(record.rejectedByName || record.solutionRejectedByName || '')
+              : ''
+      };
+    });
+  }, [portfolio?.records, currentUserId]);
+
+  const historyMonths = useMemo(() => {
+    const months = new Map<string, string>();
+    financeHistory.forEach((row: any) => {
+      if (row.monthKey && !months.has(row.monthKey)) {
+        months.set(row.monthKey, row.monthLabel);
+      }
+    });
+
+    return Array.from(months.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([key, label]) => ({ key, label }));
+  }, [financeHistory]);
+
+  const filteredFinanceHistory = useMemo(
+    () =>
+      financeHistory.filter((row: any) => {
+        const statusMatches =
+          historyStatus === 'All' || String(row.status || '') === historyStatus;
+        const monthMatches =
+          historyMonth === 'All' || String(row.monthKey || '') === historyMonth;
+        return statusMatches && monthMatches;
+      }),
+    [financeHistory, historyStatus, historyMonth]
+  );
+
+  const historyStats = useMemo(() => {
+    const summary = {
+      totalCount: financeHistory.length,
+      totalAmount: 0,
+      approvedCount: 0,
+      approvedAmount: 0,
+      rejectedCount: 0,
+      rejectedAmount: 0,
+      pendingCount: 0,
+      pendingAmount: 0
+    };
+
+    financeHistory.forEach((row: any) => {
+      const amount = Number(row.attributedAmount || 0);
+      summary.totalAmount += amount;
+
+      if (row.status === 'Approved') {
+        summary.approvedCount++;
+        summary.approvedAmount += amount;
+      } else if (row.status === 'Rejected') {
+        summary.rejectedCount++;
+        summary.rejectedAmount += amount;
+      } else {
+        summary.pendingCount++;
+        summary.pendingAmount += amount;
+      }
+    });
+
+    Object.keys(summary).forEach(key => {
+      if (key.endsWith('Amount')) {
+        (summary as any)[key] = Number(Number((summary as any)[key] || 0).toFixed(2));
+      }
+    });
+
+    return summary;
+  }, [financeHistory]);
 
   return (
     <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-5 shadow-sm">
@@ -867,6 +999,177 @@ export default function AgentFinancePanel() {
         </div>
       )}
 
+      <div className="mt-6 border-t border-white/5 pt-5">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <History className="w-4 h-4 text-cyan-400" />
+            <div>
+              <h4 className="text-sm font-semibold text-white">Charge History</h4>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Your finance records, approval history and rejection comments.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={historyMonth}
+              onChange={e => setHistoryMonth(e.target.value)}
+              className="bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2 text-xs text-white"
+            >
+              <option value="All">All Months</option>
+              {historyMonths.map(month => (
+                <option key={month.key} value={month.key}>
+                  {month.label}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={historyStatus}
+              onChange={e => setHistoryStatus(e.target.value)}
+              className="bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2 text-xs text-white"
+            >
+              <option value="All">All Statuses</option>
+              <option value="Approved">Approved</option>
+              <option value="Pending">Pending</option>
+              <option value="Solution Pending">Solution Pending</option>
+              <option value="On Solution">On Solution</option>
+              <option value="Arrival Pending">Arrival Pending</option>
+              <option value="Rejected">Rejected</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+          <HistoryMetric
+            label="Total Charges"
+            count={historyStats.totalCount}
+            amount={historyStats.totalAmount}
+            valueClass="text-white"
+          />
+          <HistoryMetric
+            label="Approved"
+            count={historyStats.approvedCount}
+            amount={historyStats.approvedAmount}
+            valueClass="text-emerald-400"
+          />
+          <HistoryMetric
+            label="Rejected"
+            count={historyStats.rejectedCount}
+            amount={historyStats.rejectedAmount}
+            valueClass="text-rose-400"
+          />
+          <HistoryMetric
+            label="Pending / In Progress"
+            count={historyStats.pendingCount}
+            amount={historyStats.pendingAmount}
+            valueClass="text-amber-400"
+          />
+        </div>
+
+        <div className="mt-4 rounded-xl border border-white/5 overflow-hidden">
+          <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+            <table className="w-full min-w-[1050px] text-left">
+              <thead className="bg-[#0A0F1C] sticky top-0 z-10 border-b border-white/5">
+                <tr className="text-[10px] uppercase tracking-wider text-slate-500">
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Month</th>
+                  <th className="px-4 py-3">Client</th>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3 text-right">Charge</th>
+                  <th className="px-4 py-3 text-right">My Share</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Reviewed By</th>
+                  <th className="px-4 py-3">Comment</th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-white/5">
+                {filteredFinanceHistory.map((record: any) => (
+                  <tr key={record.id} className="hover:bg-white/[0.02]">
+                    <td className="px-4 py-3 text-xs text-slate-400 whitespace-nowrap">
+                      {record.effectiveDate
+                        ? record.effectiveDate.toLocaleDateString()
+                        : (record.depositDate || '—')}
+                    </td>
+
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs text-slate-300 whitespace-nowrap">
+                        <CalendarDays className="w-3.5 h-3.5 text-slate-600" />
+                        {record.monthLabel || '—'}
+                      </span>
+                    </td>
+
+                    <td className="px-4 py-3">
+                      <p className="text-xs font-semibold text-white">
+                        {record.clientFullName || '—'}
+                      </p>
+                      <p className="text-[10px] text-slate-600 mt-0.5">
+                        {record.country || record.leadSourceId || ''}
+                      </p>
+                    </td>
+
+                    <td className="px-4 py-3">
+                      <p className="text-xs text-slate-300">{record.typeLabel}</p>
+                      {record.solutionName && (
+                        <p className="text-[10px] text-blue-400 mt-0.5">
+                          {record.solutionName}
+                        </p>
+                      )}
+                    </td>
+
+                    <td className="px-4 py-3 text-right text-xs font-bold text-white whitespace-nowrap">
+                      {money(Number(record.amount || 0))}
+                    </td>
+
+                    <td className="px-4 py-3 text-right text-xs font-bold text-cyan-400 whitespace-nowrap">
+                      {money(Number(record.attributedAmount || 0))}
+                    </td>
+
+                    <td className="px-4 py-3">
+                      <FinanceStatusBadge
+                        status={record.status}
+                        arrivalStatus={record.arrivalStatus}
+                      />
+                    </td>
+
+                    <td className="px-4 py-3 text-xs text-slate-400">
+                      {record.reviewedBy || '—'}
+                    </td>
+
+                    <td className="px-4 py-3">
+                      {record.rejectionComment ? (
+                        <div className="max-w-[280px] rounded-lg bg-rose-500/5 border border-rose-500/10 px-2.5 py-2">
+                          <p className="text-[11px] text-rose-300 break-words">
+                            {record.rejectionComment}
+                          </p>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-700">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+
+                {filteredFinanceHistory.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-600">
+                      No finance history matches the selected filters.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <p className="text-[10px] text-slate-600 mt-2">
+          Showing {filteredFinanceHistory.length} of {financeHistory.length} loaded finance records.
+          History uses the same Finance Portfolio data already loaded on this page — no extra live listener or polling is added.
+        </p>
+      </div>
+
       <div className="mt-4 flex items-center gap-4 text-[10px] text-slate-600">
         <span className="flex items-center gap-1">
           <CheckCircle2 className="w-3 h-3" />
@@ -886,6 +1189,63 @@ export default function AgentFinancePanel() {
         </span>
       </div>
     </div>
+  );
+}
+
+function HistoryMetric({
+  label,
+  count,
+  amount,
+  valueClass
+}: {
+  label: string;
+  count: number;
+  amount: number;
+  valueClass: string;
+}) {
+  return (
+    <div className="rounded-xl bg-white/[0.02] border border-white/5 p-3">
+      <div className="flex items-end justify-between gap-2">
+        <p className={`text-lg font-bold ${valueClass}`}>{money(amount)}</p>
+        <span className="text-[10px] text-slate-500">{count} records</span>
+      </div>
+      <p className="text-[9px] text-slate-600 mt-1 uppercase tracking-wider">{label}</p>
+    </div>
+  );
+}
+
+function FinanceStatusBadge({
+  status,
+  arrivalStatus
+}: {
+  status: string;
+  arrivalStatus?: string;
+}) {
+  const normalized = String(status || 'Pending');
+
+  let classes = 'text-amber-300 bg-amber-500/10 border-amber-500/20';
+  let label = normalized;
+
+  if (normalized === 'Approved') {
+    classes = 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20';
+  } else if (normalized === 'Rejected') {
+    classes = 'text-rose-300 bg-rose-500/10 border-rose-500/20';
+  } else if (normalized === 'On Solution') {
+    classes = 'text-blue-300 bg-blue-500/10 border-blue-500/20';
+  } else if (normalized === 'Solution Pending') {
+    classes = 'text-violet-300 bg-violet-500/10 border-violet-500/20';
+  } else if (normalized === 'Arrival Pending') {
+    classes = 'text-orange-300 bg-orange-500/10 border-orange-500/20';
+  }
+
+  if (normalized === 'On Solution' && arrivalStatus === 'Rejected') {
+    label = 'On Solution · Arrival Rejected';
+  }
+
+  return (
+    <span className={`inline-flex px-2.5 py-1 rounded-full border text-[9px] font-bold uppercase whitespace-nowrap ${classes}`}>
+      {label}
+    </span>
   );
 }
 
