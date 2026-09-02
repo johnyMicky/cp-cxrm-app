@@ -5559,6 +5559,99 @@ export const firestoreService = {
     }
   },
 
+  // Performance-focused callback lookup used by the global notification checker.
+  async getUpcomingCallbacksForUser(user: any, from: Date, to: Date) {
+    if (!user?.id) return [];
+
+    const start = Timestamp.fromDate(from);
+    const end = Timestamp.fromDate(to);
+    const freshUser = await this.getUser(String(user.id));
+    const effectiveUser = freshUser || user;
+    const role = String(effectiveUser.role || 'Agent').trim();
+    const userId = String(effectiveUser.id || user.id);
+
+    const mapLead = (docSnap: any) => {
+      const data = docSnap.data();
+      return {
+        id: docSnap.id,
+        name: data.name || '',
+        callbackAt: data.callbackAt || null,
+        assigned_to: data.assigned_to || '',
+        status: data.status || 'New'
+      };
+    };
+
+    const inWindow = (lead: any) => {
+      if (!lead?.callbackAt) return false;
+      const date = lead.callbackAt?.toDate
+        ? lead.callbackAt.toDate()
+        : new Date(lead.callbackAt);
+      return date > from && date <= to;
+    };
+
+    if (role === 'Agent') {
+      try {
+        const snapshot = await getDocs(
+          query(
+            collection(db, LEADS_COL),
+            where('assigned_to', '==', userId),
+            where('callbackAt', '>=', start),
+            where('callbackAt', '<=', end)
+          )
+        );
+        return snapshot.docs.map(mapLead);
+      } catch {
+        const snapshot = await getDocs(
+          query(collection(db, LEADS_COL), where('assigned_to', '==', userId))
+        );
+        return snapshot.docs.map(mapLead).filter(inWindow);
+      }
+    }
+
+    let windowSnapshot;
+    try {
+      windowSnapshot = await getDocs(
+        query(
+          collection(db, LEADS_COL),
+          where('callbackAt', '>=', start),
+          where('callbackAt', '<=', end)
+        )
+      );
+    } catch (error) {
+      console.error('Upcoming callback range query failed:', error);
+      return [];
+    }
+
+    const callbackLeads = windowSnapshot.docs.map(mapLead);
+
+    if (role === 'Administrator' || role === 'Manager') {
+      return callbackLeads;
+    }
+
+    if (role === 'Team Leader') {
+      const scope = await this.getLiveCallScope(userId, role);
+      if (!scope.teamIds.length) return [];
+
+      const teamSnapshots = await Promise.all(
+        scope.teamIds.map((teamId: string) => this.getUsersByTeam(teamId))
+      );
+
+      const allowedUserIds = new Set(
+        teamSnapshots
+          .flat()
+          .filter((member: any) => ['Agent', 'Team Leader'].includes(String(member.role || '')))
+          .map((member: any) => String(member.id || ''))
+          .filter(Boolean)
+      );
+
+      return callbackLeads.filter((lead: any) =>
+        allowedUserIds.has(String(lead.assigned_to || ''))
+      );
+    }
+
+    return [];
+  },
+
   // Role/team-aware lead scope. Existing permissions are preserved.
   async getLeadsForUser(user: any) {
     if (!user?.id) return [];
