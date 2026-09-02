@@ -635,13 +635,60 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
 
     const sessionRef = db.collection(ATLANT_DIALER_SESSIONS_COL).doc(decoded.uid);
     const existing = await sessionRef.get();
+    const existingData = existing.exists ? (existing.data() || {}) : {};
 
-    if (existing.exists) {
-      const existingData = existing.data() || {};
-      if (existingData.enabled === true && String(existingData.currentCallId || '').trim()) {
+    // Never start a second Auto call while the previous call is physically active,
+    // even if the Agent already pressed Auto OFF.
+    if (String(existingData.currentCallId || '').trim()) {
+      return res.status(409).json({
+        success: false,
+        error: existingData.enabled === true
+          ? 'Auto Dialer already has an active call.'
+          : 'The previous Auto Dialer call is still active. Wait for it to end, then turn Auto Dialer on again.'
+      });
+    }
+
+    let resumeIndex = 0;
+    let resumed = false;
+
+    const previousQueue = Array.isArray(existingData.queue) ? existingData.queue : [];
+    const previousNextIndex = Math.max(
+      0,
+      Math.min(
+        Number(existingData.nextIndex || 0),
+        previousQueue.length
+      )
+    );
+
+    const previousState = String(existingData.state || '');
+    const canResumePreviousProgress =
+      existing.exists &&
+      previousQueue.length > 0 &&
+      previousNextIndex > 0 &&
+      ['stopped', 'stopping', 'error'].includes(previousState);
+
+    if (canResumePreviousProgress) {
+      // Keep progress by Lead ID instead of trusting a numeric index.
+      // This remains correct if filters removed some already-called Leads or the
+      // current visible list has been slightly reordered before Auto is resumed.
+      const alreadyProcessedLeadIds = new Set(
+        previousQueue
+          .slice(0, previousNextIndex)
+          .map((item: any) => String(item?.leadId || '').trim())
+          .filter(Boolean)
+      );
+
+      const firstUnprocessedIndex = queue.findIndex(
+        (item: any) => !alreadyProcessedLeadIds.has(String(item.leadId || ''))
+      );
+
+      if (firstUnprocessedIndex >= 0) {
+        resumeIndex = firstUnprocessedIndex;
+        resumed = resumeIndex > 0 || alreadyProcessedLeadIds.size > 0;
+      } else {
         return res.status(409).json({
           success: false,
-          error: 'Auto Dialer already has an active call.'
+          error: 'All Leads in the current Auto Dialer list were already processed. Change the filters/list to start a new queue.'
         });
       }
     }
@@ -657,20 +704,25 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
       state: 'starting',
       queue,
       queueSize: queue.length,
-      nextIndex: 0,
-      currentIndex: -1,
+      nextIndex: resumeIndex,
+      currentIndex: resumeIndex - 1,
       currentLeadId: '',
       currentLeadName: '',
       currentPhone: '',
       currentCallId: '',
-      lastCompletedCallId: '',
-      lastDisposition: '',
-      lastEndReason: '',
+      lastCompletedCallId: existingData.lastCompletedCallId || '',
+      lastDisposition: existingData.lastDisposition || '',
+      lastEndReason: existingData.lastEndReason || '',
       awaitingStatusLeadId: '',
-      lastStatusLeadId: '',
-      lastSelectedStatus: '',
+      lastStatusLeadId: existingData.lastStatusLeadId || '',
+      lastSelectedStatus: existingData.lastSelectedStatus || '',
       lastError: '',
-      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+      resumed,
+      resumedFromIndex: resumeIndex,
+      resumedAt: resumed ? admin.firestore.FieldValue.serverTimestamp() : null,
+      startedAt: resumed
+        ? (existingData.startedAt || admin.firestore.FieldValue.serverTimestamp())
+        : admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: false });
 
@@ -679,20 +731,25 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
     if (!result.started) {
       return res.status(500).json({
         success: false,
-        error: result.error || 'Auto Dialer could not start the first call.'
+        error: result.error || 'Auto Dialer could not start the next call.'
       });
     }
 
     return res.status(200).json({
       success: true,
+      resumed,
+      resumedFromIndex: resumeIndex,
       session: {
         enabled: true,
         state: 'dialing',
         queueSize: queue.length,
+        currentIndex: resumeIndex,
         currentLeadId: result.leadId,
         currentLeadName: result.leadName,
         currentCallId: result.callId,
-        nextIndex: 1
+        nextIndex: resumeIndex + 1,
+        resumed,
+        resumedFromIndex: resumeIndex
       }
     });
   } catch (error: any) {
