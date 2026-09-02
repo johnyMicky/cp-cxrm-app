@@ -29,9 +29,10 @@ import { cn } from '../App';
 interface ChatPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  standalone?: boolean;
 }
 
-export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
+export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatPanelProps) {
   const [chats, setChats] = useState<any[]>([]);
   const [selectedChat, setSelectedChat] = useState<any>(null);
   const [messages, setMessages] = useState<any[]>([]);
@@ -147,8 +148,8 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   }, [selectedChat, currentUserId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    messagesEndRef.current?.scrollIntoView({ behavior: standalone ? 'auto' : 'smooth' });
+  }, [messages, standalone]);
 
   // Every CRM role may create a group.
   const canCreateGroups = true;
@@ -859,20 +860,26 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     <AnimatePresence>
       {isOpen && (
         <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[110]"
-          />
+          {!standalone && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={onClose}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[110]"
+            />
+          )}
 
           <motion.div
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="fixed top-0 right-0 bottom-0 w-full max-w-5xl bg-[#0A0F1C] border-l border-white/10 z-[120] flex flex-col shadow-2xl"
+            initial={standalone ? false : { x: '100%' }}
+            animate={standalone ? undefined : { x: 0 }}
+            exit={standalone ? undefined : { x: '100%' }}
+            transition={standalone ? undefined : { type: 'spring', damping: 25, stiffness: 200 }}
+            className={
+              standalone
+                ? "fixed inset-0 w-full bg-[#0A0F1C] z-[120] flex flex-col"
+                : "fixed top-0 right-0 bottom-0 w-full max-w-5xl bg-[#0A0F1C] border-l border-white/10 z-[120] flex flex-col shadow-2xl"
+            }
           >
             <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
               <div className="flex items-center space-x-3">
@@ -887,12 +894,21 @@ export default function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
                 </div>
               </div>
 
-              <button
-                onClick={onClose}
-                className="p-2 rounded-lg hover:bg-white/5 text-slate-400 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                {standalone && (
+                  <span className="hidden sm:inline-flex px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                    Standalone App
+                  </span>
+                )}
+                {!standalone && (
+                  <button
+                    onClick={onClose}
+                    className="p-2 rounded-lg hover:bg-white/5 text-slate-400 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="flex-1 flex overflow-hidden">
