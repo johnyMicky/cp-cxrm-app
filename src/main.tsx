@@ -18,7 +18,7 @@ document.head.appendChild(themeMeta);
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
-      .register('/chat-sw.js', { scope: '/' })
+      .register('/chat-sw.js', { scope: '/chat-app' })
       .catch(error => console.error('Chat PWA service worker registration failed:', error));
   });
 }
