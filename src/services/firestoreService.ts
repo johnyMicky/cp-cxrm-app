@@ -48,6 +48,7 @@ const FINANCE_CATALOG_COL = "finance_catalog";
 const FINANCE_EXPENSES_COL = "finance_expenses";
 const FINANCE_PAYROLL_CONFIG_COL = "finance_payroll_config";
 const FINANCE_PAYROLL_MONTHLY_COL = "finance_payroll_monthly";
+const FINANCE_MONTH_ARCHIVES_COL = "finance_month_archives";
 const LEAD_STATUSES_COL = "lead_statuses";
 const ATLANT_LIVE_CALLS_COL = "atlant_live_calls";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
@@ -96,6 +97,36 @@ const sanitizeData = (data: any) => {
 const normalizeEmail = (email: string) => (email || "").trim().toLowerCase();
 const isAdminEmail = (email: string) => normalizeEmail(email) === ADMIN_EMAIL;
 const safeTeamName = (name: string) => (name || "").trim().toLowerCase();
+
+
+const financeMonthFromValue = (value: any) => {
+  if (!value) return '';
+  const date = value?.toDate ? value.toDate() : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return format(date, 'yyyy-MM');
+};
+
+const financeMonthBounds = (monthKey: string) => {
+  const match = /^(\d{4})-(\d{2})$/.exec(String(monthKey || '').trim());
+  if (!match) throw new Error('Invalid finance month.');
+
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const start = new Date(year, monthIndex, 1, 0, 0, 0, 0);
+  const end = new Date(year, monthIndex + 1, 1, 0, 0, 0, 0);
+
+  return {
+    start,
+    end,
+    startTimestamp: Timestamp.fromDate(start),
+    endTimestamp: Timestamp.fromDate(end)
+  };
+};
+
+const effectiveDepositFinanceMonth = (deposit: any) =>
+  String(deposit?.financeMonth || '').trim() ||
+  financeMonthFromValue(deposit?.approvedAt) ||
+  String(deposit?.depositDate || '').slice(0, 7);
 
 export const firestoreService = {
   getAuth() {
@@ -2531,6 +2562,216 @@ export const firestoreService = {
     );
   },
 
+  async getApprovedFinanceDepositsForMonth(monthKey: string) {
+    const month = String(monthKey || '').trim();
+    if (!month) return [];
+
+    const { startTimestamp, endTimestamp } = financeMonthBounds(month);
+    const items = new Map<string, any>();
+
+    // New records are stamped with financeMonth at approval time.
+    try {
+      const monthSnap = await getDocs(
+        query(
+          collection(db, FINANCE_DEPOSITS_COL),
+          where('financeMonth', '==', month),
+          limit(2000)
+        )
+      );
+
+      monthSnap.docs.forEach(d => items.set(d.id, { id: d.id, ...d.data() }));
+    } catch (error) {
+      console.warn('financeMonth lookup fallback:', error);
+    }
+
+    // Backward compatibility for records approved before financeMonth was introduced.
+    try {
+      const approvalSnap = await getDocs(
+        query(
+          collection(db, FINANCE_DEPOSITS_COL),
+          where('approvedAt', '>=', startTimestamp),
+          where('approvedAt', '<', endTimestamp),
+          limit(2000)
+        )
+      );
+
+      approvalSnap.docs.forEach(d => items.set(d.id, { id: d.id, ...d.data() }));
+    } catch (error) {
+      console.warn('approvedAt month lookup fallback:', error);
+    }
+
+    return Array.from(items.values())
+      .filter((deposit: any) =>
+        String(deposit.status || '') === 'Approved' &&
+        effectiveDepositFinanceMonth(deposit) === month
+      )
+      .sort((a: any, b: any) => {
+        const aDate = a.approvedAt?.toDate ? a.approvedAt.toDate() : new Date(a.approvedAt || 0);
+        const bDate = b.approvedAt?.toDate ? b.approvedAt.toDate() : new Date(b.approvedAt || 0);
+        return bDate.getTime() - aDate.getTime();
+      });
+  },
+
+  async getFinanceMonthArchive(monthKey: string) {
+    const month = String(monthKey || '').trim();
+    if (!month) return null;
+
+    const snap = await getDoc(doc(db, FINANCE_MONTH_ARCHIVES_COL, month));
+    return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  },
+
+  async getFinanceArchives() {
+    const snap = await getDocs(
+      query(
+        collection(db, FINANCE_MONTH_ARCHIVES_COL),
+        orderBy('monthKey', 'desc'),
+        limit(120)
+      )
+    );
+
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter((item: any) => String(item.status || '') === 'closed');
+  },
+
+  async getFinanceArchiveDetails(monthKey: string) {
+    const month = String(monthKey || '').trim();
+    const header = await this.getFinanceMonthArchive(month);
+    if (!header || String((header as any).status || '') !== 'closed') return null;
+
+    const archiveRef = doc(db, FINANCE_MONTH_ARCHIVES_COL, month);
+    const [incomeSnap, expenseSnap, payrollSnap] = await Promise.all([
+      getDocs(collection(archiveRef, 'income')),
+      getDocs(collection(archiveRef, 'expenses')),
+      getDocs(collection(archiveRef, 'payroll'))
+    ]);
+
+    return {
+      ...header,
+      income: incomeSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      expenses: expenseSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+      payroll: payrollSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    };
+  },
+
+  async closeFinanceMonth(monthKey: string, userId: string) {
+    const month = String(monthKey || '').trim();
+    const currentUser = await this.getUser(String(userId || ''));
+
+    if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
+      throw new Error('You do not have permission to close a finance month.');
+    }
+
+    const currentMonth = format(new Date(), 'yyyy-MM');
+    if (!month || month >= currentMonth) {
+      throw new Error('Only a completed past month can be closed.');
+    }
+
+    const archiveRef = doc(db, FINANCE_MONTH_ARCHIVES_COL, month);
+    const existing = await getDoc(archiveRef);
+
+    if (existing.exists() && String(existing.data()?.status || '') === 'closed') {
+      throw new Error(`${month} is already closed.`);
+    }
+
+    const [workspace, approvedIncome, expenseSnap, payrollSnap] = await Promise.all([
+      this.getSimpleFinanceWorkspace(currentUser, month),
+      this.getApprovedFinanceDepositsForMonth(month),
+      getDocs(query(collection(db, FINANCE_EXPENSES_COL), where('monthKey', '==', month))),
+      getDocs(query(collection(db, FINANCE_PAYROLL_MONTHLY_COL), where('monthKey', '==', month)))
+    ]);
+
+    if (!workspace) throw new Error('Finance workspace could not be loaded.');
+
+    const expenses = expenseSnap.docs
+      .map(d => ({ id: d.id, ...d.data() } as any))
+      .filter((entry: any) => entry.simpleWorkspace === true);
+
+    const payroll = payrollSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+
+    await setDoc(archiveRef, {
+      monthKey: month,
+      monthName: format(financeMonthBounds(month).start, 'MMMM yyyy'),
+      status: 'closing',
+      summary: {
+        approvedRevenue: Number(workspace.approvedRevenue || 0),
+        totalExpenses: Number(workspace.totalExpenses || 0),
+        paidExpenses: Number(workspace.paidExpenses || 0),
+        expectedExpenses: Number(workspace.expectedExpenses || 0),
+        totalPayroll: Number(workspace.totalPayroll || 0),
+        totalBonus: Number(workspace.totalBonus || 0),
+        totalFines: Number(workspace.totalFines || 0),
+        totalNotWorkedDeduction: Number(workspace.totalNotWorkedDeduction || 0),
+        netProfit: Number(workspace.netProfit || 0)
+      },
+      incomeCount: approvedIncome.length,
+      expenseEntryCount: expenses.length,
+      payrollEntryCount: payroll.length,
+      closedBy: String(userId),
+      closedByName: currentUser.name || currentUser.email || currentUser.role,
+      closedByRole: currentUser.role || '',
+      closingStartedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+
+    const writeArchiveItems = async (
+      subcollection: string,
+      rows: any[],
+      idForRow: (row: any, index: number) => string
+    ) => {
+      for (let offset = 0; offset < rows.length; offset += 400) {
+        const batch = writeBatch(db);
+        const chunk = rows.slice(offset, offset + 400);
+
+        chunk.forEach((row: any, index: number) => {
+          const id = idForRow(row, offset + index);
+          batch.set(
+            doc(collection(archiveRef, subcollection), id),
+            sanitizeData({
+              ...row,
+              archivedAt: serverTimestamp()
+            })
+          );
+        });
+
+        await batch.commit();
+      }
+    };
+
+    await writeArchiveItems('income', approvedIncome, (row, index) => String(row.id || `income_${index}`));
+    await writeArchiveItems('expenses', expenses, (row, index) => String(row.id || `expense_${index}`));
+
+    // Archive calculated payroll rows, not only adjustment docs, so the old month
+    // remains readable even if salary configuration changes later.
+    await writeArchiveItems(
+      'payroll',
+      Array.isArray(workspace.payrollRows) ? workspace.payrollRows : [],
+      (row, index) => String(row.employeeId || `payroll_${index}`)
+    );
+
+    await setDoc(archiveRef, {
+      status: 'closed',
+      closedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+
+    await addDoc(collection(db, FINANCE_AUDIT_COL), {
+      action: 'Finance Month Closed',
+      monthKey: month,
+      changedBy: String(userId),
+      changedByName: currentUser.name || currentUser.email || currentUser.role,
+      newValue: {
+        approvedRevenue: Number(workspace.approvedRevenue || 0),
+        totalExpenses: Number(workspace.totalExpenses || 0),
+        totalPayroll: Number(workspace.totalPayroll || 0),
+        netProfit: Number(workspace.netProfit || 0)
+      },
+      createdAt: serverTimestamp()
+    });
+
+    return await this.getFinanceArchiveDetails(month);
+  },
+
   async saveMonthlyExpense(payload: any, userId: string) {
     const currentUser = await this.getUser(String(userId || ''));
     if (!currentUser || !['Administrator', 'Manager', 'Financial Manager'].includes(String(currentUser.role || ''))) {
@@ -2541,39 +2782,69 @@ export const firestoreService = {
     const categoryId = String(payload?.categoryId || '').trim();
     if (!monthKey || !categoryId) throw new Error('Month and expense category are required.');
 
-    const categorySnap = await getDoc(doc(db, FINANCE_CATALOG_COL, categoryId));
-    if (!categorySnap.exists()) throw new Error('Expense category was not found.');
-    const category = categorySnap.data() as any;
+    const closedArchive = await this.getFinanceMonthArchive(monthKey);
+    if (closedArchive && String((closedArchive as any).status || '') === 'closed') {
+      throw new Error(`${monthKey} is closed and cannot be edited.`);
+    }
+
+    const categories = await this.getSimpleExpenseCategories(true);
+    const category: any = (categories as any[]).find((item: any) => String(item.id) === categoryId);
+    if (!category) throw new Error('Expense category was not found.');
 
     const amount = Number(payload?.amount || 0);
-    if (!Number.isFinite(amount) || amount < 0) throw new Error('Expense amount must be 0 or greater.');
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('Expense amount must be greater than 0.');
+    }
 
     const status = String(payload?.status || 'Expected') === 'Paid' ? 'Paid' : 'Expected';
-    const entryId = `simple_${monthKey}_${categoryId}`;
+    const now = new Date();
+    const selectedMonthIsCurrent = format(now, 'yyyy-MM') === monthKey;
+    const entryDate = selectedMonthIsCurrent
+      ? format(now, 'yyyy-MM-dd')
+      : `${monthKey}-01`;
 
-    await setDoc(
-      doc(db, FINANCE_EXPENSES_COL, entryId),
+    const ref = await addDoc(
+      collection(db, FINANCE_EXPENSES_COL),
       {
         simpleWorkspace: true,
+        ledgerEntry: true,
         catalogId: categoryId,
         catalogName: category.name || '',
         type: 'Expense',
         calculationType: 'Fixed',
         amount: Number(amount.toFixed(2)),
         monthKey,
-        entryDate: `${monthKey}-01`,
-        dueDate: `${monthKey}-01`,
+        entryDate,
+        dueDate: entryDate,
         status,
         notes: String(payload?.notes || '').trim(),
+        createdBy: String(userId),
+        createdByName: currentUser.name || currentUser.email || currentUser.role,
         updatedBy: String(userId),
         updatedByName: currentUser.name || currentUser.email || currentUser.role,
-        updatedAt: serverTimestamp(),
-        createdAt: serverTimestamp()
-      },
-      { merge: true }
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      }
     );
 
-    return { id: entryId, categoryId, amount, status };
+    await addDoc(collection(db, FINANCE_AUDIT_COL), {
+      action: 'Monthly Expense Added',
+      entryId: ref.id,
+      monthKey,
+      changedBy: String(userId),
+      changedByName: currentUser.name || currentUser.email || currentUser.role,
+      oldValue: null,
+      newValue: {
+        categoryId,
+        categoryName: category.name || '',
+        amount: Number(amount.toFixed(2)),
+        status,
+        notes: String(payload?.notes || '').trim()
+      },
+      createdAt: serverTimestamp()
+    });
+
+    return { id: ref.id, categoryId, amount: Number(amount.toFixed(2)), status };
   },
 
   async saveMonthlyPayrollAdjustment(payload: any, userId: string) {
@@ -2584,6 +2855,11 @@ export const firestoreService = {
 
     const monthKey = String(payload?.monthKey || '').trim();
     const employeeId = String(payload?.employeeId || '').trim();
+
+    const closedArchive = await this.getFinanceMonthArchive(monthKey);
+    if (closedArchive && String((closedArchive as any).status || '') === 'closed') {
+      throw new Error(`${monthKey} is closed and cannot be edited.`);
+    }
     if (!monthKey || !employeeId) throw new Error('Month and employee are required.');
 
     const fines = Number(payload?.fines || 0);
@@ -2620,27 +2896,46 @@ export const firestoreService = {
     }
 
     const month = String(monthKey || format(new Date(), 'yyyy-MM'));
-    const [deposits, categories, expenseSnap, payrollConfigs, payrollMonthSnap, allUsers] = await Promise.all([
+
+    const [
+      deposits,
+      approvedDeposits,
+      categories,
+      expenseSnap,
+      payrollConfigs,
+      payrollMonthSnap,
+      allUsers,
+      archive
+    ] = await Promise.all([
       this.getFinanceDepositsForUser(currentUser),
+      this.getApprovedFinanceDepositsForMonth(month),
       this.getSimpleExpenseCategories(),
-      getDocs(query(collection(db, FINANCE_EXPENSES_COL), limit(500))),
+      getDocs(query(collection(db, FINANCE_EXPENSES_COL), where('monthKey', '==', month))),
       this.getPayrollConfigs(),
       getDocs(query(collection(db, FINANCE_PAYROLL_MONTHLY_COL), where('monthKey', '==', month))),
-      this.getUsers()
+      this.getUsers(),
+      this.getFinanceMonthArchive(month)
     ]);
 
-    const monthDeposits = (deposits as any[]).filter((deposit: any) =>
-      String(deposit.depositDate || '').startsWith(month)
-    );
-
-    const approvedDeposits = monthDeposits.filter((deposit: any) => deposit.status === 'Approved');
     const approvedRevenue = approvedDeposits.reduce(
       (sum: number, deposit: any) => sum + Number(deposit.amount || 0),
       0
     );
 
-    const onSolution = monthDeposits
-      .filter((deposit: any) => ['On Solution', 'Arrival Pending'].includes(String(deposit.status || '')))
+    const currentMonth = format(new Date(), 'yyyy-MM');
+
+    // Open unresolved Solution records remain visible in the active month pipeline,
+    // even when they were originally submitted in a previous month. They become
+    // revenue only in the month where the final approval happens.
+    const onSolutionCandidates = (deposits as any[]).filter((deposit: any) =>
+      ['On Solution', 'Arrival Pending'].includes(String(deposit.status || ''))
+    );
+
+    const onSolution = onSolutionCandidates
+      .filter((deposit: any) =>
+        month === currentMonth ||
+        String(deposit.depositDate || '').startsWith(month)
+      )
       .reduce((sum: number, deposit: any) => sum + Number(deposit.amount || 0), 0);
 
     const revenueByUser: Record<string, number> = {};
@@ -2662,30 +2957,50 @@ export const firestoreService = {
 
     const allExpenseEntries = expenseSnap.docs
       .map(d => ({ id: d.id, ...d.data() } as any))
-      .filter((entry: any) =>
-        String(entry.monthKey || '') === month &&
-        entry.simpleWorkspace === true
-      );
+      .filter((entry: any) => entry.simpleWorkspace === true);
 
     const expenseRows = (categories as any[]).map((category: any) => {
-      const saved = allExpenseEntries.find((entry: any) => String(entry.catalogId) === String(category.id));
+      const entries = allExpenseEntries
+        .filter((entry: any) => String(entry.catalogId) === String(category.id))
+        .sort((a: any, b: any) => {
+          const aDate = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.entryDate || 0);
+          const bDate = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.entryDate || 0);
+          return bDate.getTime() - aDate.getTime();
+        });
+
+      const totalAmount = entries.reduce(
+        (sum: number, entry: any) => sum + Number(entry.amount || 0),
+        0
+      );
+      const paidAmount = entries
+        .filter((entry: any) => String(entry.status || '') === 'Paid')
+        .reduce((sum: number, entry: any) => sum + Number(entry.amount || 0), 0);
+      const expectedAmount = Number((totalAmount - paidAmount).toFixed(2));
+
       return {
         categoryId: category.id,
         name: category.name || 'Expense',
-        amount: Number(saved?.amount || 0),
-        status: saved?.status === 'Paid' ? 'Paid' : 'Expected',
-        notes: saved?.notes || '',
-        entryId: saved?.id || ''
+        amount: Number(totalAmount.toFixed(2)),
+        totalAmount: Number(totalAmount.toFixed(2)),
+        paidAmount: Number(paidAmount.toFixed(2)),
+        expectedAmount,
+        entryCount: entries.length,
+        entries: entries.slice(0, 20)
       };
     });
 
-    const totalExpenses = expenseRows.reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
-    const paidExpenses = expenseRows
-      .filter((row: any) => row.status === 'Paid')
-      .reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
-    const expectedExpenses = expenseRows
-      .filter((row: any) => row.status !== 'Paid')
-      .reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0);
+    const totalExpenses = expenseRows.reduce(
+      (sum: number, row: any) => sum + Number(row.totalAmount || 0),
+      0
+    );
+    const paidExpenses = expenseRows.reduce(
+      (sum: number, row: any) => sum + Number(row.paidAmount || 0),
+      0
+    );
+    const expectedExpenses = expenseRows.reduce(
+      (sum: number, row: any) => sum + Number(row.expectedAmount || 0),
+      0
+    );
 
     const payrollMonthly = payrollMonthSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
     const userMap = new Map((allUsers as any[]).map((u: any) => [String(u.id), u]));
@@ -2757,6 +3072,8 @@ export const firestoreService = {
 
     return {
       monthKey: month,
+      isClosed: !!archive && String((archive as any).status || '') === 'closed',
+      archive: archive || null,
       approvedRevenue: Number(approvedRevenue.toFixed(2)),
       onSolution: Number(onSolution.toFixed(2)),
       totalExpenses: Number(totalExpenses.toFixed(2)),
@@ -2770,7 +3087,9 @@ export const firestoreService = {
       netProfit,
       projectedMonthEnd,
       workDays,
+      approvedDeposits,
       expenseRows,
+      expenseEntries: allExpenseEntries,
       payrollRows
     };
   },
@@ -3355,6 +3674,7 @@ export const firestoreService = {
       approvedBy: approveNow ? String(reviewerId) : '',
       approvedByName: approveNow ? (reviewer.name || reviewer.email || reviewerRole) : '',
       approvedAt: approveNow ? serverTimestamp() : null,
+      financeMonth: approveNow ? format(new Date(), 'yyyy-MM') : '',
       rejectedBy: '', rejectedByName: '', rejectedAt: null, rejectReason: '',
       createdAt: serverTimestamp(), updatedAt: serverTimestamp(), submittedAt: serverTimestamp()
     });
@@ -3826,6 +4146,7 @@ export const firestoreService = {
                 approvedBy: String(reviewerId),
                 approvedByName: reviewer.name || reviewer.email || role,
                 approvedAt: serverTimestamp(),
+                financeMonth: format(new Date(), 'yyyy-MM'),
                 rejectedBy: '',
                 rejectedByName: '',
                 rejectedAt: null,
@@ -3937,6 +4258,7 @@ export const firestoreService = {
                 approvedBy: String(reviewerId),
                 approvedByName: reviewer.name || reviewer.email || role,
                 approvedAt: serverTimestamp(),
+                financeMonth: format(new Date(), 'yyyy-MM'),
                 arrivalRejectReason: '',
                 rejectReason: '',
                 updatedAt: serverTimestamp()
