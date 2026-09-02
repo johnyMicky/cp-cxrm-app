@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ChangeEvent } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X, Camera, Loader2, Radio } from 'lucide-react';
 import { format } from 'date-fns';
@@ -6,23 +6,24 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { collection, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
 
-import Dashboard from './pages/Dashboard';
-import Leads from './pages/Leads';
-import LeadDetail from './pages/LeadDetail';
-import Dispatcher from './pages/Dispatcher';
-import Team from './pages/Team';
-import Lost from './pages/Lost';
-import JOR from './pages/JOR';
-import ActivityPage from './pages/Activity';
-import Imports from './pages/Imports';
-import SettingsPage from './pages/Settings';
-import WorkLogs from './pages/WorkLogs';
-import SecurityLogs from './pages/SecurityLogs';
-import Finance from './pages/Finance';
-import LiveCalls from './pages/LiveCalls';
-import SecureInfo from './pages/SecureInfo';
 import Login from './pages/Login';
-import ChatPanel from './components/ChatPanel';
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Leads = lazy(() => import('./pages/Leads'));
+const LeadDetail = lazy(() => import('./pages/LeadDetail'));
+const Dispatcher = lazy(() => import('./pages/Dispatcher'));
+const Team = lazy(() => import('./pages/Team'));
+const Lost = lazy(() => import('./pages/Lost'));
+const JOR = lazy(() => import('./pages/JOR'));
+const ActivityPage = lazy(() => import('./pages/Activity'));
+const Imports = lazy(() => import('./pages/Imports'));
+const SettingsPage = lazy(() => import('./pages/Settings'));
+const WorkLogs = lazy(() => import('./pages/WorkLogs'));
+const SecurityLogs = lazy(() => import('./pages/SecurityLogs'));
+const Finance = lazy(() => import('./pages/Finance'));
+const LiveCalls = lazy(() => import('./pages/LiveCalls'));
+const SecureInfo = lazy(() => import('./pages/SecureInfo'));
+const ChatPanel = lazy(() => import('./components/ChatPanel'));
+
 import { auth, db, authPersistenceReady } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { firestoreService } from './services/firestoreService';
@@ -160,45 +161,56 @@ function Sidebar({
   }, [currentUserId]);
 
   useEffect(() => {
+    if (!currentUserId || currentUserId === '1') return;
+
+    let cancelled = false;
+
     const checkCallbacks = async () => {
       try {
-        const leads = await firestoreService.getLeadsForUser({
-          id: currentUserId,
-          role: currentUserRole
-        });
         const now = new Date();
         const thirtyMinsLater = new Date(now.getTime() + 30 * 60000);
+        const upcoming = await firestoreService.getUpcomingCallbacksForUser(
+          { id: currentUserId, role: currentUserRole },
+          now,
+          thirtyMinsLater
+        );
 
-        for (const lead of (leads as any[])) {
-          if (lead.callbackAt) {
-            const callbackDate = lead.callbackAt.toDate ? lead.callbackAt.toDate() : new Date(lead.callbackAt);
-            
-            if (callbackDate > now && callbackDate <= thirtyMinsLater) {
-              const alreadyNotified = notificationsRef.current.some(n => n.type === 'callback' && n.lead_id === lead.id);
-              
-              if (!alreadyNotified) {
-                await firestoreService.createNotification({
-                  user_id: currentUserId,
-                  lead_id: lead.id,
-                  type: 'callback',
-                  title: 'Upcoming Callback',
-                  message: `You have a scheduled call with ${lead.name} in less than 30 minutes.`,
-                });
-                fetchNotifications();
-              }
-            }
+        if (cancelled) return;
+
+        let createdAny = false;
+
+        for (const lead of (upcoming as any[])) {
+          const alreadyNotified = notificationsRef.current.some(
+            n => n.type === 'callback' && n.lead_id === lead.id
+          );
+
+          if (!alreadyNotified) {
+            await firestoreService.createNotification({
+              user_id: currentUserId,
+              lead_id: lead.id,
+              type: 'callback',
+              title: 'Upcoming Callback',
+              message: `You have a scheduled call with ${lead.name} in less than 30 minutes.`,
+            });
+            createdAny = true;
           }
+        }
+
+        if (createdAny && !cancelled) {
+          fetchNotifications();
         }
       } catch (err) {
         console.error('Callback check failed:', err);
       }
     };
 
-    // Callback scanning is intentionally less aggressive; the old 60s loop repeatedly
-    // loaded the lead scope and competed with normal page requests.
-    const interval = setInterval(checkCallbacks, 300000);
+    const interval = window.setInterval(checkCallbacks, 300000);
     checkCallbacks();
-    return () => clearInterval(interval);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [currentUserId, currentUserRole]);
 
   const handleMarkRead = async (id: string) => {
@@ -311,7 +323,7 @@ function Sidebar({
             </button>
 
             {showNotifications && (
-              <div className="absolute left-0 mt-2 w-80 bg-[#0F172A] border border-white/10 rounded-xl shadow-2xl z-[100] overflow-hidden animate-in fade-in zoom-in duration-200">
+              <div className="absolute left-0 mt-2 w-80 bg-[#0F172A] border border-white/10 rounded-xl shadow-2xl z-[100] overflow-hidden">
                 <div className="p-4 border-b border-white/5 bg-white/[0.02] flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold text-white">Notifications</h3>
@@ -382,7 +394,7 @@ function Sidebar({
       </div>
 
       {notificationToast && (
-        <div className="fixed left-6 bottom-6 z-[220] w-[min(390px,calc(100vw-3rem))] bg-[#0F172A] border border-blue-500/25 rounded-2xl shadow-2xl shadow-black/40 overflow-hidden animate-in slide-in-from-left-4 fade-in duration-300">
+        <div className="fixed left-6 bottom-6 z-[220] w-[min(390px,calc(100vw-3rem))] bg-[#0F172A] border border-blue-500/25 rounded-2xl shadow-2xl shadow-black/40 overflow-hidden">
           <div className="p-4 flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
               <Bell className="w-5 h-5 text-blue-400" />
@@ -464,7 +476,7 @@ function Sidebar({
               key={item.name}
               to={item.path}
               className={cn(
-                "shimmer-item flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                "flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
                 isActive 
                   ? "bg-blue-600/10 text-blue-500" 
                   : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
@@ -841,14 +853,14 @@ export default function App() {
                   />
 
                   {showLeadToast && (
-                    <div className="fixed top-8 right-8 z-[150] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 animate-in slide-in-from-bottom-4 duration-300 max-w-md">
+                    <div className="fixed top-8 right-8 z-[150] bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl shadow-emerald-500/30 flex items-center space-x-3 max-w-md">
                       <CheckCircle2 className="w-5 h-5 shrink-0" />
                       <span className="font-medium text-sm leading-tight">{leadToastMessage}</span>
                     </div>
                   )}
 
                   {financeCelebration && (
-                    <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[180] w-[min(560px,90vw)] bg-gradient-to-r from-emerald-600 to-cyan-600 text-white rounded-2xl shadow-2xl shadow-emerald-500/30 border border-white/20 p-5 animate-in slide-in-from-top-4 duration-300">
+                    <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[180] w-[min(560px,90vw)] bg-gradient-to-r from-emerald-600 to-cyan-600 text-white rounded-2xl shadow-2xl shadow-emerald-500/30 border border-white/20 p-5">
                       <div className="flex items-center gap-4">
                         <div className="w-12 h-12 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
                           <PartyPopper className="w-7 h-7" />
@@ -865,6 +877,13 @@ export default function App() {
                   )}
 
                   <main className="flex-1 overflow-auto">
+                    <Suspense
+                      fallback={
+                        <div className="min-h-full flex items-center justify-center text-sm text-slate-500">
+                          Loading...
+                        </div>
+                      }
+                    >
                     <Routes>
                       <Route path="/" element={<Dashboard />} />
                       <Route path="/leads" element={<Leads />} />
@@ -903,8 +922,13 @@ export default function App() {
                       <Route path="/work-logs" element={<WorkLogs />} />
                       <Route path="/security-logs" element={currentUserRole === 'Administrator' ? <SecurityLogs /> : <Navigate to="/" replace />} />
                     </Routes>
+                    </Suspense>
                   </main>
-                  <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
+                  {isChatOpen && (
+                    <Suspense fallback={null}>
+                      <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
+                    </Suspense>
+                  )}
                 </div>
               ) : (
                 <Navigate to="/login" replace />
