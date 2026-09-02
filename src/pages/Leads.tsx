@@ -428,7 +428,15 @@ export default function Leads() {
 
       const result = await firestoreService.startAtlantAutoDialer(queue);
       setAutoDialerSession(result?.session || null);
-      showToastMessage(`Auto Dialer started with ${queue.length} Lead${queue.length === 1 ? '' : 's'}.`);
+
+      if (result?.resumed === true) {
+        const resumedAt = Number(result?.resumedFromIndex || 0) + 1;
+        showToastMessage(
+          `Auto Dialer resumed from Lead #${resumedAt} of ${queue.length}.`
+        );
+      } else {
+        showToastMessage(`Auto Dialer started with ${queue.length} Lead${queue.length === 1 ? '' : 's'}.`);
+      }
     } catch (err: any) {
       console.error('Auto Dialer toggle failed:', err);
       showToastMessage(`Auto Dialer: ${err?.message || 'Unable to change state'}`);
@@ -462,6 +470,16 @@ export default function Leads() {
     }
   };
 
+  const isLeadAwaitingAutoDialerStatus = (leadId: string) =>
+    currentUser.role === 'Agent' &&
+    autoDialerSession?.enabled === true &&
+    String(autoDialerSession?.state || '') === 'awaiting_status' &&
+    String(
+      autoDialerSession?.awaitingStatusLeadId ||
+      autoDialerSession?.currentLeadId ||
+      ''
+    ) === String(leadId);
+
   const handleStatusChange = async (leadId: string, newStatus: string) => {
     try {
       await firestoreService.updateLead(leadId, { status: newStatus });
@@ -473,14 +491,7 @@ export default function Leads() {
       });
 
       const shouldContinueAutoDialer =
-        currentUser.role === 'Agent' &&
-        autoDialerSession?.enabled === true &&
-        String(autoDialerSession?.state || '') === 'awaiting_status' &&
-        String(
-          autoDialerSession?.awaitingStatusLeadId ||
-          autoDialerSession?.currentLeadId ||
-          ''
-        ) === String(leadId);
+        isLeadAwaitingAutoDialerStatus(leadId);
 
       if (shouldContinueAutoDialer) {
         showToastMessage('Status saved. Next call starts in 2 seconds...');
@@ -2113,10 +2124,26 @@ export default function Leads() {
                   </td>
                   <td className="px-6 py-4">
                     <select 
-                      value={normalizeStatus(lead.status)}
-                      onChange={(e) => handleStatusChange(lead.id, e.target.value)}
+                      value={
+                        isLeadAwaitingAutoDialerStatus(lead.id)
+                          ? '__AUTO_SELECT_STATUS__'
+                          : normalizeStatus(lead.status)
+                      }
+                      onChange={(e) => {
+                        if (e.target.value === '__AUTO_SELECT_STATUS__') return;
+                        handleStatusChange(lead.id, e.target.value);
+                      }}
                       className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border bg-transparent focus:outline-none cursor-pointer ${getStatusStyles(lead.status)}`}
                     >
+                      {isLeadAwaitingAutoDialerStatus(lead.id) && (
+                        <option
+                          value="__AUTO_SELECT_STATUS__"
+                          disabled
+                          className="bg-[#0A0F1C] text-amber-300"
+                        >
+                          Select Status ({normalizeStatus(lead.status)})
+                        </option>
+                      )}
                       {statuses.map(s => (
                         <option key={s} value={s} className="bg-[#0A0F1C] text-slate-300">{s}</option>
                       ))}
