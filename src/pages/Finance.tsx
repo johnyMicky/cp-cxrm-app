@@ -19,7 +19,11 @@ import {
   Plus,
   Check,
   Save,
-  Users
+  Users,
+  Archive,
+  Download,
+  LockKeyhole,
+  FileSpreadsheet
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { firestoreService } from '../services/firestoreService';
@@ -85,6 +89,11 @@ export default function Finance() {
   const [financeUsers, setFinanceUsers] = useState<any[]>([]);
   const [currentTeamId, setCurrentTeamId] = useState('');
   const [manualAllocations, setManualAllocations] = useState<Array<{ userId: string; percentage: string }>>([{ userId: '', percentage: '100' }]);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archives, setArchives] = useState<any[]>([]);
+  const [selectedArchive, setSelectedArchive] = useState<any>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+
   const [manualDraft, setManualDraft] = useState({
     clientFullName: '', country: '', email: '', phoneNumber: '', walletAddress: '',
     method: 'Crypto', amount: '', crypto: 'USDT', depositDate: format(new Date(), 'yyyy-MM-dd'),
@@ -119,9 +128,9 @@ export default function Finance() {
         const nextExpenseDrafts: Record<string, { amount: string; status: string; notes: string }> = {};
         (overviewData.expenseRows || []).forEach((row: any) => {
           nextExpenseDrafts[String(row.categoryId)] = {
-            amount: String(row.amount ?? 0),
-            status: String(row.status || 'Expected'),
-            notes: String(row.notes || '')
+            amount: '',
+            status: 'Expected',
+            notes: ''
           };
         });
         setExpenseDrafts(nextExpenseDrafts);
@@ -331,12 +340,158 @@ export default function Finance() {
     } finally { setManualBusy(false); }
   };
 
+  const loadArchives = async (open = true) => {
+    try {
+      setArchiveBusy(true);
+      const items = await firestoreService.getFinanceArchives();
+      setArchives(items as any[]);
+      if (open) setArchiveOpen(true);
+    } catch (err: any) {
+      alert(err?.message || 'Failed to load Financial Archive.');
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
+  const openArchive = async (archive: any) => {
+    try {
+      setArchiveBusy(true);
+      const details = await firestoreService.getFinanceArchiveDetails(archive.monthKey);
+      setSelectedArchive(details);
+    } catch (err: any) {
+      alert(err?.message || 'Failed to load archived month.');
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
+  const closeFinanceMonth = async () => {
+    if (!opsOverview || opsOverview.isClosed) return;
+
+    const monthLabel = (() => {
+      const [year, month] = financeMonth.split('-').map(Number);
+      return Number.isFinite(year) && Number.isFinite(month)
+        ? format(new Date(year, month - 1, 1), 'MMMM yyyy')
+        : financeMonth;
+    })();
+
+    const ok = confirm(
+      `Close ${monthLabel}?\n\n` +
+      `Approved revenue: ${money(opsOverview.approvedRevenue || 0)}\n` +
+      `Expenses: ${money(opsOverview.totalExpenses || 0)}\n` +
+      `Payroll: ${money(opsOverview.totalPayroll || 0)}\n` +
+      `Net profit: ${money(opsOverview.netProfit || 0)}\n\n` +
+      `Pending/Solution records that are approved later will belong to the month in which they are approved. ` +
+      `A closed month becomes read-only.`
+    );
+
+    if (!ok) return;
+
+    try {
+      setArchiveBusy(true);
+      const archived = await firestoreService.closeFinanceMonth(financeMonth, currentUser.id);
+      await loadArchives(false);
+      setSelectedArchive(archived);
+      setArchiveOpen(true);
+
+      // Move the live workspace to the current month. Nothing is destructively reset:
+      // monthly data is naturally isolated by month, while configuration remains.
+      setFinanceMonth(format(new Date(), 'yyyy-MM'));
+    } catch (err: any) {
+      alert(err?.message || 'Failed to close finance month.');
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
+  const exportArchiveExcel = async (archive: any) => {
+    if (!archive) return;
+
+    try {
+      setArchiveBusy(true);
+
+      // Dynamic import keeps XLSX out of the normal Finance page bundle.
+      const XLSX = await import('xlsx');
+      const details =
+        Array.isArray(archive.income)
+          ? archive
+          : await firestoreService.getFinanceArchiveDetails(archive.monthKey);
+
+      if (!details) throw new Error('Archive details were not found.');
+
+      const summary = details.summary || {};
+
+      const summaryRows = [
+        { Metric: 'Month', Value: details.monthName || details.monthKey },
+        { Metric: 'Approved Revenue', Value: Number(summary.approvedRevenue || 0) },
+        { Metric: 'Company Expenses', Value: Number(summary.totalExpenses || 0) },
+        { Metric: 'Paid Expenses', Value: Number(summary.paidExpenses || 0) },
+        { Metric: 'Expected Expenses', Value: Number(summary.expectedExpenses || 0) },
+        { Metric: 'Total Payroll', Value: Number(summary.totalPayroll || 0) },
+        { Metric: 'Total Bonus', Value: Number(summary.totalBonus || 0) },
+        { Metric: 'Total Fines', Value: Number(summary.totalFines || 0) },
+        { Metric: 'Net Profit', Value: Number(summary.netProfit || 0) },
+        { Metric: 'Closed By', Value: details.closedByName || '' }
+      ];
+
+      const incomeRows = (details.income || []).map((row: any) => ({
+        Client: row.clientFullName || '',
+        Amount: Number(row.amount || 0),
+        Method: row.method || '',
+        Currency: row.crypto || row.cryptoOther || '',
+        ApprovedAt: toDate(row.approvedAt) ? format(toDate(row.approvedAt)!, 'yyyy-MM-dd HH:mm:ss') : '',
+        Agent: row.agentName || row.submittedByName || '',
+        Team: row.teamName || '',
+        Status: row.status || ''
+      }));
+
+      const expenseRows = (details.expenses || []).map((row: any) => ({
+        Expense: row.catalogName || '',
+        Amount: Number(row.amount || 0),
+        Status: row.status || '',
+        Date: row.entryDate || '',
+        Comment: row.notes || '',
+        EnteredBy: row.createdByName || row.updatedByName || ''
+      }));
+
+      const payrollRows = (details.payroll || []).map((row: any) => ({
+        Employee: row.employeeName || '',
+        Team: row.teamName || '',
+        FixedSalary: Number(row.fixedSalary || 0),
+        Revenue: Number(row.revenue || 0),
+        BonusPercent: Number(row.bonusPercent || 0),
+        Bonus: Number(row.bonus || 0),
+        Fines: Number(row.fines || 0),
+        NotWorkedDays: Number(row.notWorkedDays || 0),
+        Deduction: Number(row.notWorkedDeduction || 0),
+        FinalSalary: Number(row.finalSalary || 0)
+      }));
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), 'Summary');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(incomeRows), 'Income');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), 'Expenses');
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(payrollRows), 'Payroll');
+
+      XLSX.writeFile(workbook, `${details.monthName || details.monthKey}-Finance.xlsx`);
+    } catch (err: any) {
+      alert(err?.message || 'Failed to export Finance archive.');
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
   const saveExpenseRow = async (row: any) => {
     const draft = expenseDrafts[String(row.categoryId)] || {
-      amount: String(row.amount || 0),
-      status: row.status || 'Expected',
-      notes: row.notes || ''
+      amount: '',
+      status: 'Expected',
+      notes: ''
     };
+
+    const amount = Number(draft.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return alert('Enter a new expense amount greater than 0.');
+    }
 
     try {
       setEntryBusy(true);
@@ -344,7 +499,7 @@ export default function Finance() {
         {
           monthKey: financeMonth,
           categoryId: row.categoryId,
-          amount: Number(draft.amount || 0),
+          amount,
           status: draft.status,
           notes: draft.notes
         },
@@ -482,12 +637,41 @@ export default function Finance() {
               </p>
             </div>
 
-            <input
-              type="month"
-              value={financeMonth}
-              onChange={e => setFinanceMonth(e.target.value)}
-              className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => loadArchives(true)}
+                disabled={archiveBusy}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-semibold"
+              >
+                <Archive className="w-4 h-4" />
+                Financial Archive
+              </button>
+
+              <input
+                type="month"
+                value={financeMonth}
+                onChange={e => setFinanceMonth(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+              />
+
+              {opsOverview?.isClosed ? (
+                <span className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-semibold">
+                  <LockKeyhole className="w-4 h-4" />
+                  Closed
+                </span>
+              ) : financeMonth < format(new Date(), 'yyyy-MM') ? (
+                <button
+                  type="button"
+                  onClick={closeFinanceMonth}
+                  disabled={archiveBusy || loading}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs font-semibold"
+                >
+                  <LockKeyhole className="w-4 h-4" />
+                  Close Month
+                </button>
+              ) : null}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
@@ -532,7 +716,8 @@ export default function Finance() {
                 <thead>
                   <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
                     <th className="py-3">Expense</th>
-                    <th>Amount $</th>
+                    <th>Total This Month</th>
+                    <th>Add Amount $</th>
                     <th>Status</th>
                     <th>Comment</th>
                     <th className="text-right">Action</th>
@@ -541,20 +726,34 @@ export default function Finance() {
                 <tbody className="divide-y divide-white/5">
                   {(opsOverview?.expenseRows || []).map((row: any) => {
                     const draft = expenseDrafts[String(row.categoryId)] || {
-                      amount: String(row.amount || 0),
-                      status: row.status || 'Expected',
-                      notes: row.notes || ''
+                      amount: '',
+                      status: 'Expected',
+                      notes: ''
                     };
 
                     return (
                       <tr key={row.categoryId}>
-                        <td className="py-3 text-sm font-semibold text-white">{row.name}</td>
+                        <td className="py-3">
+                          <p className="text-sm font-semibold text-white">{row.name}</p>
+                          <p className="text-[10px] text-slate-500 mt-0.5">
+                            {Number(row.entryCount || 0)} {Number(row.entryCount || 0) === 1 ? 'entry' : 'entries'}
+                          </p>
+                        </td>
+                        <td>
+                          <div className="min-w-[120px]">
+                            <p className="text-sm font-bold text-rose-300">{money(row.totalAmount || 0)}</p>
+                            <p className="text-[10px] text-slate-600">
+                              Paid {money(row.paidAmount || 0)}
+                            </p>
+                          </div>
+                        </td>
                         <td>
                           <input
                             type="number"
-                            min="0"
+                            min="0.01"
                             step="0.01"
                             value={draft.amount}
+                            disabled={Boolean(opsOverview?.isClosed)}
                             onChange={e =>
                               setExpenseDrafts(prev => ({
                                 ...prev,
@@ -570,6 +769,7 @@ export default function Finance() {
                         <td>
                           <select
                             value={draft.status}
+                            disabled={Boolean(opsOverview?.isClosed)}
                             onChange={e =>
                               setExpenseDrafts(prev => ({
                                 ...prev,
@@ -598,17 +798,18 @@ export default function Finance() {
                               }))
                             }
                             placeholder="Optional comment"
+                            disabled={Boolean(opsOverview?.isClosed)}
                             className="w-full min-w-[180px] bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white"
                           />
                         </td>
                         <td className="text-right">
                           <button
                             onClick={() => saveExpenseRow(row)}
-                            disabled={entryBusy}
+                            disabled={entryBusy || Boolean(opsOverview?.isClosed)}
                             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-semibold"
                           >
-                            <Save className="w-3.5 h-3.5" />
-                            Save
+                            <Plus className="w-3.5 h-3.5" />
+                            Add
                           </button>
                         </td>
                       </tr>
@@ -617,7 +818,7 @@ export default function Finance() {
 
                   {(!opsOverview?.expenseRows || opsOverview.expenseRows.length === 0) && (
                     <tr>
-                      <td colSpan={5} className="py-8 text-center text-sm text-slate-600">
+                      <td colSpan={6} className="py-8 text-center text-sm text-slate-600">
                         Administrator has not configured expense names yet.
                       </td>
                     </tr>
@@ -734,7 +935,7 @@ export default function Finance() {
                         <td className="text-right">
                           <button
                             onClick={() => savePayrollRow(row)}
-                            disabled={entryBusy}
+                            disabled={entryBusy || Boolean(opsOverview?.isClosed)}
                             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold"
                           >
                             <Save className="w-3.5 h-3.5" />
@@ -1526,6 +1727,149 @@ export default function Finance() {
                 )}
                 Submit for Arrival Approval
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {archiveOpen && (
+        <div className="fixed inset-0 z-[140] bg-black/80 flex items-center justify-center p-4">
+          <div className="w-full max-w-6xl max-h-[88vh] overflow-hidden bg-[#070B14] border border-white/10 rounded-2xl flex flex-col">
+            <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Archive className="w-5 h-5 text-violet-400" />
+                  <h3 className="text-lg font-semibold text-white">Financial Archive</h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">Closed months are read-only snapshots.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setArchiveOpen(false); setSelectedArchive(null); }}
+                className="px-3 py-2 rounded-lg bg-white/5 text-slate-300 text-sm"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] min-h-0 flex-1">
+              <div className="border-r border-white/5 overflow-y-auto p-3 space-y-2">
+                {archiveBusy && archives.length === 0 && (
+                  <p className="text-sm text-slate-500 p-3">Loading archive...</p>
+                )}
+
+                {archives.map((item: any) => (
+                  <button
+                    key={item.monthKey}
+                    type="button"
+                    onClick={() => openArchive(item)}
+                    className={`w-full text-left rounded-xl border p-3 ${
+                      selectedArchive?.monthKey === item.monthKey
+                        ? 'bg-violet-500/10 border-violet-500/30'
+                        : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-white">{item.monthName || item.monthKey}</p>
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Closed by {item.closedByName || 'Manager'}
+                    </p>
+                    <div className="flex justify-between mt-2 text-[10px]">
+                      <span className="text-emerald-400">{money(item.summary?.approvedRevenue || 0)}</span>
+                      <span className={(item.summary?.netProfit || 0) >= 0 ? 'text-cyan-400' : 'text-rose-400'}>
+                        Net {money(item.summary?.netProfit || 0)}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+
+                {!archiveBusy && archives.length === 0 && (
+                  <p className="text-sm text-slate-600 p-3">No closed months yet.</p>
+                )}
+              </div>
+
+              <div className="overflow-y-auto p-5">
+                {!selectedArchive ? (
+                  <div className="min-h-[300px] flex flex-col items-center justify-center text-center">
+                    <FileSpreadsheet className="w-10 h-10 text-slate-700" />
+                    <p className="text-sm text-slate-500 mt-3">Choose a closed month to view its snapshot.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-5">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                      <div>
+                        <h4 className="text-xl font-semibold text-white">
+                          {selectedArchive.monthName || selectedArchive.monthKey}
+                        </h4>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Closed by {selectedArchive.closedByName || 'Manager'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => exportArchiveExcel(selectedArchive)}
+                        disabled={archiveBusy}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-semibold"
+                      >
+                        <Download className="w-4 h-4" />
+                        Export Excel
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <MiniTotal label="Revenue" value={selectedArchive.summary?.approvedRevenue || 0} />
+                      <MiniTotal label="Expenses" value={selectedArchive.summary?.totalExpenses || 0} />
+                      <MiniTotal label="Payroll" value={selectedArchive.summary?.totalPayroll || 0} />
+                      <MiniTotal label="Net Profit" value={selectedArchive.summary?.netProfit || 0} emphasis />
+                    </div>
+
+                    <div className="rounded-xl border border-white/5 overflow-hidden">
+                      <div className="px-4 py-3 border-b border-white/5">
+                        <p className="text-sm font-semibold text-white">Income</p>
+                      </div>
+                      <div className="overflow-x-auto max-h-56 overflow-y-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="text-slate-500">
+                            <tr><th className="p-3">Client</th><th>Amount</th><th>Method</th><th>Agent</th></tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5">
+                            {(selectedArchive.income || []).map((row: any) => (
+                              <tr key={row.id}>
+                                <td className="p-3 text-white">{row.clientFullName || '—'}</td>
+                                <td className="text-emerald-400">{money(row.amount || 0)}</td>
+                                <td className="text-slate-400">{row.method || '—'}</td>
+                                <td className="text-slate-400">{row.agentName || row.submittedByName || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-white/5 overflow-hidden">
+                      <div className="px-4 py-3 border-b border-white/5">
+                        <p className="text-sm font-semibold text-white">Expense Ledger</p>
+                      </div>
+                      <div className="overflow-x-auto max-h-56 overflow-y-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="text-slate-500">
+                            <tr><th className="p-3">Expense</th><th>Amount</th><th>Status</th><th>Comment</th></tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5">
+                            {(selectedArchive.expenses || []).map((row: any) => (
+                              <tr key={row.id}>
+                                <td className="p-3 text-white">{row.catalogName || 'Expense'}</td>
+                                <td className="text-rose-400">{money(row.amount || 0)}</td>
+                                <td className="text-slate-400">{row.status || '—'}</td>
+                                <td className="text-slate-400">{row.notes || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
