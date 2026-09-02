@@ -549,6 +549,22 @@ export default function App() {
   const currentUserRole = sessionUser?.role || 'Agent';
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const openStandaloneChat = () => {
+    const popup = window.open(
+      '/chat-app',
+      'camptainm-team-chat',
+      'popup=yes,width=1280,height=860,resizable=yes,scrollbars=yes'
+    );
+
+    // Browser popup blocking fallback keeps the existing working in-CRM chat.
+    if (!popup) {
+      setIsChatOpen(true);
+      return;
+    }
+
+    popup.focus();
+  };
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const [showLeadToast, setShowLeadToast] = useState(false);
@@ -654,7 +670,7 @@ export default function App() {
 
   // Dashboard "Message" buttons use this event to open the existing ChatPanel.
   useEffect(() => {
-    const handleOpenChat = () => setIsChatOpen(true);
+    const handleOpenChat = () => openStandaloneChat();
     window.addEventListener('crm:open-chat', handleOpenChat as EventListener);
 
     return () => {
@@ -834,6 +850,26 @@ export default function App() {
     <ErrorBoundary>
       <Router>
         <Routes>
+          <Route
+            path="/chat-app"
+            element={
+              isAuthenticated ? (
+                <div className="h-screen w-screen bg-[#050811] text-slate-300 overflow-hidden">
+                  <Suspense
+                    fallback={
+                      <div className="h-full flex items-center justify-center text-sm text-slate-500">
+                        Loading Team Chat...
+                      </div>
+                    }
+                  >
+                    <ChatPanel isOpen={true} onClose={() => {}} standalone />
+                  </Suspense>
+                </div>
+              ) : (
+                <Login />
+              )
+            }
+          />
           <Route path="/login" element={<Login />} />
           <Route
             path="/*"
@@ -841,7 +877,7 @@ export default function App() {
               isAuthenticated ? (
                 <div className="flex h-screen bg-[#050811] text-slate-300 font-sans selection:bg-blue-500/30 relative">
                   <Sidebar
-                    onOpenChat={() => setIsChatOpen(true)}
+                    onOpenChat={openStandaloneChat}
                     unreadChatCount={unreadChatCount}
                     sessionUser={sessionUser}
                     onAvatarUpdated={(avatarUrl) => {
