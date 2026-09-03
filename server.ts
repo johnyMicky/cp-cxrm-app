@@ -180,7 +180,9 @@ async function resolveAtlantUserProfile(uid: string, email?: string) {
   };
 }
 
-function resolveOperationalTelephonyProfile(userData: any) {
+function resolveOperationalTelephonyProfile(userData: any, requestedProviderId?: string) {
+  const requested = String(requestedProviderId || '').trim().toLowerCase();
+
   const profiles = Array.isArray(userData?.telephonyProfiles)
     ? userData.telephonyProfiles
         .map((item: any) => ({
@@ -194,16 +196,34 @@ function resolveOperationalTelephonyProfile(userData: any) {
         .filter((item: any) => item.providerId && item.extension && item.enabled)
     : [];
 
-  const defaultProfile = profiles.find((item: any) => item.isDefault);
-  if (defaultProfile?.providerKey === 'atlant') return defaultProfile;
+  // Provider adapters are deliberately explicit. Creating a provider/profile in
+  // Settings never makes it callable until its server integration exists.
+  const isIntegrated = (profile: any) => profile?.providerKey === 'atlant';
 
-  // Only Atlant is integrated today. Other provider profiles can already be
-  // configured in Settings and will become operational when their API adapter is added.
-  const atlantProfile = profiles.find((item: any) =>
-    item.providerKey === 'atlant' || item.providerId === 'atlant'
-  );
+  if (requested) {
+    const requestedProfile = profiles.find((item: any) =>
+      String(item.providerId).toLowerCase() === requested ||
+      String(item.providerKey).toLowerCase() === requested
+    );
 
-  if (atlantProfile) return atlantProfile;
+    if (requestedProfile && isIntegrated(requestedProfile)) {
+      return requestedProfile;
+    }
+
+    if (requestedProfile && !isIntegrated(requestedProfile)) {
+      const error: any = new Error(
+        `${requestedProfile.providerName || requestedProfile.providerId} is assigned to this Agent, but its CRM API integration is not active yet.`
+      );
+      error.code = 'VOIP_PROVIDER_NOT_INTEGRATED';
+      throw error;
+    }
+  }
+
+  const defaultProfile = profiles.find((item: any) => item.isDefault && isIntegrated(item));
+  if (defaultProfile) return defaultProfile;
+
+  const firstIntegrated = profiles.find((item: any) => isIntegrated(item));
+  if (firstIntegrated) return firstIntegrated;
 
   const legacyExtension = String(userData?.atlantExtension || '').trim();
   if (legacyExtension) {
@@ -381,7 +401,8 @@ app.post('/api/atlant/call', async (req, res) => {
       return res.status(404).json({ success: false, error: 'CRM user profile was not found.' });
     }
 
-    const telephonyProfile = resolveOperationalTelephonyProfile(userData);
+    const requestedProviderId = String(req.body?.providerId || '').trim();
+    const telephonyProfile = resolveOperationalTelephonyProfile(userData, requestedProviderId);
     const agentExtension = String(telephonyProfile?.extension || '').trim();
 
     if (!telephonyProfile || !agentExtension) {
@@ -501,10 +522,15 @@ app.post('/api/atlant/call', async (req, res) => {
     console.error('Atlant Click2Call server error:', error);
 
     const unauthorized = /token|auth|firebase id token/i.test(String(error?.message || ''));
+    const providerNotIntegrated = String(error?.code || '') === 'VOIP_PROVIDER_NOT_INTEGRATED';
 
-    return res.status(unauthorized ? 401 : 500).json({
+    return res.status(unauthorized ? 401 : providerNotIntegrated ? 400 : 500).json({
       success: false,
-      error: unauthorized ? 'Unauthorized' : 'Unable to initiate Atlant call.'
+      error: unauthorized
+        ? 'Unauthorized'
+        : providerNotIntegrated
+          ? String(error?.message || 'Selected VOIP provider is not integrated.')
+          : 'Unable to initiate Atlant call.'
     });
   }
 });
@@ -756,7 +782,8 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
       return res.status(403).json({ success: false, error: 'Auto Dialer is available to Agents only.' });
     }
 
-    const telephonyProfile = resolveOperationalTelephonyProfile(userData);
+    const requestedProviderId = String(req.body?.providerId || '').trim();
+    const telephonyProfile = resolveOperationalTelephonyProfile(userData, requestedProviderId);
     const agentExtension = String(telephonyProfile?.extension || '').trim();
     if (!telephonyProfile || !agentExtension) {
       return res.status(400).json({
@@ -906,6 +933,13 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Atlant Auto Dialer start error:', error);
+
+    if (String(error?.code || '') === 'VOIP_PROVIDER_NOT_INTEGRATED') {
+      return res.status(400).json({
+        success: false,
+        error: String(error?.message || 'Selected VOIP provider is not integrated.')
+      });
+    }
     const unauthorized = /token|auth|firebase id token/i.test(String(error?.message || ''));
 
     return res.status(unauthorized ? 401 : 500).json({
