@@ -4771,7 +4771,7 @@ export const firestoreService = {
     return cleanExtension;
   },
 
-  async initiateAtlantCall(number: string) {
+  async initiateAtlantCall(number: string, providerId?: string) {
     const destination = String(number || '').trim();
     if (!destination) throw new Error('Phone number is required.');
 
@@ -4788,7 +4788,10 @@ export const firestoreService = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ number: destination })
+      body: JSON.stringify({
+        number: destination,
+        providerId: String(providerId || '').trim()
+      })
     });
 
     let data: any = {};
@@ -4810,7 +4813,10 @@ export const firestoreService = {
   },
 
 
-  async startAtlantAutoDialer(queue: Array<{ leadId: string; name?: string; phone: string }>) {
+  async startAtlantAutoDialer(
+    queue: Array<{ leadId: string; name?: string; phone: string }>,
+    providerId?: string
+  ) {
     const currentAuthUser = auth.currentUser;
     if (!currentAuthUser) {
       throw new Error('Your session has expired. Please sign in again.');
@@ -4823,7 +4829,10 @@ export const firestoreService = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ queue })
+      body: JSON.stringify({
+        queue,
+        providerId: String(providerId || '').trim()
+      })
     });
 
     const data = await response.json().catch(() => ({}));
