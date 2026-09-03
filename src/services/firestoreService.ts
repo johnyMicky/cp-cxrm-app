@@ -594,6 +594,54 @@ export const firestoreService = {
     return downloadUrl;
   },
 
+  async getVoiceAssistantDictionary(currentUser?: {
+    id?: string | null;
+    role?: string | null;
+    teamId?: string | null;
+  }) {
+    const role = String(currentUser?.role || '');
+    const userId = String(currentUser?.id || '');
+    let teamId = String(currentUser?.teamId || '');
+
+    const statusesPromise = this.getLeadStatuses();
+
+    let usersPromise: Promise<any[]> = Promise.resolve([]);
+
+    if (['Administrator', 'Manager', 'Agent'].includes(role)) {
+      usersPromise = this.getUsers();
+    } else if (role === 'Team Leader') {
+      if (!teamId && userId) {
+        const freshUser = await this.getUser(userId);
+        teamId = String(freshUser?.teamId || '');
+      }
+      usersPromise = teamId ? this.getUsersByTeam(teamId) : Promise.resolve([]);
+    }
+
+    const [statuses, users] = await Promise.all([statusesPromise, usersPromise]);
+
+    const allowedAgentRoles =
+      role === 'Team Leader'
+        ? new Set(['Agent'])
+        : new Set(['Agent', 'Team Leader', 'Manager']);
+
+    return {
+      statuses: (statuses || [])
+        .map((item: any) => String(item?.name || '').trim())
+        .filter(Boolean),
+      agents: (users || [])
+        .filter((item: any) => allowedAgentRoles.has(String(item?.role || '')))
+        .map((item: any) => ({
+          id: String(item?.id || ''),
+          name: String(item?.name || '').trim(),
+          email: String(item?.email || '').trim(),
+          role: String(item?.role || ''),
+          teamId: String(item?.teamId || ''),
+          teamName: String(item?.teamName || '')
+        }))
+        .filter((item: any) => item.id && (item.name || item.email))
+    };
+  },
+
   async getLeadStatuses(includeInactive = false) {
     const snapshot = await getDocs(collection(db, LEAD_STATUSES_COL));
 
