@@ -51,6 +51,7 @@ const FINANCE_PAYROLL_MONTHLY_COL = "finance_payroll_monthly";
 const FINANCE_MONTH_ARCHIVES_COL = "finance_month_archives";
 const LEAD_STATUSES_COL = "lead_statuses";
 const ATLANT_LIVE_CALLS_COL = "atlant_live_calls";
+const VOIP_PROVIDERS_COL = "voip_providers";
 const ADMIN_EMAIL = "c.morgan@ghost.com";
 
 const DEFAULT_LEAD_STATUS_NAMES = [
@@ -299,7 +300,8 @@ export const firestoreService = {
         password: userData?.password || '',
         teamId: userData?.teamId || '',
         teamName: userData?.teamName || '',
-        atlantExtension: String(userData?.atlantExtension || '').trim()
+        atlantExtension: String(userData?.atlantExtension || '').trim(),
+        telephonyProfiles: Array.isArray(userData?.telephonyProfiles) ? userData.telephonyProfiles : []
       };
 
       await setDoc(userDocRef, finalUserData, { merge: true });
@@ -793,7 +795,8 @@ export const firestoreService = {
             createdAt: data.createdAt || null,
             teamId: data.teamId || '',
             teamName: data.teamName || '',
-            atlantExtension: data.atlantExtension || ''
+            atlantExtension: data.atlantExtension || '',
+            telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
           };
         });
 
@@ -825,7 +828,8 @@ export const firestoreService = {
           createdAt: data.createdAt || null,
           teamId: data.teamId || '',
           teamName: data.teamName || '',
-          atlantExtension: String(data.atlantExtension || '').trim()
+          atlantExtension: String(data.atlantExtension || '').trim(),
+          telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
         };
       });
     } catch (err: any) {
@@ -858,7 +862,8 @@ export const firestoreService = {
       createdAt: data.createdAt || null,
       teamId: data.teamId || '',
       teamName: data.teamName || '',
-      atlantExtension: String(data.atlantExtension || '').trim()
+      atlantExtension: String(data.atlantExtension || '').trim(),
+      telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
     };
   },
 
@@ -4479,6 +4484,205 @@ export const firestoreService = {
     );
   },
 
+  // VOIP Provider / Agent Telephony Profiles
+  async initializeVoipProviders(adminUserId: string) {
+    if (!adminUserId) throw new Error('Administrator is required.');
+
+    const adminUser = await this.getUser(String(adminUserId));
+    const adminEmail = normalizeEmail(adminUser?.email || '');
+
+    if (!adminUser || (adminUser.role !== 'Administrator' && !isAdminEmail(adminEmail))) {
+      throw new Error('Only Administrators can configure VOIP providers.');
+    }
+
+    const atlantRef = doc(db, VOIP_PROVIDERS_COL, 'atlant');
+    const atlantSnap = await getDoc(atlantRef);
+
+    if (!atlantSnap.exists()) {
+      await setDoc(atlantRef, {
+        name: 'Atlant',
+        slug: 'atlant',
+        isActive: true,
+        integrationKey: 'atlant',
+        integrationStatus: 'integrated',
+        supportsClickToCall: true,
+        supportsAutoDialer: true,
+        supportsLiveCalls: true,
+        supportsWhisper: false,
+        supportsBarge: false,
+        createdAt: serverTimestamp(),
+        createdBy: String(adminUserId)
+      });
+    }
+
+    return true;
+  },
+
+  async getVoipProviders(includeInactive = false) {
+    const snapshot = await getDocs(collection(db, VOIP_PROVIDERS_COL));
+    return snapshot.docs
+      .map(item => ({ id: item.id, ...item.data() } as any))
+      .filter((item: any) => includeInactive || item.isActive !== false)
+      .sort((a: any, b: any) =>
+        String(a.name || '').localeCompare(String(b.name || ''))
+      );
+  },
+
+  async createVoipProvider(name: string, adminUserId: string) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) throw new Error('Provider name is required.');
+
+    const adminUser = await this.getUser(String(adminUserId));
+    const adminEmail = normalizeEmail(adminUser?.email || '');
+    if (!adminUser || (adminUser.role !== 'Administrator' && !isAdminEmail(adminEmail))) {
+      throw new Error('Only Administrators can configure VOIP providers.');
+    }
+
+    const slug =
+      cleanName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || `provider-${Date.now()}`;
+
+    const existing = await getDoc(doc(db, VOIP_PROVIDERS_COL, slug));
+    if (existing.exists()) throw new Error('A provider with this name already exists.');
+
+    await setDoc(doc(db, VOIP_PROVIDERS_COL, slug), {
+      name: cleanName,
+      slug,
+      isActive: true,
+      integrationKey: slug === 'atlant' ? 'atlant' : 'profile_only',
+      integrationStatus: slug === 'atlant' ? 'integrated' : 'profile_only',
+      supportsClickToCall: slug === 'atlant',
+      supportsAutoDialer: slug === 'atlant',
+      supportsLiveCalls: slug === 'atlant',
+      supportsWhisper: false,
+      supportsBarge: false,
+      createdAt: serverTimestamp(),
+      createdBy: String(adminUserId)
+    });
+
+    return slug;
+  },
+
+  async setVoipProviderActive(providerId: string, isActive: boolean, adminUserId: string) {
+    const adminUser = await this.getUser(String(adminUserId));
+    const adminEmail = normalizeEmail(adminUser?.email || '');
+    if (!adminUser || (adminUser.role !== 'Administrator' && !isAdminEmail(adminEmail))) {
+      throw new Error('Only Administrators can configure VOIP providers.');
+    }
+
+    if (String(providerId) === 'atlant' && isActive === false) {
+      throw new Error('Atlant cannot be disabled while it is the active CRM telephony integration.');
+    }
+
+    await setDoc(doc(db, VOIP_PROVIDERS_COL, String(providerId)), {
+      isActive: Boolean(isActive),
+      updatedAt: serverTimestamp(),
+      updatedBy: String(adminUserId)
+    }, { merge: true });
+  },
+
+  async saveUserTelephonyProfiles(
+    userId: string,
+    profiles: Array<{
+      providerId: string;
+      providerName?: string;
+      extension: string;
+      isDefault?: boolean;
+      enabled?: boolean;
+    }>,
+    adminUserId: string
+  ) {
+    if (!userId || !adminUserId) throw new Error('User and Administrator are required.');
+
+    const adminUser = await this.getUser(String(adminUserId));
+    const adminEmail = normalizeEmail(adminUser?.email || '');
+    if (!adminUser || (adminUser.role !== 'Administrator' && !isAdminEmail(adminEmail))) {
+      throw new Error('Only Administrators can configure VOIP profiles.');
+    }
+
+    const targetRef = doc(db, USERS_COL, String(userId));
+    const targetSnap = await getDoc(targetRef);
+    if (!targetSnap.exists()) throw new Error('CRM user was not found.');
+
+    const providers = await this.getVoipProviders(true);
+    const providerMap = new Map(
+      providers.map((provider: any) => [String(provider.id), provider])
+    );
+
+    const seen = new Set<string>();
+    const cleaned = (Array.isArray(profiles) ? profiles : [])
+      .map((profile: any) => {
+        const providerId = String(profile?.providerId || '').trim();
+        const extension = String(profile?.extension || '').trim();
+        if (!providerId || !extension) return null;
+        if (seen.has(providerId)) return null;
+
+        const provider: any = providerMap.get(providerId);
+        if (!provider) return null;
+
+        if (!/^[A-Za-z0-9@._+\-]+$/.test(extension)) {
+          throw new Error(`Unsupported extension format for ${provider.name || providerId}.`);
+        }
+
+        seen.add(providerId);
+        return {
+          providerId,
+          providerName: String(provider.name || providerId),
+          providerKey: String(provider.integrationKey || provider.slug || providerId),
+          extension,
+          enabled: profile?.enabled !== false,
+          isDefault: Boolean(profile?.isDefault)
+        };
+      })
+      .filter(Boolean) as any[];
+
+    // Exactly one enabled operational default when possible.
+    const requestedDefault = cleaned.find(item => item.isDefault && item.enabled);
+    const firstIntegrated = cleaned.find(item => {
+      const provider: any = providerMap.get(item.providerId);
+      return item.enabled && provider?.integrationStatus === 'integrated';
+    });
+    const defaultProfile = requestedDefault || firstIntegrated || cleaned.find(item => item.enabled);
+
+    cleaned.forEach(item => {
+      item.isDefault = Boolean(defaultProfile && item.providerId === defaultProfile.providerId);
+    });
+
+    const targetData = targetSnap.data() as any;
+    const targetEmail = normalizeEmail(targetData?.email || '');
+    const refs = new Map<string, any>();
+    refs.set(String(userId), targetRef);
+
+    if (targetEmail) {
+      const sameEmail = await getDocs(
+        query(collection(db, USERS_COL), where('email', '==', targetEmail))
+      );
+      sameEmail.docs.forEach(userDoc => {
+        refs.set(userDoc.id, doc(db, USERS_COL, userDoc.id));
+      });
+    }
+
+    const atlantProfile = cleaned.find(item =>
+      item.providerId === 'atlant' || item.providerKey === 'atlant'
+    );
+
+    const batch = writeBatch(db);
+    refs.forEach(ref => {
+      batch.set(ref, {
+        telephonyProfiles: cleaned,
+        // Backward compatibility: keep the old working Atlant field synchronized.
+        atlantExtension: String(atlantProfile?.extension || ''),
+        telephonyUpdatedAt: serverTimestamp(),
+        telephonyUpdatedBy: String(adminUserId)
+      }, { merge: true });
+    });
+
+    await batch.commit();
+    return cleaned;
+  },
+
   // Atlant Click2Call
   async setAtlantExtension(userId: string, extension: string, adminUserId: string) {
     if (!userId || !adminUserId) throw new Error('User and Administrator are required.');
@@ -4533,6 +4737,36 @@ export const firestoreService = {
     });
 
     await batch.commit();
+
+    // Keep new multi-provider telephony profiles backward-compatible with the
+    // existing Atlant-only Settings workflow.
+    const currentProfiles = Array.isArray(targetData?.telephonyProfiles)
+      ? [...targetData.telephonyProfiles]
+      : [];
+    const withoutAtlant = currentProfiles.filter(
+      (item: any) => String(item?.providerId || item?.providerKey || '') !== 'atlant'
+    );
+
+    if (cleanExtension) {
+      withoutAtlant.unshift({
+        providerId: 'atlant',
+        providerName: 'Atlant',
+        providerKey: 'atlant',
+        extension: cleanExtension,
+        enabled: true,
+        isDefault: !withoutAtlant.some((item: any) => item?.isDefault === true)
+      });
+    }
+
+    const profileBatch = writeBatch(db);
+    refs.forEach(ref => {
+      profileBatch.set(ref, {
+        telephonyProfiles: withoutAtlant,
+        telephonyUpdatedAt: serverTimestamp(),
+        telephonyUpdatedBy: String(adminUserId)
+      }, { merge: true });
+    });
+    await profileBatch.commit();
 
     return cleanExtension;
   },
