@@ -168,6 +168,11 @@ export default function Leads() {
   const [callingLeadId, setCallingLeadId] = useState<string | null>(null);
   const [autoDialerSession, setAutoDialerSession] = useState<any>(null);
   const [isAutoDialerChanging, setIsAutoDialerChanging] = useState(false);
+  const [telephonyProfiles, setTelephonyProfiles] = useState<any[]>([]);
+  const [telephonyProviders, setTelephonyProviders] = useState<any[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState('');
+  const [telephonyLoaded, setTelephonyLoaded] = useState(false);
+
   const [quickNoteId, setQuickNoteId] = useState<string | null>(null);
   const [quickNoteText, setQuickNoteText] = useState('');
   const [isAssigning, setIsAssigning] = useState(false);
@@ -206,6 +211,51 @@ export default function Leads() {
     id: localStorage.getItem('userId'),
     role: localStorage.getItem('userRole') || 'Agent' 
   };
+
+  const providerStorageKey = currentUser.id
+    ? `cpcrm_selected_voip_provider_${currentUser.id}`
+    : 'cpcrm_selected_voip_provider';
+
+  const availableTelephonyProfiles = useMemo(() => {
+    const providerMap = new Map(
+      telephonyProviders.map((provider: any) => [String(provider.id), provider])
+    );
+
+    return telephonyProfiles
+      .filter((profile: any) =>
+        profile?.enabled !== false &&
+        String(profile?.extension || '').trim()
+      )
+      .map((profile: any) => {
+        const provider: any = providerMap.get(String(profile.providerId || ''));
+        return {
+          ...profile,
+          providerName: String(
+            provider?.name ||
+            profile.providerName ||
+            profile.providerId ||
+            'Provider'
+          ),
+          integrated:
+            provider?.integrationStatus === 'integrated' ||
+            String(profile.providerKey || profile.providerId || '').toLowerCase() === 'atlant'
+        };
+      });
+  }, [telephonyProfiles, telephonyProviders]);
+
+  const selectedTelephonyProfile = useMemo(
+    () =>
+      availableTelephonyProfiles.find(
+        (profile: any) => String(profile.providerId) === String(selectedProviderId)
+      ) ||
+      availableTelephonyProfiles.find(
+        (profile: any) => profile.isDefault && profile.integrated
+      ) ||
+      availableTelephonyProfiles.find((profile: any) => profile.integrated) ||
+      availableTelephonyProfiles[0] ||
+      null,
+    [availableTelephonyProfiles, selectedProviderId]
+  );
 
   // Build Source/Country options dynamically from the leads already visible to this user.
   // Keep the first original spelling, but deduplicate case-insensitively.
@@ -247,6 +297,73 @@ export default function Leads() {
     ),
     [statuses]
   );
+
+  useEffect(() => {
+    if (currentUser.role !== 'Agent' || !currentUser.id) {
+      setTelephonyProfiles([]);
+      setTelephonyProviders([]);
+      setSelectedProviderId('');
+      setTelephonyLoaded(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    Promise.all([
+      firestoreService.getUser(String(currentUser.id)),
+      firestoreService.getVoipProviders(true)
+    ])
+      .then(([user, providers]: any[]) => {
+        if (cancelled) return;
+
+        let profiles = Array.isArray(user?.telephonyProfiles)
+          ? user.telephonyProfiles.map((profile: any) => ({ ...profile }))
+          : [];
+
+        const legacyAtlant = String(user?.atlantExtension || '').trim();
+        const hasAtlant = profiles.some((profile: any) =>
+          String(profile?.providerId || profile?.providerKey || '').toLowerCase() === 'atlant'
+        );
+
+        if (legacyAtlant && !hasAtlant) {
+          profiles.unshift({
+            providerId: 'atlant',
+            providerName: 'Atlant',
+            providerKey: 'atlant',
+            extension: legacyAtlant,
+            enabled: true,
+            isDefault: !profiles.some((profile: any) => profile?.isDefault === true)
+          });
+        }
+
+        setTelephonyProfiles(profiles);
+        setTelephonyProviders(Array.isArray(providers) ? providers : []);
+
+        const savedProviderId = sessionStorage.getItem(
+          `cpcrm_selected_voip_provider_${currentUser.id}`
+        );
+
+        const savedProfile = profiles.find((profile: any) =>
+          String(profile?.providerId || '') === String(savedProviderId || '')
+        );
+        const defaultProfile =
+          profiles.find((profile: any) => profile?.isDefault === true) ||
+          profiles[0];
+
+        setSelectedProviderId(
+          String(savedProfile?.providerId || defaultProfile?.providerId || '')
+        );
+        setTelephonyLoaded(true);
+      })
+      .catch(err => {
+        console.error('Failed to load Agent telephony profiles:', err);
+        if (!cancelled) setTelephonyLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser.id, currentUser.role]);
 
   useEffect(() => {
     let cancelled = false;
@@ -351,6 +468,28 @@ export default function Leads() {
   }, [leads.length]);
 
 
+  const selectTelephonyProvider = (providerId: string) => {
+    const profile = availableTelephonyProfiles.find(
+      (item: any) => String(item.providerId) === String(providerId)
+    );
+
+    if (!profile) return;
+
+    if (!profile.integrated) {
+      showToastMessage(`${profile.providerName} is assigned, but its API integration is not active yet.`);
+      return;
+    }
+
+    if (autoDialerSession?.enabled) {
+      showToastMessage('Turn Auto Dialer off before changing VOIP provider.');
+      return;
+    }
+
+    setSelectedProviderId(String(providerId));
+    sessionStorage.setItem(providerStorageKey, String(providerId));
+    showToastMessage(`VOIP provider changed to ${profile.providerName} ${profile.extension}.`);
+  };
+
   const showToastMessage = (message: string) => {
     setToastMessage(message);
     setShowToast(true);
@@ -377,8 +516,10 @@ export default function Leads() {
     setCallingLeadId(leadId);
 
     try {
-      await firestoreService.initiateAtlantCall(lead.phone);
-      showToastMessage(`Call initiated to ${lead.name || lead.phone}`);
+      await firestoreService.initiateAtlantCall(lead.phone, selectedTelephonyProfile?.providerId);
+      showToastMessage(
+        `Call initiated via ${selectedTelephonyProfile?.providerName || 'VOIP'} to ${lead.name || lead.phone}`
+      );
     } catch (err: any) {
       console.error('Atlant Click2Call failed:', err);
       showToastMessage(`Call failed: ${err?.message || 'Unknown error'}`);
@@ -426,7 +567,7 @@ export default function Leads() {
         return;
       }
 
-      const result = await firestoreService.startAtlantAutoDialer(queue);
+      const result = await firestoreService.startAtlantAutoDialer(queue, selectedTelephonyProfile?.providerId);
       setAutoDialerSession(result?.session || null);
 
       if (result?.resumed === true) {
@@ -2045,11 +2186,50 @@ export default function Leads() {
                     <span>Phone</span>
                     {currentUser.role === 'Agent' && (
                       <div className="flex items-center gap-2 normal-case tracking-normal">
+                        {telephonyLoaded && availableTelephonyProfiles.length > 0 && (
+                          availableTelephonyProfiles.length === 1 ? (
+                            <span
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-2 py-1 text-[9px] font-bold text-cyan-300 whitespace-nowrap"
+                              title="Current VOIP provider"
+                            >
+                              {availableTelephonyProfiles[0].providerName}
+                              <span className="text-white">{availableTelephonyProfiles[0].extension}</span>
+                            </span>
+                          ) : (
+                            <select
+                              value={selectedTelephonyProfile?.providerId || ''}
+                              onChange={e => selectTelephonyProvider(e.target.value)}
+                              disabled={autoDialerSession?.enabled === true}
+                              className="max-w-[155px] rounded-lg border border-cyan-500/20 bg-[#0F172A] px-2 py-1 text-[9px] font-bold text-cyan-300 focus:outline-none disabled:opacity-50"
+                              title={
+                                autoDialerSession?.enabled
+                                  ? 'Turn Auto Dialer off before changing provider'
+                                  : 'Choose VOIP provider'
+                              }
+                            >
+                              {availableTelephonyProfiles.map((profile: any) => (
+                                <option
+                                  key={profile.providerId}
+                                  value={profile.providerId}
+                                  disabled={!profile.integrated}
+                                  className="bg-[#0A0F1C] text-slate-300"
+                                >
+                                  {profile.providerName} · {profile.extension}
+                                  {profile.integrated ? '' : ' · API pending'}
+                                </option>
+                              ))}
+                            </select>
+                          )
+                        )}
                         <span className="text-[9px] font-bold text-slate-500 uppercase">Auto</span>
                         <button
                           type="button"
                           onClick={handleAutoDialerToggle}
-                          disabled={isAutoDialerChanging}
+                          disabled={
+                            isAutoDialerChanging ||
+                            !selectedTelephonyProfile ||
+                            selectedTelephonyProfile.integrated !== true
+                          }
                           className={`relative inline-flex h-5 w-9 items-center rounded-full border ${
                             autoDialerSession?.enabled
                               ? 'bg-emerald-500/20 border-emerald-500/50'
