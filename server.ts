@@ -149,12 +149,75 @@ async function resolveAtlantUserProfile(uid: string, email?: string) {
     }, { merge: true });
   }
 
+  const mergedProfiles = Array.isArray((exactData as any).telephonyProfiles)
+    ? [...(exactData as any).telephonyProfiles]
+    : Array.isArray((preferred as any).telephonyProfiles)
+      ? [...(preferred as any).telephonyProfiles]
+      : [];
+
+  if (
+    resolvedExtension &&
+    !mergedProfiles.some((item: any) =>
+      String(item?.providerId || item?.providerKey || '').toLowerCase() === 'atlant'
+    )
+  ) {
+    mergedProfiles.unshift({
+      providerId: 'atlant',
+      providerName: 'Atlant',
+      providerKey: 'atlant',
+      extension: resolvedExtension,
+      enabled: true,
+      isDefault: !mergedProfiles.some((item: any) => item?.isDefault === true)
+    });
+  }
+
   return {
     id: cleanUid,
     ...preferred,
     ...exactData,
-    atlantExtension: resolvedExtension
+    atlantExtension: resolvedExtension,
+    telephonyProfiles: mergedProfiles
   };
+}
+
+function resolveOperationalTelephonyProfile(userData: any) {
+  const profiles = Array.isArray(userData?.telephonyProfiles)
+    ? userData.telephonyProfiles
+        .map((item: any) => ({
+          providerId: String(item?.providerId || '').trim(),
+          providerName: String(item?.providerName || item?.providerId || '').trim(),
+          providerKey: String(item?.providerKey || item?.providerId || '').trim().toLowerCase(),
+          extension: String(item?.extension || '').trim(),
+          enabled: item?.enabled !== false,
+          isDefault: item?.isDefault === true
+        }))
+        .filter((item: any) => item.providerId && item.extension && item.enabled)
+    : [];
+
+  const defaultProfile = profiles.find((item: any) => item.isDefault);
+  if (defaultProfile?.providerKey === 'atlant') return defaultProfile;
+
+  // Only Atlant is integrated today. Other provider profiles can already be
+  // configured in Settings and will become operational when their API adapter is added.
+  const atlantProfile = profiles.find((item: any) =>
+    item.providerKey === 'atlant' || item.providerId === 'atlant'
+  );
+
+  if (atlantProfile) return atlantProfile;
+
+  const legacyExtension = String(userData?.atlantExtension || '').trim();
+  if (legacyExtension) {
+    return {
+      providerId: 'atlant',
+      providerName: 'Atlant',
+      providerKey: 'atlant',
+      extension: legacyExtension,
+      enabled: true,
+      isDefault: true
+    };
+  }
+
+  return null;
 }
 
 function getRequestIp(req: express.Request) {
@@ -318,12 +381,13 @@ app.post('/api/atlant/call', async (req, res) => {
       return res.status(404).json({ success: false, error: 'CRM user profile was not found.' });
     }
 
-    const agentExtension = String(userData.atlantExtension || '').trim();
+    const telephonyProfile = resolveOperationalTelephonyProfile(userData);
+    const agentExtension = String(telephonyProfile?.extension || '').trim();
 
-    if (!agentExtension) {
+    if (!telephonyProfile || !agentExtension) {
       return res.status(400).json({
         success: false,
-        error: 'Atlant extension is not configured for your CRM account. Ask an Administrator to configure it in Settings.'
+        error: 'No integrated VOIP extension is configured for your CRM account. Ask an Administrator to configure Telephony in Settings.'
       });
     }
 
@@ -401,7 +465,9 @@ app.post('/api/atlant/call', async (req, res) => {
 
       await db.collection(ATLANT_LIVE_CALLS_COL).doc(manualCallId).set({
         callId: manualCallId,
-        provider: 'atlant',
+        provider: String(telephonyProfile.providerKey || 'atlant'),
+        providerId: String(telephonyProfile.providerId || 'atlant'),
+        providerName: String(telephonyProfile.providerName || 'Atlant'),
         mode: 'manual',
         active: true,
         state: 'dialing',
@@ -427,7 +493,9 @@ app.post('/api/atlant/call', async (req, res) => {
     return res.status(200).json({
       success: true,
       callId: manualCallId || null,
-      agent: agentExtension
+      agent: agentExtension,
+      provider: String(telephonyProfile.providerKey || 'atlant'),
+      providerName: String(telephonyProfile.providerName || 'Atlant')
     });
   } catch (error: any) {
     console.error('Atlant Click2Call server error:', error);
@@ -627,7 +695,9 @@ async function startNextAtlantDialerCall(userId: string) {
 
     await db.collection(ATLANT_LIVE_CALLS_COL).doc(provider.callId).set({
       callId: provider.callId,
-      provider: 'atlant',
+      provider: String(session.providerKey || 'atlant'),
+      providerId: String(session.providerId || 'atlant'),
+      providerName: String(session.providerName || 'Atlant'),
       mode: 'auto',
       active: true,
       state: 'dialing',
@@ -686,11 +756,12 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
       return res.status(403).json({ success: false, error: 'Auto Dialer is available to Agents only.' });
     }
 
-    const agentExtension = String(userData.atlantExtension || '').trim();
-    if (!agentExtension) {
+    const telephonyProfile = resolveOperationalTelephonyProfile(userData);
+    const agentExtension = String(telephonyProfile?.extension || '').trim();
+    if (!telephonyProfile || !agentExtension) {
       return res.status(400).json({
         success: false,
-        error: 'Atlant extension is not configured for your CRM account.'
+        error: 'No integrated VOIP extension is configured for your CRM account.'
       });
     }
 
@@ -778,6 +849,9 @@ app.post('/api/atlant/dialer/start', async (req, res) => {
       teamId: userData.teamId || '',
       teamName: userData.teamName || '',
       agentExtension,
+      providerId: String(telephonyProfile.providerId || 'atlant'),
+      providerKey: String(telephonyProfile.providerKey || 'atlant'),
+      providerName: String(telephonyProfile.providerName || 'Atlant'),
       enabled: true,
       state: 'starting',
       queue,
