@@ -113,6 +113,8 @@ export default function Leads() {
   const voiceCommandId = searchParams.get('voice') || '';
   const voiceSearch = searchParams.get('q') || '';
   const voiceCountry = searchParams.get('country') || '';
+  const voiceSource = searchParams.get('source') || '';
+  const voiceAgentId = searchParams.get('agent') || '';
 
   const [leads, setLeads] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
@@ -160,16 +162,18 @@ export default function Leads() {
 
     const nextStatus = String(dashboardStatus || '').trim();
     const nextCountry = String(voiceCountry || '').trim();
+    const nextSource = String(voiceSource || '').trim();
+    const nextAgentId = String(voiceAgentId || '').trim();
     const nextSearch = String(voiceSearch || '').trim();
 
     setSearch(nextSearch);
     setFilters({
       statuses: nextStatus ? [normalizeStatus(nextStatus)] : [],
-      sources: [],
-      agents: [],
+      sources: nextSource ? [nextSource] : [],
+      agents: nextAgentId ? [nextAgentId] : [],
       countries: nextCountry ? [nextCountry] : []
     });
-    setShowFilters(Boolean(nextStatus || nextCountry));
+    setShowFilters(Boolean(nextStatus || nextCountry || nextSource || nextAgentId));
     setSelectedLeads([]);
     setVisibleLeadCount(100);
 
@@ -319,6 +323,35 @@ export default function Leads() {
     const query = safeLower(countrySearch);
     return countryOptions.filter(value => !query || safeLower(value).includes(query));
   }, [countryOptions, countrySearch]);
+
+  // Reuse data already present on the Leads screen as the Voice Assistant's
+  // live dictionary. This is only a tiny sessionStorage write — no extra query,
+  // listener or API request is introduced.
+  useEffect(() => {
+    const payload = {
+      updatedAt: Date.now(),
+      countries: countryOptions,
+      sources: sourceOptions,
+      statuses,
+      agents: agents.map((agent: any) => ({
+        id: String(agent?.id || ''),
+        name: String(agent?.name || '').trim(),
+        email: String(agent?.email || '').trim(),
+        role: String(agent?.role || ''),
+        teamId: String(agent?.teamId || ''),
+        teamName: String(agent?.teamName || '')
+      }))
+    };
+
+    try {
+      sessionStorage.setItem(
+        'cpcrm_voice_leads_dictionary_v2',
+        JSON.stringify(payload)
+      );
+    } catch {
+      // Storage availability must never affect the working Leads page.
+    }
+  }, [countryOptions, sourceOptions, statuses, agents]);
 
   const reshuffleSourceStatuses = useMemo(
     () => statuses.filter(
