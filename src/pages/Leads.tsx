@@ -110,6 +110,9 @@ export default function Leads() {
   const dashboardStatus = searchParams.get('status') || '';
   const dashboardView = searchParams.get('view') || '';
   const dashboardRange = searchParams.get('range') || 'all';
+  const voiceCommandId = searchParams.get('voice') || '';
+  const voiceSearch = searchParams.get('q') || '';
+  const voiceCountry = searchParams.get('country') || '';
 
   const [leads, setLeads] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
@@ -149,6 +152,32 @@ export default function Leads() {
             : []) as string[]
     };
   });
+  // App-level Voice Assistant sends commands through URL params so navigation
+  // works from every CRM page. Apply them to the existing Leads filters/search
+  // without adding a new query, listener or duplicate lead data source.
+  useEffect(() => {
+    if (!voiceCommandId) return;
+
+    const nextStatus = String(dashboardStatus || '').trim();
+    const nextCountry = String(voiceCountry || '').trim();
+    const nextSearch = String(voiceSearch || '').trim();
+
+    setSearch(nextSearch);
+    setFilters({
+      statuses: nextStatus ? [normalizeStatus(nextStatus)] : [],
+      sources: [],
+      agents: [],
+      countries: nextCountry ? [nextCountry] : []
+    });
+    setShowFilters(Boolean(nextStatus || nextCountry));
+    setSelectedLeads([]);
+    setVisibleLeadCount(100);
+
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    });
+  }, [voiceCommandId]);
+
   const [activeDropdown, setActiveDropdown] = useState<'status' | 'agent' | 'source' | 'country' | 'bulkStatus' | 'bulkAssign' | null>(null);
   const [statusSearch, setStatusSearch] = useState('');
   const [agentSearch, setAgentSearch] = useState('');
