@@ -23,6 +23,7 @@ const Finance = lazy(() => import('./pages/Finance'));
 const LiveCalls = lazy(() => import('./pages/LiveCalls'));
 const SecureInfo = lazy(() => import('./pages/SecureInfo'));
 const ChatPanel = lazy(() => import('./components/ChatPanel'));
+const VoiceAssistant = lazy(() => import('./components/VoiceAssistant'));
 
 import { auth, db, authPersistenceReady } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -911,6 +912,10 @@ export default function App() {
                       </div>
                     </div>
                   )}
+
+                  <Suspense fallback={null}>
+                    <VoiceAssistant role={currentUserRole} />
+                  </Suspense>
 
                   <main className="flex-1 overflow-auto">
                     <Suspense
