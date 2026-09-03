@@ -77,6 +77,86 @@ async function isAdministrator(uid: string, email?: string) {
   return userDoc.exists && userDoc.data()?.role === 'Administrator';
 }
 
+async function resolveAtlantUserProfile(uid: string, email?: string) {
+  const cleanUid = String(uid || '').trim();
+  const cleanEmail = String(email || '').trim().toLowerCase();
+
+  if (!cleanUid) return null;
+
+  const exactRef = db.collection('users').doc(cleanUid);
+  const exactSnap = await exactRef.get();
+  const exactData = exactSnap.exists ? (exactSnap.data() || {}) : {};
+
+  const exactExtension = String(exactData.atlantExtension || '').trim();
+  if (exactSnap.exists && exactExtension) {
+    return {
+      id: cleanUid,
+      ...exactData,
+      atlantExtension: exactExtension
+    };
+  }
+
+  const effectiveEmail = String(
+    exactData.email ||
+    cleanEmail
+  ).trim().toLowerCase();
+
+  if (!effectiveEmail) {
+    return exactSnap.exists
+      ? { id: cleanUid, ...exactData, atlantExtension: exactExtension }
+      : null;
+  }
+
+  const sameEmail = await db.collection('users')
+    .where('email', '==', effectiveEmail)
+    .limit(10)
+    .get();
+
+  if (sameEmail.empty) {
+    return exactSnap.exists
+      ? { id: cleanUid, ...exactData, atlantExtension: exactExtension }
+      : null;
+  }
+
+  const candidates = sameEmail.docs.map(docSnap => ({
+    id: docSnap.id,
+    ...(docSnap.data() || {})
+  })) as any[];
+
+  const withExtension = candidates.find(item =>
+    String(item.atlantExtension || '').trim()
+  );
+
+  const preferred = withExtension ||
+    candidates.find(item => item.id === cleanUid) ||
+    candidates[0];
+
+  if (!preferred) return null;
+
+  const resolvedExtension = String(preferred.atlantExtension || '').trim();
+
+  // Repair the real Firebase UID profile once. After this request, Click2Call
+  // and Auto Dialer stay on the fast exact-UID path.
+  if (resolvedExtension && (!exactSnap.exists || !exactExtension)) {
+    await exactRef.set({
+      email: exactData.email || preferred.email || effectiveEmail,
+      name: exactData.name || preferred.name || '',
+      role: exactData.role || preferred.role || 'Agent',
+      teamId: exactData.teamId || preferred.teamId || '',
+      teamName: exactData.teamName || preferred.teamName || '',
+      atlantExtension: resolvedExtension,
+      atlantUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  }
+
+  return {
+    id: cleanUid,
+    ...preferred,
+    ...exactData,
+    atlantExtension: resolvedExtension
+  };
+}
+
 function getRequestIp(req: express.Request) {
   const forwarded = req.headers['x-forwarded-for'];
   if (Array.isArray(forwarded) && forwarded.length > 0) {
@@ -232,13 +312,12 @@ app.get('/api/security/logs', async (req, res) => {
 app.post('/api/atlant/call', async (req, res) => {
   try {
     const decoded = await getVerifiedRequestUser(req);
-    const userDoc = await db.collection('users').doc(decoded.uid).get();
+    const userData = await resolveAtlantUserProfile(decoded.uid, decoded.email);
 
-    if (!userDoc.exists) {
+    if (!userData) {
       return res.status(404).json({ success: false, error: 'CRM user profile was not found.' });
     }
 
-    const userData = userDoc.data() || {};
     const agentExtension = String(userData.atlantExtension || '').trim();
 
     if (!agentExtension) {
@@ -597,13 +676,12 @@ async function startNextAtlantDialerCall(userId: string) {
 app.post('/api/atlant/dialer/start', async (req, res) => {
   try {
     const decoded = await getVerifiedRequestUser(req);
-    const userDoc = await db.collection('users').doc(decoded.uid).get();
+    const userData = await resolveAtlantUserProfile(decoded.uid, decoded.email);
 
-    if (!userDoc.exists) {
+    if (!userData) {
       return res.status(404).json({ success: false, error: 'CRM user profile was not found.' });
     }
 
-    const userData = userDoc.data() || {};
     if (String(userData.role || 'Agent') !== 'Agent') {
       return res.status(403).json({ success: false, error: 'Auto Dialer is available to Agents only.' });
     }
