@@ -298,7 +298,8 @@ export const firestoreService = {
         lastSeen: serverTimestamp(),
         password: userData?.password || '',
         teamId: userData?.teamId || '',
-        teamName: userData?.teamName || ''
+        teamName: userData?.teamName || '',
+        atlantExtension: String(userData?.atlantExtension || '').trim()
       };
 
       await setDoc(userDocRef, finalUserData, { merge: true });
@@ -823,7 +824,8 @@ export const firestoreService = {
           lastSeen: data.lastSeen || null,
           createdAt: data.createdAt || null,
           teamId: data.teamId || '',
-          teamName: data.teamName || ''
+          teamName: data.teamName || '',
+          atlantExtension: String(data.atlantExtension || '').trim()
         };
       });
     } catch (err: any) {
@@ -855,7 +857,8 @@ export const firestoreService = {
       lastSeen: data.lastSeen || null,
       createdAt: data.createdAt || null,
       teamId: data.teamId || '',
-      teamName: data.teamName || ''
+      teamName: data.teamName || '',
+      atlantExtension: String(data.atlantExtension || '').trim()
     };
   },
 
@@ -880,7 +883,8 @@ export const firestoreService = {
         lastSeen: data.lastSeen || null,
         createdAt: data.createdAt || null,
         teamId: data.teamId || '',
-        teamName: data.teamName || ''
+        teamName: data.teamName || '',
+        atlantExtension: String(data.atlantExtension || '').trim()
       };
     });
   },
@@ -4492,11 +4496,43 @@ export const firestoreService = {
       throw new Error('Atlant extension contains unsupported characters.');
     }
 
-    await updateDoc(doc(db, USERS_COL, String(userId)), {
-      atlantExtension: cleanExtension,
-      atlantUpdatedAt: serverTimestamp(),
-      atlantUpdatedBy: String(adminUserId)
+    const targetRef = doc(db, USERS_COL, String(userId));
+    const targetSnap = await getDoc(targetRef);
+
+    if (!targetSnap.exists()) {
+      throw new Error('CRM user was not found.');
+    }
+
+    const targetData = targetSnap.data() as any;
+    const targetEmail = normalizeEmail(targetData?.email || '');
+
+    // A few older CRM accounts can still have a legacy Firestore document whose
+    // ID differs from the real Firebase Auth UID. Save the same extension to every
+    // profile for this email so both current and legacy users resolve identically.
+    const refs = new Map<string, any>();
+    refs.set(String(userId), targetRef);
+
+    if (targetEmail) {
+      const sameEmail = await getDocs(
+        query(collection(db, USERS_COL), where('email', '==', targetEmail))
+      );
+
+      sameEmail.docs.forEach(userDoc => {
+        refs.set(userDoc.id, doc(db, USERS_COL, userDoc.id));
+      });
+    }
+
+    const batch = writeBatch(db);
+
+    refs.forEach((ref, id) => {
+      batch.set(ref, {
+        atlantExtension: cleanExtension,
+        atlantUpdatedAt: serverTimestamp(),
+        atlantUpdatedBy: String(adminUserId)
+      }, { merge: true });
     });
+
+    await batch.commit();
 
     return cleanExtension;
   },
