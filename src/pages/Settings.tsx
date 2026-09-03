@@ -624,7 +624,7 @@ export default function Settings() {
             <h2 className="text-xl font-semibold text-white">Atlant Click2Call</h2>
           </div>
           <p className="text-sm text-slate-400 mb-5">
-            Map every CRM user to their Atlant extension. The Atlant API key stays on the server.
+            Map every CRM user to their Atlant extension. Saved extensions are shown separately and are used automatically by Click2Call and Auto Dialer. The Atlant API key stays on the server.
           </p>
 
           {atlantError && (
@@ -647,6 +647,7 @@ export default function Settings() {
                   <th>Role</th>
                   <th>Team</th>
                   <th>Email</th>
+                  <th>Saved Extension</th>
                   <th>Atlant Extension</th>
                   <th className="text-right">Action</th>
                 </tr>
@@ -662,6 +663,15 @@ export default function Settings() {
                       <td className="text-xs text-blue-300">{user.role || 'Undefined'}</td>
                       <td className="text-xs text-slate-400">{user.teamName || 'No Team'}</td>
                       <td className="text-xs text-slate-400">{user.email || '—'}</td>
+                      <td>
+                        {String(user.atlantExtension || '').trim() ? (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs font-bold text-emerald-300">
+                            {String(user.atlantExtension).trim()}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-600">Not configured</span>
+                        )}
+                      </td>
                       <td>
                         <input
                           value={atlantDrafts[userId] ?? ''}
@@ -695,7 +705,7 @@ export default function Settings() {
 
                 {atlantUsers.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-sm text-slate-600">
+                    <td colSpan={7} className="py-8 text-center text-sm text-slate-600">
                       No CRM users found.
                     </td>
                   </tr>
