@@ -51,6 +51,16 @@ export default function Settings() {
   const [atlantBusyId, setAtlantBusyId] = useState('');
   const [atlantError, setAtlantError] = useState('');
   const [atlantSuccess, setAtlantSuccess] = useState('');
+  const [activeSettingsSection, setActiveSettingsSection] = useState<'finance' | 'telephony' | 'leads' | 'system'>('finance');
+  const [voipProviders, setVoipProviders] = useState<any[]>([]);
+  const [voipProviderName, setVoipProviderName] = useState('');
+  const [voipUsers, setVoipUsers] = useState<any[]>([]);
+  const [voipDrafts, setVoipDrafts] = useState<Record<string, any[]>>({});
+  const [expandedVoipUserId, setExpandedVoipUserId] = useState('');
+  const [voipBusyId, setVoipBusyId] = useState('');
+  const [voipError, setVoipError] = useState('');
+  const [voipSuccess, setVoipSuccess] = useState('');
+
 
   // Administrator-managed Lead statuses.
   const [leadStatuses, setLeadStatuses] = useState<any[]>([]);
@@ -131,6 +141,60 @@ export default function Settings() {
     }
   };
 
+  const loadTelephonyConfig = async () => {
+    if (userRole !== 'Administrator' || !currentUserId) return;
+
+    try {
+      setVoipError('');
+      await firestoreService.initializeVoipProviders(currentUserId);
+
+      const [providers, users] = await Promise.all([
+        firestoreService.getVoipProviders(true),
+        firestoreService.getUsers()
+      ]);
+
+      const sortedUsers = (users as any[]).sort((a: any, b: any) =>
+        String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''))
+      );
+
+      setVoipProviders(providers as any[]);
+      setVoipUsers(sortedUsers);
+
+      const nextDrafts: Record<string, any[]> = {};
+
+      sortedUsers.forEach((user: any) => {
+        let profiles = Array.isArray(user.telephonyProfiles)
+          ? user.telephonyProfiles.map((profile: any) => ({ ...profile }))
+          : [];
+
+        const legacyAtlant = String(user.atlantExtension || '').trim();
+        const hasAtlant = profiles.some((profile: any) =>
+          String(profile?.providerId || profile?.providerKey || '').toLowerCase() === 'atlant'
+        );
+
+        if (legacyAtlant && !hasAtlant) {
+          profiles = [
+            {
+              providerId: 'atlant',
+              providerName: 'Atlant',
+              providerKey: 'atlant',
+              extension: legacyAtlant,
+              enabled: true,
+              isDefault: !profiles.some((profile: any) => profile?.isDefault === true)
+            },
+            ...profiles
+          ];
+        }
+
+        nextDrafts[String(user.id)] = profiles;
+      });
+
+      setVoipDrafts(nextDrafts);
+    } catch (err: any) {
+      setVoipError(err?.message || 'Failed to load VOIP configuration.');
+    }
+  };
+
   const loadLeadStatuses = async () => {
     if (userRole !== 'Administrator' || !currentUserId) return;
 
@@ -144,11 +208,17 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    loadSolutions();
-    loadSimpleFinanceConfig();
-    loadAtlantConfig();
-    loadLeadStatuses();
-  }, [userRole, currentUserId]);
+    if (userRole !== 'Administrator') return;
+
+    if (activeSettingsSection === 'finance') {
+      loadSolutions();
+      loadSimpleFinanceConfig();
+    } else if (activeSettingsSection === 'telephony') {
+      loadTelephonyConfig();
+    } else if (activeSettingsSection === 'leads') {
+      loadLeadStatuses();
+    }
+  }, [userRole, currentUserId, activeSettingsSection]);
 
   const handleAddSolution = async () => {
     if (!currentUserId || !solutionName.trim()) return;
@@ -268,6 +338,136 @@ export default function Settings() {
     }
   };
 
+  const addVoipProvider = async () => {
+    if (!voipProviderName.trim() || !currentUserId) return;
+
+    try {
+      setVoipBusyId('provider-new');
+      setVoipError('');
+      setVoipSuccess('');
+      await firestoreService.createVoipProvider(voipProviderName, currentUserId);
+      setVoipProviderName('');
+      setVoipSuccess('VOIP provider created.');
+      await loadTelephonyConfig();
+    } catch (err: any) {
+      setVoipError(err?.message || 'Failed to create VOIP provider.');
+    } finally {
+      setVoipBusyId('');
+    }
+  };
+
+  const toggleVoipProvider = async (provider: any) => {
+    try {
+      setVoipBusyId(`provider-${provider.id}`);
+      setVoipError('');
+      await firestoreService.setVoipProviderActive(
+        String(provider.id),
+        provider.isActive === false,
+        currentUserId
+      );
+      await loadTelephonyConfig();
+    } catch (err: any) {
+      setVoipError(err?.message || 'Failed to update VOIP provider.');
+    } finally {
+      setVoipBusyId('');
+    }
+  };
+
+  const addUserVoipProfile = (userId: string) => {
+    const assigned = voipDrafts[userId] || [];
+    const available = voipProviders.find((provider: any) =>
+      provider.isActive !== false &&
+      !assigned.some((profile: any) => String(profile.providerId) === String(provider.id))
+    );
+
+    if (!available) {
+      setVoipError('This user already has every active VOIP provider assigned.');
+      return;
+    }
+
+    setVoipDrafts(prev => ({
+      ...prev,
+      [userId]: [
+        ...(prev[userId] || []),
+        {
+          providerId: String(available.id),
+          providerName: String(available.name || available.id),
+          providerKey: String(available.integrationKey || available.id),
+          extension: '',
+          enabled: true,
+          isDefault: (prev[userId] || []).length === 0
+        }
+      ]
+    }));
+  };
+
+  const updateUserVoipProfile = (userId: string, index: number, patch: any) => {
+    setVoipDrafts(prev => {
+      const rows = [...(prev[userId] || [])];
+      const current = rows[index] || {};
+
+      if (patch.isDefault === true) {
+        rows.forEach((row, rowIndex) => {
+          rows[rowIndex] = { ...row, isDefault: rowIndex === index };
+        });
+      }
+
+      rows[index] = { ...current, ...patch };
+
+      if (patch.providerId) {
+        const provider = voipProviders.find(
+          (item: any) => String(item.id) === String(patch.providerId)
+        );
+        rows[index] = {
+          ...rows[index],
+          providerName: String(provider?.name || patch.providerId),
+          providerKey: String(provider?.integrationKey || patch.providerId)
+        };
+      }
+
+      return { ...prev, [userId]: rows };
+    });
+  };
+
+  const removeUserVoipProfile = (userId: string, index: number) => {
+    setVoipDrafts(prev => {
+      const rows = [...(prev[userId] || [])];
+      const removedDefault = rows[index]?.isDefault === true;
+      rows.splice(index, 1);
+
+      if (removedDefault && rows.length > 0 && !rows.some(row => row.isDefault)) {
+        rows[0] = { ...rows[0], isDefault: true };
+      }
+
+      return { ...prev, [userId]: rows };
+    });
+  };
+
+  const saveUserVoipProfiles = async (user: any) => {
+    const userId = String(user?.id || '');
+    if (!userId) return;
+
+    try {
+      setVoipBusyId(`user-${userId}`);
+      setVoipError('');
+      setVoipSuccess('');
+
+      const saved = await firestoreService.saveUserTelephonyProfiles(
+        userId,
+        voipDrafts[userId] || [],
+        currentUserId
+      );
+
+      setVoipDrafts(prev => ({ ...prev, [userId]: saved as any[] }));
+      setVoipSuccess(`Telephony profiles saved for ${user.name || user.email}.`);
+      await loadTelephonyConfig();
+    } catch (err: any) {
+      setVoipError(err?.message || 'Failed to save telephony profiles.');
+    } finally {
+      setVoipBusyId('');
+    }
+  };
+
   const addLeadStatus = async () => {
     if (!leadStatusName.trim() || !currentUserId) return;
 
@@ -374,11 +574,42 @@ export default function Settings() {
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-white mb-2">System Settings</h1>
         <p className="text-slate-400">
-          Administrator configures Finance once. Finance users only fill monthly values.
+          Administrator workspace for Finance, Telephony, Lead configuration and system controls.
         </p>
       </div>
 
+      <div className="mb-6 rounded-2xl border border-white/5 bg-[#0A0F1C] p-2">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          {[
+            { id: 'finance', label: 'Finance', icon: ReceiptText },
+            { id: 'telephony', label: 'Telephony / VOIP', icon: PhoneCall },
+            { id: 'leads', label: 'Leads', icon: ListChecks },
+            { id: 'system', label: 'System', icon: ShieldAlert }
+          ].map(item => {
+            const Icon = item.icon;
+            const active = activeSettingsSection === item.id;
+
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveSettingsSection(item.id as any)}
+                className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold transition-colors ${
+                  active
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="space-y-6">
+        {activeSettingsSection === 'finance' && (
+          <>
         {/* Existing Solution management — preserved */}
         <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
           <div className="flex items-center gap-2 mb-1">
@@ -618,103 +849,310 @@ export default function Settings() {
           </div>
         </div>
 
-        <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
-          <div className="flex items-center gap-2 mb-1">
-            <PhoneCall className="w-5 h-5 text-blue-400" />
-            <h2 className="text-xl font-semibold text-white">Atlant Click2Call</h2>
-          </div>
-          <p className="text-sm text-slate-400 mb-5">
-            Map every CRM user to their Atlant extension. Saved extensions are shown separately and are used automatically by Click2Call and Auto Dialer. The Atlant API key stays on the server.
-          </p>
+          </>
+        )}
 
-          {atlantError && (
-            <div className="mb-4 rounded-lg bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-300">
-              {atlantError}
-            </div>
-          )}
+        {activeSettingsSection === 'telephony' && (
+          <>
+            <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
+              <div className="flex items-center gap-2 mb-1">
+                <PhoneCall className="w-5 h-5 text-blue-400" />
+                <h2 className="text-xl font-semibold text-white">VOIP Providers</h2>
+              </div>
+              <p className="text-sm text-slate-400 mb-5">
+                Create the telephony providers used by the CRM. Atlant remains the current integrated provider; new providers can be prepared here before their API adapter is connected.
+              </p>
 
-          {atlantSuccess && (
-            <div className="mb-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-sm text-emerald-300">
-              {atlantSuccess}
-            </div>
-          )}
+              <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                  value={voipProviderName}
+                  onChange={e => setVoipProviderName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addVoipProvider();
+                    }
+                  }}
+                  placeholder="Example: MMD, Voiso, CommPeak..."
+                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white"
+                />
+                <button
+                  onClick={addVoipProvider}
+                  disabled={voipBusyId === 'provider-new' || !voipProviderName.trim()}
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Provider
+                </button>
+              </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-left">
-              <thead>
-                <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
-                  <th className="py-3">User</th>
-                  <th>Role</th>
-                  <th>Team</th>
-                  <th>Email</th>
-                  <th>Saved Extension</th>
-                  <th>Atlant Extension</th>
-                  <th className="text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {atlantUsers.map((user: any) => {
-                  const userId = String(user.id);
+              <div className="mt-4 flex flex-wrap gap-2">
+                {voipProviders.map((provider: any) => {
+                  const integrated = provider.integrationStatus === 'integrated';
+                  const busy = voipBusyId === `provider-${provider.id}`;
+
                   return (
-                    <tr key={userId}>
-                      <td className="py-3 text-sm font-semibold text-white">
-                        {user.name || user.email || 'User'}
-                      </td>
-                      <td className="text-xs text-blue-300">{user.role || 'Undefined'}</td>
-                      <td className="text-xs text-slate-400">{user.teamName || 'No Team'}</td>
-                      <td className="text-xs text-slate-400">{user.email || '—'}</td>
-                      <td>
-                        {String(user.atlantExtension || '').trim() ? (
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs font-bold text-emerald-300">
-                            {String(user.atlantExtension).trim()}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-slate-600">Not configured</span>
-                        )}
-                      </td>
-                      <td>
-                        <input
-                          value={atlantDrafts[userId] ?? ''}
-                          onChange={e =>
-                            setAtlantDrafts(prev => ({
-                              ...prev,
-                              [userId]: e.target.value
-                            }))
-                          }
-                          placeholder="Example: 1005"
-                          className="w-40 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
-                        />
-                      </td>
-                      <td className="text-right">
-                        <button
-                          onClick={() => saveAtlantExtension(user)}
-                          disabled={atlantBusyId === userId}
-                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold"
-                        >
-                          {atlantBusyId === userId ? (
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Save className="w-3.5 h-3.5" />
-                          )}
-                          Save
-                        </button>
-                      </td>
-                    </tr>
+                    <div
+                      key={provider.id}
+                      className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold text-white">{provider.name}</p>
+                        <p className={`text-[10px] ${integrated ? 'text-emerald-400' : 'text-slate-500'}`}>
+                          {integrated ? 'API Integrated' : 'Profile Only · API pending'}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => toggleVoipProvider(provider)}
+                        disabled={busy || provider.id === 'atlant'}
+                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold disabled:opacity-40 ${
+                          provider.isActive !== false
+                            ? 'bg-emerald-500/10 text-emerald-400'
+                            : 'bg-slate-500/10 text-slate-500'
+                        }`}
+                      >
+                        {provider.isActive !== false ? 'ACTIVE' : 'DISABLED'}
+                      </button>
+                    </div>
                   );
                 })}
+              </div>
+            </div>
 
-                {atlantUsers.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-sm text-slate-600">
-                      No CRM users found.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+            <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-4 mb-1">
+                <div>
+                  <h2 className="text-xl font-semibold text-white">Agent Telephony Profiles</h2>
+                  <p className="text-sm text-slate-400 mt-1">
+                    One Agent can have one or many provider extensions. Existing Atlant extensions are preserved automatically.
+                  </p>
+                </div>
+                <span className="text-[10px] uppercase tracking-wider text-slate-500">
+                  {voipUsers.length} CRM users
+                </span>
+              </div>
 
+              {voipError && (
+                <div className="mt-4 rounded-lg bg-rose-500/10 border border-rose-500/20 px-4 py-3 text-sm text-rose-300">
+                  {voipError}
+                </div>
+              )}
+
+              {voipSuccess && (
+                <div className="mt-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-sm text-emerald-300">
+                  {voipSuccess}
+                </div>
+              )}
+
+              <div className="mt-5 overflow-x-auto">
+                <table className="w-full min-w-[980px] text-left">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-white/5">
+                      <th className="py-3">User</th>
+                      <th>Role</th>
+                      <th>Team</th>
+                      <th>Assigned Providers</th>
+                      <th>Default</th>
+                      <th className="text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {voipUsers.map((user: any) => {
+                      const userId = String(user.id);
+                      const profiles = voipDrafts[userId] || [];
+                      const configured = profiles.filter((profile: any) =>
+                        String(profile?.extension || '').trim()
+                      );
+                      const defaultProfile =
+                        configured.find((profile: any) => profile.isDefault) || configured[0];
+                      const expanded = expandedVoipUserId === userId;
+
+                      return (
+                        <React.Fragment key={userId}>
+                          <tr>
+                            <td className="py-3">
+                              <p className="text-sm font-semibold text-white">{user.name || user.email}</p>
+                              <p className="text-[10px] text-slate-500">{user.email || '—'}</p>
+                            </td>
+                            <td className="text-xs text-blue-300">{user.role || 'Undefined'}</td>
+                            <td className="text-xs text-slate-400">{user.teamName || 'No Team'}</td>
+                            <td>
+                              <div className="flex flex-wrap gap-1.5">
+                                {configured.map((profile: any, index: number) => (
+                                  <span
+                                    key={`${profile.providerId}-${index}`}
+                                    className="inline-flex items-center gap-1 rounded-lg bg-cyan-500/10 border border-cyan-500/20 px-2 py-1 text-[10px] font-bold text-cyan-300"
+                                  >
+                                    {profile.providerName || profile.providerId}
+                                    <span className="text-white">{profile.extension}</span>
+                                  </span>
+                                ))}
+                                {configured.length === 0 && (
+                                  <span className="text-xs text-slate-600">Not configured</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="text-xs text-emerald-300">
+                              {defaultProfile
+                                ? `${defaultProfile.providerName || defaultProfile.providerId} · ${defaultProfile.extension}`
+                                : '—'}
+                            </td>
+                            <td className="text-right">
+                              <button
+                                onClick={() => setExpandedVoipUserId(expanded ? '' : userId)}
+                                className="px-3 py-2 rounded-lg bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 text-xs font-semibold"
+                              >
+                                {expanded ? 'Close' : `Manage (${configured.length})`}
+                              </button>
+                            </td>
+                          </tr>
+
+                          {expanded && (
+                            <tr>
+                              <td colSpan={6} className="pb-5 pt-1">
+                                <div className="rounded-xl border border-blue-500/10 bg-blue-500/[0.03] p-4">
+                                  <div className="space-y-2">
+                                    {profiles.map((profile: any, index: number) => {
+                                      const provider = voipProviders.find(
+                                        (item: any) => String(item.id) === String(profile.providerId)
+                                      );
+                                      const integrated = provider?.integrationStatus === 'integrated';
+
+                                      return (
+                                        <div
+                                          key={`${userId}-${index}`}
+                                          className="grid grid-cols-1 lg:grid-cols-[1fr_1fr_auto_auto_auto] gap-2 items-center"
+                                        >
+                                          <select
+                                            value={profile.providerId || ''}
+                                            onChange={e =>
+                                              updateUserVoipProfile(userId, index, {
+                                                providerId: e.target.value
+                                              })
+                                            }
+                                            className="bg-[#0F172A] border border-white/10 rounded-lg px-3 py-2 text-xs text-white"
+                                          >
+                                            {voipProviders
+                                              .filter((item: any) =>
+                                                item.isActive !== false ||
+                                                String(item.id) === String(profile.providerId)
+                                              )
+                                              .map((item: any) => (
+                                                <option
+                                                  key={item.id}
+                                                  value={item.id}
+                                                  disabled={
+                                                    profiles.some(
+                                                      (row: any, rowIndex: number) =>
+                                                        rowIndex !== index &&
+                                                        String(row.providerId) === String(item.id)
+                                                    )
+                                                  }
+                                                >
+                                                  {item.name}
+                                                </option>
+                                              ))}
+                                          </select>
+
+                                          <input
+                                            value={profile.extension || ''}
+                                            onChange={e =>
+                                              updateUserVoipProfile(userId, index, {
+                                                extension: e.target.value
+                                              })
+                                            }
+                                            placeholder="Extension"
+                                            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                                          />
+
+                                          <label className="inline-flex items-center gap-2 text-xs text-slate-400 whitespace-nowrap">
+                                            <input
+                                              type="checkbox"
+                                              checked={profile.enabled !== false}
+                                              onChange={e =>
+                                                updateUserVoipProfile(userId, index, {
+                                                  enabled: e.target.checked
+                                                })
+                                              }
+                                            />
+                                            Enabled
+                                          </label>
+
+                                          <label
+                                            className={`inline-flex items-center gap-2 text-xs whitespace-nowrap ${
+                                              integrated ? 'text-emerald-300' : 'text-slate-600'
+                                            }`}
+                                            title={
+                                              integrated
+                                                ? 'Default provider used by CRM calls'
+                                                : 'API integration must be added before this provider can become operational'
+                                            }
+                                          >
+                                            <input
+                                              type="radio"
+                                              name={`default-provider-${userId}`}
+                                              checked={profile.isDefault === true}
+                                              disabled={!integrated}
+                                              onChange={() =>
+                                                updateUserVoipProfile(userId, index, {
+                                                  isDefault: true
+                                                })
+                                              }
+                                            />
+                                            Default
+                                          </label>
+
+                                          <button
+                                            onClick={() => removeUserVoipProfile(userId, index)}
+                                            className="p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
+                                            title="Remove assignment"
+                                          >
+                                            <Trash2 className="w-4 h-4" />
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+
+                                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                                    <button
+                                      onClick={() => addUserVoipProfile(userId)}
+                                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-300"
+                                    >
+                                      <Plus className="w-3.5 h-3.5" />
+                                      Add Provider Extension
+                                    </button>
+
+                                    <button
+                                      onClick={() => saveUserVoipProfiles(user)}
+                                      disabled={voipBusyId === `user-${userId}`}
+                                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold"
+                                    >
+                                      {voipBusyId === `user-${userId}` ? (
+                                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                      ) : (
+                                        <Save className="w-3.5 h-3.5" />
+                                      )}
+                                      Save Profiles
+                                    </button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {activeSettingsSection === 'leads' && (
+          <>
         <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
           <div className="flex items-center gap-2 mb-1">
             <ListChecks className="w-5 h-5 text-violet-400" />
@@ -823,6 +1261,11 @@ export default function Settings() {
           </div>
         </div>
 
+          </>
+        )}
+
+        {activeSettingsSection === 'system' && (
+          <>
         {/* Existing reset / danger zone — preserved */}
         <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-6 shadow-sm">
           <div className="flex items-start justify-between mb-6">
@@ -881,6 +1324,8 @@ export default function Settings() {
             </div>
           )}
         </div>
+          </>
+        )}
       </div>
     </div>
   );
