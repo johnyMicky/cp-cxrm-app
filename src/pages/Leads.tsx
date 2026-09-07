@@ -2322,7 +2322,7 @@ export default function Leads() {
                     )}
                   </div>
                 </th>
-                <th className="px-6 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Actions</th>
+                <th className="sticky right-0 z-20 px-4 py-4 w-16 min-w-16 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right bg-[#0B111E] border-l border-white/5">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
@@ -2499,10 +2499,12 @@ export default function Leads() {
                       )}
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="sticky right-0 z-10 px-4 py-4 w-16 min-w-16 text-right bg-[#0A0F1C]/95 border-l border-white/5 group-hover:bg-[#0D1422]">
                     <Link 
                       to={`/leads/${lead.id}`}
                       className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-white/10"
+                      title="Open Lead Details"
+                      aria-label={`Open ${lead.name || 'lead'} details`}
                     >
                       <ArrowRight className="w-4 h-4" />
                     </Link>
