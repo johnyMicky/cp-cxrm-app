@@ -26,6 +26,13 @@ const todayKey = () => {
   return `${year}-${month}-${day}`;
 };
 
+const currentMonthKey = () => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+};
+
 const money = (value: number) =>
   `$${Number(value || 0).toLocaleString(undefined, {
     minimumFractionDigits: 2,
@@ -52,7 +59,7 @@ export default function AgentFinancePanel() {
   const [success, setSuccess] = useState('');
   const [splits, setSplits] = useState<SplitRow[]>([]);
   const [historyStatus, setHistoryStatus] = useState('All');
-  const [historyMonth, setHistoryMonth] = useState('All');
+  const [historyMonth, setHistoryMonth] = useState(() => currentMonthKey());
 
 
   const [form, setForm] = useState({
@@ -323,6 +330,17 @@ export default function AgentFinancePanel() {
 
   const historyMonths = useMemo(() => {
     const months = new Map<string, string>();
+    const activeMonthKey = currentMonthKey();
+    const [activeYear, activeMonth] = activeMonthKey.split('-').map(Number);
+
+    months.set(
+      activeMonthKey,
+      new Date(activeYear, activeMonth - 1, 1).toLocaleDateString(
+        undefined,
+        { month: 'long', year: 'numeric' }
+      )
+    );
+
     financeHistory.forEach((row: any) => {
       if (row.monthKey && !months.has(row.monthKey)) {
         months.set(row.monthKey, row.monthLabel);
@@ -345,6 +363,32 @@ export default function AgentFinancePanel() {
       }),
     [financeHistory, historyStatus, historyMonth]
   );
+
+  const submittedApprovedForSelectedMonth = useMemo(() => {
+    if (historyMonth === 'All') {
+      return Number(portfolio?.submittedApprovedGross || 0);
+    }
+
+    return Number(
+      financeHistory
+        .filter(
+          (row: any) =>
+            String(row.status || '') === 'Approved' &&
+            String(row.submittedBy || '') === String(currentUserId) &&
+            String(row.monthKey || '') === String(historyMonth)
+        )
+        .reduce(
+          (sum: number, row: any) => sum + Number(row.amount || 0),
+          0
+        )
+        .toFixed(2)
+    );
+  }, [
+    financeHistory,
+    historyMonth,
+    currentUserId,
+    portfolio?.submittedApprovedGross
+  ]);
 
   const historyStats = useMemo(() => {
     const summary = {
@@ -415,7 +459,7 @@ export default function AgentFinancePanel() {
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mt-5">
         <Metric
           label="Submitted Approved"
-          value={money(portfolio?.submittedApprovedGross || 0)}
+          value={money(submittedApprovedForSelectedMonth)}
           color="text-white"
         />
         <Metric
