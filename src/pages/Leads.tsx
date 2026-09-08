@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall, Check } from 'lucide-react';
+import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall, Check, Eye } from 'lucide-react';
 import { format } from 'date-fns';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import LeadForm from '../components/LeadForm';
@@ -208,6 +208,13 @@ export default function Leads() {
 
   const [quickNoteId, setQuickNoteId] = useState<string | null>(null);
   const [quickNoteText, setQuickNoteText] = useState('');
+
+  // Notes Preview is loaded only when the user clicks the eye icon.
+  // No listener/polling is added, so the Leads page stays lightweight.
+  const [notesPreviewLead, setNotesPreviewLead] = useState<any | null>(null);
+  const [notesPreviewItems, setNotesPreviewItems] = useState<any[]>([]);
+  const [notesPreviewLoading, setNotesPreviewLoading] = useState(false);
+  const [notesPreviewError, setNotesPreviewError] = useState('');
   const [isAssigning, setIsAssigning] = useState(false);
   const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
   const [isReshuffling, setIsReshuffling] = useState(false);
@@ -670,6 +677,32 @@ export default function Leads() {
       handleSuccess('Note added successfully');
     } catch (err) {
       console.error('Failed to add quick note:', err);
+    }
+  };
+
+  const closeNotesPreview = () => {
+    setNotesPreviewLead(null);
+    setNotesPreviewItems([]);
+    setNotesPreviewError('');
+    setNotesPreviewLoading(false);
+  };
+
+  const openNotesPreview = async (lead: any) => {
+    if (!lead?.id || notesPreviewLoading) return;
+
+    setNotesPreviewLead(lead);
+    setNotesPreviewItems([]);
+    setNotesPreviewError('');
+    setNotesPreviewLoading(true);
+
+    try {
+      const notes = await firestoreService.getLeadNotes(String(lead.id));
+      setNotesPreviewItems(Array.isArray(notes) ? notes : []);
+    } catch (err: any) {
+      console.error('Failed to load Lead notes preview:', err);
+      setNotesPreviewError(err?.message || 'Unable to load notes.');
+    } finally {
+      setNotesPreviewLoading(false);
     }
   };
 
@@ -2470,6 +2503,16 @@ export default function Leads() {
                         >
                           <MessageSquare className="w-3.5 h-3.5" />
                         </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openNotesPreview(lead)}
+                          className="p-1 rounded text-slate-500 hover:text-cyan-400 hover:bg-white/5"
+                          title="View Notes"
+                          aria-label={`View notes for ${lead.name || 'lead'}`}
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
                       </div>
 
                       {quickNoteId === lead.id && (
@@ -2531,6 +2574,88 @@ export default function Leads() {
           )}
         </div>
       </div>
+
+      {notesPreviewLead && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeNotesPreview();
+          }}
+        >
+          <div
+            className="w-full max-w-xl overflow-hidden rounded-2xl border border-white/10 bg-[#0A0F1C] shadow-2xl"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+              <div className="min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-400">Lead Notes</div>
+                <h3 className="mt-1 truncate text-base font-semibold text-white">
+                  {notesPreviewLead.name || 'Lead'}
+                </h3>
+                <div className="mt-1 text-xs text-slate-500">
+                  {notesPreviewLead.phone || 'No Phone'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeNotesPreview}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-white/5 hover:text-white"
+                title="Close"
+                aria-label="Close notes preview"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="max-h-[60vh] overflow-y-auto p-5 custom-scrollbar">
+              {notesPreviewLoading ? (
+                <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-400">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  <span>Loading notes...</span>
+                </div>
+              ) : notesPreviewError ? (
+                <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-4 py-3 text-sm text-rose-300">
+                  {notesPreviewError}
+                </div>
+              ) : notesPreviewItems.length === 0 ? (
+                <div className="py-10 text-center text-sm text-slate-500">
+                  No notes have been added to this Lead yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {notesPreviewItems.map((note: any) => {
+                    const noteDate = note?.createdAt?.toDate
+                      ? note.createdAt.toDate()
+                      : note?.createdAt
+                        ? new Date(note.createdAt)
+                        : null;
+                    const validDate = noteDate && !Number.isNaN(noteDate.getTime());
+
+                    return (
+                      <div
+                        key={note.id}
+                        className="rounded-xl border border-white/5 bg-white/[0.025] px-4 py-3"
+                      >
+                        <div className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-200">
+                          {note.content || 'Empty note'}
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-3 text-[10px] text-slate-500">
+                          <span>
+                            {note.source === 'Import' ? 'Imported note' : 'CRM note'}
+                          </span>
+                          <span>
+                            {validDate ? format(noteDate, 'MMM d, yyyy · h:mm a') : ''}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {isFormOpen && (
         <LeadForm 
