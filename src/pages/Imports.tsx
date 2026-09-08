@@ -35,6 +35,11 @@ export default function Imports() {
   const [duplicateLoading, setDuplicateLoading] = useState(false);
   const [duplicateCopied, setDuplicateCopied] = useState('');
 
+  const [viewImport, setViewImport] = useState<ImportRecord | null>(null);
+  const [viewSummary, setViewSummary] = useState<any | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+  const [viewError, setViewError] = useState('');
+
 
   const currentUserId = localStorage.getItem('userId') || '';
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
@@ -94,6 +99,32 @@ export default function Imports() {
     setDuplicateImport(null);
     setDuplicateRows([]);
     setDuplicateCopied('');
+  };
+
+  const openImportView = async (imp: ImportRecord) => {
+    if (!imp?.id || viewLoading) return;
+
+    setViewImport(imp);
+    setViewSummary(null);
+    setViewError('');
+    setViewLoading(true);
+
+    try {
+      const summary = await firestoreService.getImportLeadSummary(imp.id);
+      setViewSummary(summary);
+    } catch (err: any) {
+      console.error('Failed to load import summary:', err);
+      setViewError(err?.message || 'Failed to load file summary.');
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  const closeImportView = () => {
+    if (viewLoading) return;
+    setViewImport(null);
+    setViewSummary(null);
+    setViewError('');
   };
 
   const copyDuplicatePhone = async (phone: string, id: string) => {
@@ -271,6 +302,15 @@ export default function Imports() {
                   </div>
 
                   <div className="flex items-center flex-wrap gap-2 ml-auto lg:ml-0">
+                    <button
+                      onClick={() => openImportView(imp)}
+                      className="flex items-center space-x-2 px-3 py-2.5 rounded-xl bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500 hover:text-slate-950 transition-all"
+                      title="View countries, statuses and sources in this file"
+                    >
+                      <Eye className="w-4 h-4" />
+                      <span className="text-xs font-semibold">View</span>
+                    </button>
+
                     {(imp.duplicateCount || 0) > 0 && (
                       <button onClick={() => openDuplicateReport(imp)} className="flex items-center space-x-2 px-3 py-2.5 rounded-xl bg-amber-500/10 text-amber-400 hover:bg-amber-500 hover:text-slate-950 transition-all" title="View duplicate matches and source files">
                         <Eye className="w-4 h-4" />
@@ -322,6 +362,97 @@ export default function Imports() {
           <p className="text-slate-500 mt-2 max-w-md mx-auto">
             {searchTerm ? `No results matching "${searchTerm}"` : "You haven't imported any lead files yet."}
           </p>
+        </div>
+      )}
+
+      {viewImport && (
+        <div
+          className="fixed inset-0 z-[125] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeImportView();
+          }}
+        >
+          <div
+            className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-4xl max-h-[85vh] shadow-2xl overflow-hidden flex flex-col"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 border-b border-white/5 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Eye className="w-5 h-5 text-cyan-400" />
+                  <h2 className="text-xl font-semibold text-white">Lead File Overview</h2>
+                </div>
+                <p className="text-xs text-slate-500 mt-2 truncate">{viewImport.fileName}</p>
+              </div>
+              <button
+                onClick={closeImportView}
+                disabled={viewLoading}
+                className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 disabled:opacity-40"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto custom-scrollbar p-5 flex-1">
+              {viewLoading ? (
+                <div className="py-20 flex flex-col items-center gap-3 text-slate-500">
+                  <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+                  <span className="text-sm">Loading file overview...</span>
+                </div>
+              ) : viewError ? (
+                <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-4 py-3 text-sm text-rose-300">
+                  {viewError}
+                </div>
+              ) : viewSummary ? (
+                <div className="space-y-5">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Imported Leads</p>
+                      <p className="text-2xl font-bold text-white mt-1">{viewSummary.total || 0}</p>
+                    </div>
+                    <div className="rounded-xl border border-blue-500/10 bg-blue-500/5 p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-blue-400 font-bold">Countries</p>
+                      <p className="text-2xl font-bold text-blue-300 mt-1">{viewSummary.countries?.length || 0}</p>
+                    </div>
+                    <div className="rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">Statuses</p>
+                      <p className="text-2xl font-bold text-emerald-300 mt-1">{viewSummary.statuses?.length || 0}</p>
+                    </div>
+                    <div className="rounded-xl border border-violet-500/10 bg-violet-500/5 p-4">
+                      <p className="text-[10px] uppercase tracking-wider text-violet-400 font-bold">Sources</p>
+                      <p className="text-2xl font-bold text-violet-300 mt-1">{viewSummary.sources?.length || 0}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    {[
+                      ['Countries', viewSummary.countries || [], 'text-blue-400'],
+                      ['Statuses', viewSummary.statuses || [], 'text-emerald-400'],
+                      ['Sources', viewSummary.sources || [], 'text-violet-400']
+                    ].map(([title, rows, color]: any) => (
+                      <div key={title} className="rounded-xl border border-white/5 bg-white/[0.02] overflow-hidden">
+                        <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
+                          <h3 className={`text-sm font-semibold ${color}`}>{title}</h3>
+                          <span className="text-[10px] text-slate-500">{rows.length} unique</span>
+                        </div>
+                        <div className="max-h-80 overflow-y-auto custom-scrollbar divide-y divide-white/5">
+                          {rows.length > 0 ? rows.map((row: any) => (
+                            <div key={`${title}-${row.label}`} className="px-4 py-3 flex items-center justify-between gap-3">
+                              <span className="text-xs text-slate-300 truncate" title={row.label}>{row.label}</span>
+                              <span className="text-xs font-bold text-white shrink-0">{row.count}</span>
+                            </div>
+                          )) : (
+                            <div className="px-4 py-8 text-center text-xs text-slate-600">No data</div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
         </div>
       )}
 
