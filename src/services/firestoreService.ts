@@ -2303,6 +2303,25 @@ export const firestoreService = {
     });
   },
 
+  // Lightweight notes-only read for the Leads table preview.
+  // Runs only on demand; unlike getLead(), it does not also fetch Lead history.
+  async getLeadNotes(leadId: string) {
+    const cleanLeadId = String(leadId || '').trim();
+    if (!cleanLeadId) return [];
+
+    const notesSnapshot = await getDocs(
+      query(collection(db, "notes"), where("lead_id", "==", cleanLeadId))
+    );
+
+    return notesSnapshot.docs
+      .map(noteDoc => ({ id: noteDoc.id, ...noteDoc.data() }))
+      .sort((a: any, b: any) => {
+        const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+        const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        return dateB.getTime() - dateA.getTime();
+      });
+  },
+
   async bulkUpdateLeadsStatus(leadIds: string[], status: string, userId: string) {
     const BATCH_SIZE = 500;
     const batches = [];
