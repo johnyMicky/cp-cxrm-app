@@ -2048,6 +2048,44 @@ export const firestoreService = {
     }));
   },
 
+  // On-demand summary for Lead Files > View.
+  // Reuses the importId query and adds no listener/polling. The aggregation
+  // happens client-side only after the user explicitly opens a file summary.
+  async getImportLeadSummary(importId: string) {
+    if (!importId) {
+      return { total: 0, countries: [], statuses: [], sources: [] };
+    }
+
+    const leads = await this.getLeadsByImport(importId);
+
+    const countValues = (field: 'country' | 'status' | 'source', fallback: string) => {
+      const counts = new Map<string, { label: string; count: number }>();
+
+      leads.forEach((lead: any) => {
+        const raw = String(lead?.[field] || '').trim();
+        const label = raw || fallback;
+        const key = label.toLowerCase();
+        const current = counts.get(key);
+
+        if (current) {
+          current.count += 1;
+        } else {
+          counts.set(key, { label, count: 1 });
+        }
+      });
+
+      return Array.from(counts.values())
+        .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+    };
+
+    return {
+      total: leads.length,
+      countries: countValues('country', 'No Country'),
+      statuses: countValues('status', 'New'),
+      sources: countValues('source', 'No Source')
+    };
+  },
+
   // Returns only users that the current role is allowed to use for distribution.
   async getDistributionUsersForUser(userId: string) {
     if (!userId) return [];
