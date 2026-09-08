@@ -352,47 +352,75 @@ export default function AgentFinancePanel() {
       .map(([key, label]) => ({ key, label }));
   }, [financeHistory]);
 
-  const filteredFinanceHistory = useMemo(
+  const monthScopedFinanceHistory = useMemo(
     () =>
-      financeHistory.filter((row: any) => {
-        const statusMatches =
-          historyStatus === 'All' || String(row.status || '') === historyStatus;
-        const monthMatches =
-          historyMonth === 'All' || String(row.monthKey || '') === historyMonth;
-        return statusMatches && monthMatches;
-      }),
-    [financeHistory, historyStatus, historyMonth]
+      financeHistory.filter(
+        (row: any) =>
+          historyMonth === 'All' ||
+          String(row.monthKey || '') === String(historyMonth)
+      ),
+    [financeHistory, historyMonth]
   );
 
-  const submittedApprovedForSelectedMonth = useMemo(() => {
-    if (historyMonth === 'All') {
-      return Number(portfolio?.submittedApprovedGross || 0);
-    }
+  const filteredFinanceHistory = useMemo(
+    () =>
+      monthScopedFinanceHistory.filter(
+        (row: any) =>
+          historyStatus === 'All' ||
+          String(row.status || '') === historyStatus
+      ),
+    [monthScopedFinanceHistory, historyStatus]
+  );
 
-    return Number(
-      financeHistory
-        .filter(
-          (row: any) =>
-            String(row.status || '') === 'Approved' &&
-            String(row.submittedBy || '') === String(currentUserId) &&
-            String(row.monthKey || '') === String(historyMonth)
-        )
-        .reduce(
-          (sum: number, row: any) => sum + Number(row.amount || 0),
-          0
-        )
-        .toFixed(2)
-    );
-  }, [
-    financeHistory,
-    historyMonth,
-    currentUserId,
-    portfolio?.submittedApprovedGross
-  ]);
+  const selectedMonthPortfolio = useMemo(() => {
+    const summary = {
+      submittedApprovedGross: 0,
+      approvedAttributed: 0,
+      splitEarnings: 0,
+      pendingAttributed: 0,
+      solutionPendingAttributed: 0,
+      onSolutionAttributed: 0,
+      arrivalPendingAttributed: 0
+    };
+
+    monthScopedFinanceHistory.forEach((row: any) => {
+      const status = String(row.status || '');
+      const attributedAmount = Number(row.attributedAmount || 0);
+      const grossAmount = Number(row.amount || 0);
+      const submittedByMe =
+        String(row.submittedBy || '') === String(currentUserId);
+
+      if (status === 'Approved') {
+        summary.approvedAttributed += attributedAmount;
+
+        if (submittedByMe) {
+          summary.submittedApprovedGross += grossAmount;
+        } else {
+          summary.splitEarnings += attributedAmount;
+        }
+      } else if (status === 'Solution Pending') {
+        summary.solutionPendingAttributed += attributedAmount;
+      } else if (status === 'On Solution') {
+        summary.onSolutionAttributed += attributedAmount;
+      } else if (status === 'Arrival Pending') {
+        summary.arrivalPendingAttributed += attributedAmount;
+      } else if (status !== 'Rejected') {
+        summary.pendingAttributed += attributedAmount;
+      }
+    });
+
+    Object.keys(summary).forEach(key => {
+      (summary as any)[key] = Number(
+        Number((summary as any)[key] || 0).toFixed(2)
+      );
+    });
+
+    return summary;
+  }, [monthScopedFinanceHistory, currentUserId]);
 
   const historyStats = useMemo(() => {
     const summary = {
-      totalCount: financeHistory.length,
+      totalCount: monthScopedFinanceHistory.length,
       totalAmount: 0,
       approvedCount: 0,
       approvedAmount: 0,
@@ -402,7 +430,7 @@ export default function AgentFinancePanel() {
       pendingAmount: 0
     };
 
-    financeHistory.forEach((row: any) => {
+    monthScopedFinanceHistory.forEach((row: any) => {
       const amount = Number(row.attributedAmount || 0);
       summary.totalAmount += amount;
 
@@ -425,7 +453,7 @@ export default function AgentFinancePanel() {
     });
 
     return summary;
-  }, [financeHistory]);
+  }, [monthScopedFinanceHistory]);
 
   return (
     <div className="bg-[#0A0F1C] border border-white/5 rounded-xl p-5 shadow-sm">
@@ -459,37 +487,37 @@ export default function AgentFinancePanel() {
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mt-5">
         <Metric
           label="Submitted Approved"
-          value={money(submittedApprovedForSelectedMonth)}
+          value={money(selectedMonthPortfolio.submittedApprovedGross)}
           color="text-white"
         />
         <Metric
           label="Total Approved"
-          value={money(portfolio?.approvedAttributed || 0)}
+          value={money(selectedMonthPortfolio.approvedAttributed)}
           color="text-emerald-400"
         />
         <Metric
           label="Split Earnings"
-          value={money(portfolio?.splitEarnings || 0)}
+          value={money(selectedMonthPortfolio.splitEarnings)}
           color="text-cyan-400"
         />
         <Metric
           label="Direct Pending"
-          value={money(portfolio?.pendingAttributed || 0)}
+          value={money(selectedMonthPortfolio.pendingAttributed)}
           color="text-amber-400"
         />
         <Metric
           label="Solution Pending"
-          value={money(portfolio?.solutionPendingAttributed || 0)}
+          value={money(selectedMonthPortfolio.solutionPendingAttributed)}
           color="text-violet-400"
         />
         <Metric
           label="On Solution"
-          value={money(portfolio?.onSolutionAttributed || 0)}
+          value={money(selectedMonthPortfolio.onSolutionAttributed)}
           color="text-blue-400"
         />
         <Metric
           label="Arrival Pending"
-          value={money(portfolio?.arrivalPendingAttributed || 0)}
+          value={money(selectedMonthPortfolio.arrivalPendingAttributed)}
           color="text-orange-400"
         />
       </div>
