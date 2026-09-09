@@ -15,7 +15,8 @@ import {
   setDoc,
   writeBatch,
   runTransaction,
-  onSnapshot
+  onSnapshot,
+  increment
 } from "firebase/firestore";
 import { 
   signInWithEmailAndPassword,
@@ -1645,6 +1646,10 @@ export const firestoreService = {
     const sanitized = sanitizeData(leadData);
     const docRef = await addDoc(collection(db, LEADS_COL), {
       ...sanitized,
+      noteCount: Number.isFinite(Number(sanitized.noteCount))
+        ? Number(sanitized.noteCount)
+        : 0,
+      noteCountInitialized: true,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
@@ -1902,6 +1907,8 @@ export const firestoreService = {
                 createdBy: userId,
                 importId: importRef.id,
                 importFileName: fileName,
+                noteCount: importedNote ? 1 : 0,
+                noteCountInitialized: true,
                 createdAt: now,
                 updatedAt: now
               })
@@ -2327,12 +2334,26 @@ export const firestoreService = {
   },
 
   async addNote(leadId: string, userId: string, content: string) {
-    await addDoc(collection(db, "notes"), {
+    const noteRef = doc(collection(db, "notes"));
+    const batch = writeBatch(db);
+
+    batch.set(noteRef, {
       lead_id: leadId,
       user_id: userId,
       content,
       createdAt: serverTimestamp()
     });
+
+    // New/updated Leads keep a cheap noteCount directly on the Lead document.
+    // Legacy Leads are still recognized by noteCountInitialized !== true and
+    // use the batched fallback reader below, so older Notes remain accurate.
+    batch.update(doc(db, LEADS_COL, leadId), {
+      noteCount: increment(1),
+      updatedAt: serverTimestamp()
+    });
+
+    await batch.commit();
+
     await this.logActivity({
       lead_id: leadId,
       user_id: userId,
@@ -2358,6 +2379,40 @@ export const firestoreService = {
         const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
         return dateB.getTime() - dateA.getTime();
       });
+  },
+
+  // Legacy-note fallback for the Leads table.
+  // Queries only Lead IDs that do not yet have noteCountInitialized=true,
+  // batches IDs in groups of 30, and adds no realtime listener/polling.
+  async getLeadNoteCountsForIds(leadIds: string[]) {
+    const ids = Array.from(
+      new Set(
+        (leadIds || [])
+          .map(id => String(id || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    const counts: Record<string, number> = {};
+    ids.forEach(id => { counts[id] = 0; });
+
+    const CHUNK_SIZE = 30;
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      if (chunk.length === 0) continue;
+
+      const snapshot = await getDocs(
+        query(collection(db, "notes"), where("lead_id", "in", chunk))
+      );
+
+      snapshot.docs.forEach(noteDoc => {
+        const leadId = String((noteDoc.data() as any)?.lead_id || '');
+        if (!leadId) return;
+        counts[leadId] = Number(counts[leadId] || 0) + 1;
+      });
+    }
+
+    return counts;
   },
 
   async bulkUpdateLeadsStatus(leadIds: string[], status: string, userId: string) {
