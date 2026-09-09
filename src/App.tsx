@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, XCircle, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X, Camera, Loader2, Radio } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X, Camera, Loader2, Radio } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -12,7 +12,6 @@ const Leads = lazy(() => import('./pages/Leads'));
 const LeadDetail = lazy(() => import('./pages/LeadDetail'));
 const Dispatcher = lazy(() => import('./pages/Dispatcher'));
 const Team = lazy(() => import('./pages/Team'));
-const Lost = lazy(() => import('./pages/Lost'));
 const JOR = lazy(() => import('./pages/JOR'));
 const ActivityPage = lazy(() => import('./pages/Activity'));
 const Imports = lazy(() => import('./pages/Imports'));
@@ -242,7 +241,6 @@ function Sidebar({
   const navItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent', 'Financial Manager'] },
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
-    { name: 'Lost', path: '/lost', icon: XCircle, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'JOR', path: '/jor', icon: CheckCircle2, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Finance', path: '/finance', icon: DollarSign, roles: ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'] },
     { name: 'Live Calls', path: '/live-calls', icon: Radio, roles: ['Administrator', 'Manager', 'Team Leader'] },
@@ -931,7 +929,6 @@ export default function App() {
                       <Route path="/leads/:id" element={<LeadDetail />} />
                       <Route path="/team" element={<Team />} />
                       <Route path="/dispatcher" element={<Dispatcher />} />
-                      <Route path="/lost" element={<Lost />} />
                       <Route path="/jor" element={<JOR />} />
                       <Route path="/activity" element={<ActivityPage />} />
                       <Route path="/imports" element={<Imports />} />
