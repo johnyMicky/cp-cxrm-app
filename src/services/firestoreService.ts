@@ -5157,6 +5157,69 @@ export const firestoreService = {
   },
 
 
+  // Status-based Agent Performance.
+  // Reuses the normal Lead status-change history write, so Performance adds no
+  // third write and no realtime listener/polling. Only Agent row status changes
+  // are marked as performance events; Manager/Admin bulk/admin changes are not.
+  async updateLeadStatusWithPerformance(payload: {
+    leadId: string;
+    userId: string;
+    userName?: string;
+    status: string;
+    countsAsAnswered?: boolean;
+    trackPerformance?: boolean;
+    source?: string;
+    country?: string;
+  }) {
+    const leadId = String(payload?.leadId || '').trim();
+    const userId = String(payload?.userId || '').trim();
+    const status = String(payload?.status || '').trim();
+
+    if (!leadId || !userId || !status) {
+      throw new Error('Lead, user and status are required.');
+    }
+
+    const leadRef = doc(db, LEADS_COL, leadId);
+    const historyRef = doc(collection(db, "history"));
+    const batch = writeBatch(db);
+    const trackPerformance = payload?.trackPerformance === true;
+
+    batch.update(leadRef, {
+      status,
+      updatedAt: serverTimestamp()
+    });
+
+    const historyData: any = {
+      lead_id: leadId,
+      user_id: userId,
+      action: 'Status Changed',
+      details: `Status changed to ${status} from list`,
+      createdAt: serverTimestamp()
+    };
+
+    if (trackPerformance) {
+      historyData.performanceEvent = true;
+      historyData.agentId = userId;
+      historyData.agentName = String(payload?.userName || '');
+      historyData.outcomeStatus = status;
+      historyData.countsAsAnswered = payload?.countsAsAnswered === true;
+      historyData.source = String(payload?.source || '');
+      historyData.country = String(payload?.country || '');
+      historyData.yerevanDateKey = yerevanDateKey(new Date());
+    }
+
+    batch.set(historyRef, historyData);
+    await batch.commit();
+
+    return {
+      id: historyRef.id,
+      leadId,
+      status,
+      performanceEvent: trackPerformance,
+      countsAsAnswered: trackPerformance && payload?.countsAsAnswered === true
+    };
+  },
+
   // Call Outcome + Performance
   // One user action writes the Lead update, optional Note and performance/history
   // records in one Firestore batch. No realtime listener or polling is required.
@@ -5260,7 +5323,9 @@ export const firestoreService = {
 
     return snapshot.docs
       .map(item => ({ id: item.id, ...item.data() } as any))
-      .filter((item: any) => String(item.action || '') === 'Call Outcome')
+      .filter((item: any) =>
+        String(item.action || '') === 'Status Changed' && item.performanceEvent === true
+      )
       .sort((a: any, b: any) => {
         const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
         const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
