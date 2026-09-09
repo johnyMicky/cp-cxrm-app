@@ -79,6 +79,43 @@ const DEFAULT_LEAD_STATUS_NAMES = [
 // These statuses are referenced by core CRM workflows and cannot be disabled/deleted.
 const LOCKED_LEAD_STATUS_NAMES = new Set(['New', 'Deposit', 'Callback', 'JOR']);
 
+const DEFAULT_UNANSWERED_LEAD_STATUS_NAMES = new Set([
+  'New',
+  'VM',
+  'No answer',
+  'Drop',
+  'Wrong Number'
+]);
+
+const defaultCountsAsAnswered = (name: string) =>
+  !DEFAULT_UNANSWERED_LEAD_STATUS_NAMES.has(String(name || '').trim());
+
+const YEREVAN_OFFSET_MS = 4 * 60 * 60 * 1000;
+
+const yerevanDateKey = (value: Date = new Date()) => {
+  const shifted = new Date(value.getTime() + YEREVAN_OFFSET_MS);
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const yerevanDayBounds = (value: Date = new Date()) => {
+  const shifted = new Date(value.getTime() + YEREVAN_OFFSET_MS);
+  const startUtcMs =
+    Date.UTC(
+      shifted.getUTCFullYear(),
+      shifted.getUTCMonth(),
+      shifted.getUTCDate(),
+      0, 0, 0, 0
+    ) - YEREVAN_OFFSET_MS;
+
+  return {
+    start: new Date(startUtcMs),
+    end: new Date(startUtcMs + 24 * 60 * 60 * 1000)
+  };
+};
+
 const statusDocId = (name: string) =>
   String(name || '')
     .trim()
@@ -652,6 +689,7 @@ export const firestoreService = {
         name,
         isActive: true,
         isLocked: LOCKED_LEAD_STATUS_NAMES.has(name),
+        countsAsAnswered: defaultCountsAsAnswered(name),
         sortOrder: index,
         isFallback: true
       })).filter(status => includeInactive || status.isActive);
@@ -666,6 +704,10 @@ export const firestoreService = {
           name,
           isActive: data.isActive !== false,
           isLocked: data.isLocked === true || LOCKED_LEAD_STATUS_NAMES.has(name),
+          countsAsAnswered:
+            typeof data.countsAsAnswered === 'boolean'
+              ? data.countsAsAnswered
+              : defaultCountsAsAnswered(name),
           sortOrder: Number(data.sortOrder ?? 9999),
           createdAt: data.createdAt || null,
           updatedAt: data.updatedAt || null
@@ -694,6 +736,7 @@ export const firestoreService = {
         name,
         isActive: true,
         isLocked: LOCKED_LEAD_STATUS_NAMES.has(name),
+        countsAsAnswered: defaultCountsAsAnswered(name),
         sortOrder: index,
         isSystem: true,
         createdBy: String(adminUserId),
@@ -732,6 +775,7 @@ export const firestoreService = {
       name: cleanName,
       isActive: true,
       isLocked: false,
+      countsAsAnswered: false,
       isSystem: false,
       sortOrder: maxOrder + 1,
       createdBy: String(adminUserId),
@@ -739,7 +783,36 @@ export const firestoreService = {
       updatedAt: serverTimestamp()
     });
 
-    return { id: newRef.id, name: cleanName, isActive: true, isLocked: false };
+    return {
+      id: newRef.id,
+      name: cleanName,
+      isActive: true,
+      isLocked: false,
+      countsAsAnswered: false
+    };
+  },
+
+  async setLeadStatusCountsAsAnswered(
+    statusId: string,
+    countsAsAnswered: boolean,
+    adminUserId: string
+  ) {
+    const currentUser = await this.getUser(String(adminUserId || ''));
+    if (!currentUser || currentUser.role !== 'Administrator') {
+      throw new Error('Only Administrators can configure Lead status answer logic.');
+    }
+
+    const statusRef = doc(db, LEAD_STATUSES_COL, String(statusId));
+    const statusSnapshot = await getDoc(statusRef);
+    if (!statusSnapshot.exists()) throw new Error('Lead status was not found.');
+
+    await updateDoc(statusRef, {
+      countsAsAnswered: !!countsAsAnswered,
+      updatedBy: String(adminUserId),
+      updatedAt: serverTimestamp()
+    });
+
+    return !!countsAsAnswered;
   },
 
   async setLeadStatusActive(statusId: string, isActive: boolean, adminUserId: string) {
@@ -5081,6 +5154,157 @@ export const firestoreService = {
     }
 
     return data?.session || null;
+  },
+
+
+  // Call Outcome + Performance
+  // One user action writes the Lead update, optional Note and performance/history
+  // records in one Firestore batch. No realtime listener or polling is required.
+  async recordLeadCallOutcome(payload: {
+    leadId: string;
+    userId: string;
+    userName?: string;
+    status: string;
+    countsAsAnswered: boolean;
+    callbackAt?: Date | null;
+    note?: string;
+    source?: string;
+    country?: string;
+  }) {
+    const leadId = String(payload?.leadId || '').trim();
+    const userId = String(payload?.userId || '').trim();
+    const status = String(payload?.status || '').trim();
+    const note = String(payload?.note || '').trim();
+
+    if (!leadId || !userId || !status) {
+      throw new Error('Lead, user and outcome status are required.');
+    }
+
+    const leadRef = doc(db, LEADS_COL, leadId);
+    const outcomeRef = doc(collection(db, "history"));
+    const statusHistoryRef = doc(collection(db, "history"));
+    const batch = writeBatch(db);
+
+    const leadUpdate: any = {
+      status,
+      updatedAt: serverTimestamp()
+    };
+
+    if (status === 'Callback' && payload.callbackAt instanceof Date) {
+      if (Number.isNaN(payload.callbackAt.getTime())) {
+        throw new Error('Invalid callback time.');
+      }
+      leadUpdate.callbackAt = Timestamp.fromDate(payload.callbackAt);
+    }
+
+    if (note) {
+      const noteRef = doc(collection(db, "notes"));
+      batch.set(noteRef, {
+        lead_id: leadId,
+        user_id: userId,
+        content: note,
+        createdAt: serverTimestamp()
+      });
+      leadUpdate.noteCount = increment(1);
+    }
+
+    batch.update(leadRef, leadUpdate);
+
+    batch.set(statusHistoryRef, {
+      lead_id: leadId,
+      user_id: userId,
+      action: 'Status Changed',
+      details: `Status changed to ${status} from Call Outcome`,
+      createdAt: serverTimestamp()
+    });
+
+    batch.set(outcomeRef, {
+      lead_id: leadId,
+      user_id: userId,
+      agentId: userId,
+      agentName: String(payload?.userName || ''),
+      action: 'Call Outcome',
+      outcomeStatus: status,
+      countsAsAnswered: payload?.countsAsAnswered === true,
+      source: String(payload?.source || ''),
+      country: String(payload?.country || ''),
+      yerevanDateKey: yerevanDateKey(new Date()),
+      createdAt: serverTimestamp()
+    });
+
+    await batch.commit();
+
+    return {
+      id: outcomeRef.id,
+      leadId,
+      status,
+      countsAsAnswered: payload?.countsAsAnswered === true
+    };
+  },
+
+  async getPerformanceEvents(start: Date, end: Date) {
+    if (!(start instanceof Date) || Number.isNaN(start.getTime())) {
+      throw new Error('Invalid performance start date.');
+    }
+    if (!(end instanceof Date) || Number.isNaN(end.getTime())) {
+      throw new Error('Invalid performance end date.');
+    }
+
+    const snapshot = await getDocs(
+      query(
+        collection(db, "history"),
+        where('createdAt', '>=', Timestamp.fromDate(start)),
+        where('createdAt', '<', Timestamp.fromDate(end))
+      )
+    );
+
+    return snapshot.docs
+      .map(item => ({ id: item.id, ...item.data() } as any))
+      .filter((item: any) => String(item.action || '') === 'Call Outcome')
+      .sort((a: any, b: any) => {
+        const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+        const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        return dateA.getTime() - dateB.getTime();
+      });
+  },
+
+  summarizePerformanceEvents(events: any[]) {
+    const items = Array.isArray(events) ? events : [];
+    const calledLeadIds = new Set<string>();
+    const answeredLeadIds = new Set<string>();
+    const statusCounts: Record<string, number> = {};
+
+    items.forEach((event: any) => {
+      const leadId = String(event?.lead_id || event?.leadId || '').trim();
+      const status = String(event?.outcomeStatus || '').trim();
+
+      if (leadId) {
+        calledLeadIds.add(leadId);
+        if (event?.countsAsAnswered === true) answeredLeadIds.add(leadId);
+      }
+
+      if (status) {
+        statusCounts[status] = Number(statusCounts[status] || 0) + 1;
+      }
+    });
+
+    const called = calledLeadIds.size;
+    const answered = answeredLeadIds.size;
+
+    return {
+      called,
+      answered,
+      answerRate: called > 0 ? (answered / called) * 100 : 0,
+      statusCounts
+    };
+  },
+
+  getYerevanTodayBounds() {
+    return yerevanDayBounds(new Date());
+  },
+
+  getYerevanDateKey(value?: Date) {
+    return yerevanDateKey(value || new Date());
   },
 
   async resetSystem(userId: string) {
