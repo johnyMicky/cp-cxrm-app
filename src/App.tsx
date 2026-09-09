@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X, Camera, Loader2, Radio } from 'lucide-react';
+import { LayoutDashboard, Users, Inbox, Activity, Settings, LogOut, UserCog, Bell, MessageSquare, FileText, CheckCircle2, Clock3, ShieldCheck, DollarSign, PartyPopper, LockKeyhole, X, Camera, Loader2, Radio, Trophy } from 'lucide-react';
 import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -20,6 +20,7 @@ const WorkLogs = lazy(() => import('./pages/WorkLogs'));
 const SecurityLogs = lazy(() => import('./pages/SecurityLogs'));
 const Finance = lazy(() => import('./pages/Finance'));
 const LiveCalls = lazy(() => import('./pages/LiveCalls'));
+const Performance = lazy(() => import('./pages/Performance'));
 const SecureInfo = lazy(() => import('./pages/SecureInfo'));
 const ChatPanel = lazy(() => import('./components/ChatPanel'));
 const VoiceAssistant = lazy(() => import('./components/VoiceAssistant'));
@@ -244,6 +245,7 @@ function Sidebar({
     { name: 'JOR', path: '/jor', icon: CheckCircle2, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Finance', path: '/finance', icon: DollarSign, roles: ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'] },
     { name: 'Live Calls', path: '/live-calls', icon: Radio, roles: ['Administrator', 'Manager', 'Team Leader'] },
+    { name: 'Performance', path: '/performance', icon: Trophy, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Secure Info', path: '/secure-info', icon: LockKeyhole, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent', 'Financial Manager'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator', 'Team Leader'] },
     { name: 'Lead Files', path: '/imports', icon: FileText, roles: ['Administrator', 'Manager', 'Team Leader'] },
@@ -945,6 +947,14 @@ export default function App() {
                         element={
                           ['Administrator', 'Manager', 'Team Leader'].includes(currentUserRole)
                             ? <LiveCalls />
+                            : <Navigate to="/" replace />
+                        }
+                      />
+                      <Route
+                        path="/performance"
+                        element={
+                          ['Administrator', 'Manager', 'Team Leader'].includes(currentUserRole)
+                            ? <Performance />
                             : <Navigate to="/" replace />
                         }
                       />
