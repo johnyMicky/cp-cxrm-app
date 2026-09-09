@@ -163,6 +163,7 @@ export default function Leads() {
   const [leads, setLeads] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
   const [statuses, setStatuses] = useState<string[]>(DEFAULT_STATUSES);
+  const [statusConfigs, setStatusConfigs] = useState<any[]>([]);
   const [search, setSearch] = useState(() => {
     const saved = readSavedLeadsViewState();
     return typeof saved?.search === 'string' ? saved.search : '';
@@ -245,6 +246,13 @@ export default function Leads() {
   const [callingLeadId, setCallingLeadId] = useState<string | null>(null);
   const [autoDialerSession, setAutoDialerSession] = useState<any>(null);
   const [isAutoDialerChanging, setIsAutoDialerChanging] = useState(false);
+  const [outcomeLead, setOutcomeLead] = useState<any>(null);
+  const [outcomeStatus, setOutcomeStatus] = useState('');
+  const [outcomeNote, setOutcomeNote] = useState('');
+  const [outcomeCallbackAt, setOutcomeCallbackAt] = useState('');
+  const [outcomeSaving, setOutcomeSaving] = useState(false);
+  const [outcomeError, setOutcomeError] = useState('');
+  const autoOutcomeLeadRef = useRef('');
   const [telephonyProfiles, setTelephonyProfiles] = useState<any[]>([]);
   const [telephonyProviders, setTelephonyProviders] = useState<any[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState('');
@@ -523,9 +531,11 @@ export default function Leads() {
     firestoreService.getLeadStatuses()
       .then((items: any[]) => {
         if (cancelled) return;
-        const names = (items || [])
+        const normalizedItems = Array.isArray(items) ? items : [];
+        const names = normalizedItems
           .map(item => String(item?.name || '').trim())
           .filter(Boolean);
+        setStatusConfigs(normalizedItems);
         if (names.length > 0) setStatuses(names);
       })
       .catch(err => {
@@ -672,6 +682,16 @@ export default function Leads() {
       showToastMessage(
         `Call initiated via ${selectedTelephonyProfile?.providerName || 'VOIP'} to ${lead.name || lead.phone}`
       );
+
+      // Manual Click2Call does not need another telephony listener. Keep this
+      // lightweight outcome card open while the Agent finishes the call.
+      if (currentUser.role === 'Agent') {
+        setOutcomeLead(lead);
+        setOutcomeStatus('');
+        setOutcomeNote('');
+        setOutcomeCallbackAt('');
+        setOutcomeError('');
+      }
     } catch (err: any) {
       console.error('Atlant Click2Call failed:', err);
       showToastMessage(`Call failed: ${err?.message || 'Unknown error'}`);
@@ -798,6 +818,111 @@ export default function Leads() {
       setNotesPreviewError(err?.message || 'Unable to load notes.');
     } finally {
       setNotesPreviewLoading(false);
+    }
+  };
+
+
+  const getOutcomeConfig = (statusName: string) =>
+    statusConfigs.find(
+      (item: any) =>
+        String(item?.name || '').trim().toLowerCase() ===
+        String(statusName || '').trim().toLowerCase()
+    );
+
+  const closeOutcomeModal = () => {
+    if (outcomeSaving) return;
+    setOutcomeLead(null);
+    setOutcomeStatus('');
+    setOutcomeNote('');
+    setOutcomeCallbackAt('');
+    setOutcomeError('');
+  };
+
+  const saveCallOutcome = async (callNext = false) => {
+    if (!outcomeLead?.id || !outcomeStatus || outcomeSaving) return;
+
+    if (outcomeStatus === 'Callback' && !outcomeCallbackAt) {
+      setOutcomeError('Select Callback date and time.');
+      return;
+    }
+
+    const callbackDate =
+      outcomeStatus === 'Callback' && outcomeCallbackAt
+        ? new Date(outcomeCallbackAt)
+        : null;
+
+    if (callbackDate && Number.isNaN(callbackDate.getTime())) {
+      setOutcomeError('Invalid Callback date and time.');
+      return;
+    }
+
+    const config = getOutcomeConfig(outcomeStatus);
+    const countsAsAnswered = config?.countsAsAnswered === true;
+    const leadId = String(outcomeLead.id);
+
+    try {
+      setOutcomeSaving(true);
+      setOutcomeError('');
+
+      await firestoreService.recordLeadCallOutcome({
+        leadId,
+        userId: currentUser.id,
+        userName: localStorage.getItem('userName') || '',
+        status: outcomeStatus,
+        countsAsAnswered,
+        callbackAt: callbackDate,
+        note: outcomeNote,
+        source: outcomeLead.source || '',
+        country: outcomeLead.country || ''
+      });
+
+      const shouldContinueAutoDialer = isLeadAwaitingAutoDialerStatus(leadId);
+
+      if (shouldContinueAutoDialer) {
+        try {
+          await firestoreService.continueAtlantAutoDialerAfterStatus(leadId, outcomeStatus);
+          await refreshAutoDialerStatus();
+        } catch (dialerErr: any) {
+          console.error('Failed to continue Auto Dialer after Call Outcome:', dialerErr);
+          showToastMessage(
+            `Outcome saved, but Auto Dialer could not continue: ${dialerErr?.message || 'Unknown error'}`
+          );
+        }
+      }
+
+      setOutcomeLead(null);
+      setOutcomeStatus('');
+      setOutcomeNote('');
+      setOutcomeCallbackAt('');
+      await fetchLeads();
+      window.dispatchEvent(new CustomEvent('crm:performance-updated'));
+
+      if (shouldContinueAutoDialer) {
+        showToastMessage('Outcome saved. Auto Dialer is continuing...');
+        return;
+      }
+
+      showToastMessage('Call Outcome saved.');
+
+      if (callNext) {
+        const currentIndex = filteredLeads.findIndex(
+          (item: any) => String(item.id) === leadId
+        );
+        const nextLead = filteredLeads
+          .slice(currentIndex >= 0 ? currentIndex + 1 : 0)
+          .find((item: any) => String(item?.phone || '').trim());
+
+        if (nextLead) {
+          await handleAtlantCall(nextLead);
+        } else {
+          showToastMessage('Outcome saved. No next callable Lead in this view.');
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to save Call Outcome:', err);
+      setOutcomeError(err?.message || 'Unable to save Call Outcome.');
+    } finally {
+      setOutcomeSaving(false);
     }
   };
 
@@ -941,6 +1066,48 @@ export default function Leads() {
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [currentUser.id, currentUser.role]);
+
+
+  // Auto Dialer already polls its own session state. Reuse that existing state
+  // to open the Outcome card; no extra Firestore/Atlant listener is added.
+  useEffect(() => {
+    if (currentUser.role !== 'Agent') return;
+
+    const awaiting =
+      autoDialerSession?.enabled === true &&
+      String(autoDialerSession?.state || '') === 'awaiting_status';
+
+    const leadId = String(
+      autoDialerSession?.awaitingStatusLeadId ||
+      autoDialerSession?.currentLeadId ||
+      ''
+    );
+
+    if (!awaiting || !leadId) {
+      autoOutcomeLeadRef.current = '';
+      return;
+    }
+
+    if (autoOutcomeLeadRef.current === leadId || outcomeLead) return;
+
+    const lead = leads.find((item: any) => String(item.id) === leadId);
+    if (!lead) return;
+
+    autoOutcomeLeadRef.current = leadId;
+    setOutcomeLead(lead);
+    setOutcomeStatus('');
+    setOutcomeNote('');
+    setOutcomeCallbackAt('');
+    setOutcomeError('');
+  }, [
+    autoDialerSession?.enabled,
+    autoDialerSession?.state,
+    autoDialerSession?.awaitingStatusLeadId,
+    autoDialerSession?.currentLeadId,
+    leads,
+    outcomeLead,
+    currentUser.role
+  ]);
 
   useEffect(() => {
     fetchLeads();
@@ -2815,6 +2982,131 @@ export default function Leads() {
                   })}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {outcomeLead && currentUser.role === 'Agent' && (
+        <div className="fixed inset-0 z-[135] flex items-center justify-center p-4 bg-black/75">
+          <div className="w-full max-w-3xl overflow-hidden rounded-3xl border border-white/10 bg-[#0A0F1C] shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-white/5 bg-white/[0.02] px-6 py-5">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-400">
+                  One-click Call Outcome
+                </p>
+                <h2 className="mt-1 text-xl font-semibold text-white">
+                  How did the call go?
+                </h2>
+                <p className="mt-1 text-xs text-slate-400">
+                  {outcomeLead.name || 'Lead'} · {outcomeLead.phone || ''}
+                  {isLeadAwaitingAutoDialerStatus(String(outcomeLead.id))
+                    ? ' · Auto Dialer waiting for outcome'
+                    : ' · Choose the outcome when the call finishes'}
+                </p>
+              </div>
+
+              {!isLeadAwaitingAutoDialerStatus(String(outcomeLead.id)) && (
+                <button
+                  onClick={closeOutcomeModal}
+                  disabled={outcomeSaving}
+                  className="rounded-xl p-2 text-slate-500 hover:bg-white/5 hover:text-white disabled:opacity-40"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              )}
+            </div>
+
+            <div className="max-h-[72vh] overflow-y-auto p-6">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                {statuses.map(status => {
+                  const selected = outcomeStatus === status;
+                  const answered = getOutcomeConfig(status)?.countsAsAnswered === true;
+
+                  return (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => {
+                        setOutcomeStatus(status);
+                        setOutcomeError('');
+                        if (status !== 'Callback') setOutcomeCallbackAt('');
+                      }}
+                      className={`rounded-xl border px-3 py-3 text-left transition ${
+                        selected
+                          ? 'border-cyan-400/60 bg-cyan-500/10 text-white'
+                          : 'border-white/5 bg-white/[0.025] text-slate-300 hover:border-white/15 hover:bg-white/[0.05]'
+                      }`}
+                    >
+                      <span className="block text-xs font-semibold">{status}</span>
+                      <span className={`mt-1 block text-[9px] uppercase tracking-wider ${
+                        answered ? 'text-emerald-400' : 'text-slate-600'
+                      }`}>
+                        {answered ? 'Counts as Answered' : 'Not Answered'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {outcomeStatus === 'Callback' && (
+                <div className="mt-5 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+                  <label className="mb-2 block text-xs font-semibold text-amber-300">
+                    Callback Date & Time
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={outcomeCallbackAt}
+                    onChange={e => setOutcomeCallbackAt(e.target.value)}
+                    className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none focus:border-amber-400/50"
+                  />
+                </div>
+              )}
+
+              <div className="mt-5">
+                <label className="mb-2 block text-xs font-semibold text-slate-300">
+                  Note <span className="font-normal text-slate-600">(optional)</span>
+                </label>
+                <textarea
+                  value={outcomeNote}
+                  onChange={e => setOutcomeNote(e.target.value)}
+                  rows={3}
+                  placeholder="Add a short note about the conversation..."
+                  className="w-full resize-none rounded-2xl border border-white/10 bg-white/[0.025] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-cyan-400/40"
+                />
+              </div>
+
+              {outcomeError && (
+                <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/5 px-4 py-3 text-sm text-rose-300">
+                  {outcomeError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col-reverse gap-3 border-t border-white/5 bg-white/[0.015] px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-[10px] text-slate-600">
+                Performance is counted from CRM outcomes, not Atlant answered status.
+              </div>
+
+              <div className="flex items-center gap-2">
+                {!isLeadAwaitingAutoDialerStatus(String(outcomeLead.id)) && (
+                  <button
+                    onClick={() => saveCallOutcome(true)}
+                    disabled={outcomeSaving || !outcomeStatus}
+                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-xs font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-40"
+                  >
+                    Save & Call Next
+                  </button>
+                )}
+                <button
+                  onClick={() => saveCallOutcome(false)}
+                  disabled={outcomeSaving || !outcomeStatus}
+                  className="rounded-xl bg-cyan-600 px-5 py-2.5 text-xs font-bold text-white shadow-lg shadow-cyan-500/15 hover:bg-cyan-500 disabled:opacity-40"
+                >
+                  {outcomeSaving ? 'Saving...' : 'Save Outcome'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
