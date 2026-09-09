@@ -93,6 +93,50 @@ const getStatusStyles = (status: string) => {
   }
 };
 
+const COUNTRY_CODE_BY_NAME: Record<string, string> = {
+  'albania': 'AL', 'algeria': 'DZ', 'andorra': 'AD', 'angola': 'AO',
+  'argentina': 'AR', 'armenia': 'AM', 'australia': 'AU', 'austria': 'AT',
+  'azerbaijan': 'AZ', 'bahamas': 'BS', 'bahrain': 'BH', 'bangladesh': 'BD',
+  'barbados': 'BB', 'belarus': 'BY', 'belgium': 'BE', 'belize': 'BZ',
+  'benin': 'BJ', 'bhutan': 'BT', 'bolivia': 'BO', 'bosnia and herzegovina': 'BA',
+  'botswana': 'BW', 'brazil': 'BR', 'brunei': 'BN', 'bulgaria': 'BG',
+  'cambodia': 'KH', 'cameroon': 'CM', 'canada': 'CA', 'chile': 'CL',
+  'china': 'CN', 'colombia': 'CO', 'costa rica': 'CR', 'croatia': 'HR',
+  'cuba': 'CU', 'cyprus': 'CY', 'czech republic': 'CZ', 'czechia': 'CZ',
+  'denmark': 'DK', 'dominican republic': 'DO', 'ecuador': 'EC', 'egypt': 'EG',
+  'el salvador': 'SV', 'estonia': 'EE', 'ethiopia': 'ET', 'finland': 'FI',
+  'france': 'FR', 'georgia': 'GE', 'germany': 'DE', 'ghana': 'GH',
+  'greece': 'GR', 'guatemala': 'GT', 'honduras': 'HN', 'hong kong': 'HK',
+  'hungary': 'HU', 'iceland': 'IS', 'india': 'IN', 'indonesia': 'ID',
+  'iran': 'IR', 'iraq': 'IQ', 'ireland': 'IE', 'israel': 'IL',
+  'italy': 'IT', 'jamaica': 'JM', 'japan': 'JP', 'jordan': 'JO',
+  'kazakhstan': 'KZ', 'kenya': 'KE', 'kosovo': 'XK', 'kuwait': 'KW',
+  'kyrgyzstan': 'KG', 'latvia': 'LV', 'lebanon': 'LB', 'libya': 'LY',
+  'liechtenstein': 'LI', 'lithuania': 'LT', 'luxembourg': 'LU', 'malaysia': 'MY',
+  'malta': 'MT', 'mexico': 'MX', 'moldova': 'MD', 'monaco': 'MC',
+  'mongolia': 'MN', 'montenegro': 'ME', 'morocco': 'MA', 'nepal': 'NP',
+  'netherlands': 'NL', 'new zealand': 'NZ', 'nicaragua': 'NI', 'nigeria': 'NG',
+  'north macedonia': 'MK', 'norway': 'NO', 'oman': 'OM', 'pakistan': 'PK',
+  'panama': 'PA', 'paraguay': 'PY', 'peru': 'PE', 'philippines': 'PH',
+  'poland': 'PL', 'portugal': 'PT', 'puerto rico': 'PR', 'qatar': 'QA',
+  'romania': 'RO', 'russia': 'RU', 'saudi arabia': 'SA', 'serbia': 'RS',
+  'singapore': 'SG', 'slovakia': 'SK', 'slovenia': 'SI', 'south africa': 'ZA',
+  'south korea': 'KR', 'korea': 'KR', 'spain': 'ES', 'sri lanka': 'LK',
+  'sweden': 'SE', 'switzerland': 'CH', 'taiwan': 'TW', 'thailand': 'TH',
+  'tunisia': 'TN', 'turkey': 'TR', 'türkiye': 'TR', 'ukraine': 'UA',
+  'united arab emirates': 'AE', 'uae': 'AE', 'united kingdom': 'GB',
+  'uk': 'GB', 'great britain': 'GB', 'england': 'GB', 'united states': 'US',
+  'united states of america': 'US', 'usa': 'US', 'us': 'US', 'uruguay': 'UY',
+  'uzbekistan': 'UZ', 'venezuela': 'VE', 'vietnam': 'VN'
+};
+
+const getCountryCode = (country: any) => {
+  const raw = String(country || '').trim();
+  if (!raw) return '';
+  if (/^[A-Za-z]{2}$/.test(raw)) return raw.toUpperCase();
+  return COUNTRY_CODE_BY_NAME[raw.toLowerCase()] || '';
+};
+
 const LEADS_VIEW_STATE_KEY = 'cpcrm_leads_view_state_v2';
 
 const readSavedLeadsViewState = () => {
@@ -215,6 +259,8 @@ export default function Leads() {
   const [notesPreviewItems, setNotesPreviewItems] = useState<any[]>([]);
   const [notesPreviewLoading, setNotesPreviewLoading] = useState(false);
   const [notesPreviewError, setNotesPreviewError] = useState('');
+  const [legacyNoteCounts, setLegacyNoteCounts] = useState<Record<string, number>>({});
+  const legacyNoteCountRequestedRef = useRef<Set<string>>(new Set());
   const [isAssigning, setIsAssigning] = useState(false);
   const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
   const [isReshuffling, setIsReshuffling] = useState(false);
@@ -246,6 +292,24 @@ export default function Leads() {
   const previousLeadIdsRef = useRef<Set<string>>(new Set());
   const hasMountedLeadViewRef = useRef(false);
   const hasRestoredScrollRef = useRef(false);
+
+  useEffect(() => {
+    if (!['status', 'agent', 'source', 'country'].includes(String(activeDropdown || ''))) {
+      return;
+    }
+
+    const handleOutsideFilterClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      if (!target.closest('[data-leads-filter-dropdown="true"]')) {
+        setActiveDropdown(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideFilterClick);
+    return () => document.removeEventListener('mousedown', handleOutsideFilterClick);
+  }, [activeDropdown]);
 
   const currentUser = { 
     id: localStorage.getItem('userId'),
@@ -310,7 +374,7 @@ export default function Leads() {
     return Array.from(values.values()).sort((a, b) => a.localeCompare(b));
   }, [leads]);
 
-  const countryOptions = useMemo(() => {
+  const allCountryOptions = useMemo(() => {
     const values = new Map<string, string>();
     leads.forEach((lead: any) => {
       const value = String(lead?.country || '').trim();
@@ -320,6 +384,25 @@ export default function Leads() {
     });
     return Array.from(values.values()).sort((a, b) => a.localeCompare(b));
   }, [leads]);
+
+  const countryOptions = useMemo(() => {
+    if (filters.sources.length === 0) return allCountryOptions;
+
+    const selectedSources = new Set(filters.sources.map((source: string) => safeLower(source)));
+    const values = new Map<string, string>();
+
+    leads.forEach((lead: any) => {
+      if (!selectedSources.has(safeLower(lead?.source))) return;
+
+      const value = String(lead?.country || '').trim();
+      if (!value) return;
+
+      const key = value.toLowerCase();
+      if (!values.has(key)) values.set(key, value);
+    });
+
+    return Array.from(values.values()).sort((a, b) => a.localeCompare(b));
+  }, [leads, allCountryOptions, filters.sources]);
 
   const visibleSourceOptions = useMemo(() => {
     const query = safeLower(sourceSearch);
@@ -337,7 +420,7 @@ export default function Leads() {
   useEffect(() => {
     const payload = {
       updatedAt: Date.now(),
-      countries: countryOptions,
+      countries: allCountryOptions,
       sources: sourceOptions,
       statuses,
       agents: agents.map((agent: any) => ({
@@ -358,7 +441,7 @@ export default function Leads() {
     } catch {
       // Storage availability must never affect the working Leads page.
     }
-  }, [countryOptions, sourceOptions, statuses, agents]);
+  }, [allCountryOptions, sourceOptions, statuses, agents]);
 
   const reshuffleSourceStatuses = useMemo(
     () => statuses.filter(
@@ -672,6 +755,10 @@ export default function Leads() {
     if (!quickNoteText.trim()) return;
     try {
       await firestoreService.addNote(leadId, currentUser.id, quickNoteText);
+      setLegacyNoteCounts(prev => {
+        if (!(leadId in prev)) return prev;
+        return { ...prev, [leadId]: Number(prev[leadId] || 0) + 1 };
+      });
       setQuickNoteId(null);
       setQuickNoteText('');
       handleSuccess('Note added successfully');
@@ -697,7 +784,15 @@ export default function Leads() {
 
     try {
       const notes = await firestoreService.getLeadNotes(String(lead.id));
-      setNotesPreviewItems(Array.isArray(notes) ? notes : []);
+      const normalizedNotes = Array.isArray(notes) ? notes : [];
+      setNotesPreviewItems(normalizedNotes);
+
+      if (lead?.noteCountInitialized !== true) {
+        setLegacyNoteCounts(prev => ({
+          ...prev,
+          [String(lead.id)]: normalizedNotes.length
+        }));
+      }
     } catch (err: any) {
       console.error('Failed to load Lead notes preview:', err);
       setNotesPreviewError(err?.message || 'Unable to load notes.');
@@ -996,6 +1091,41 @@ export default function Leads() {
   );
 
   useEffect(() => {
+    const missingLegacyIds = visibleLeads
+      .filter((lead: any) => lead?.noteCountInitialized !== true)
+      .map((lead: any) => String(lead?.id || ''))
+      .filter(
+        (id: string) =>
+          !!id &&
+          !legacyNoteCountRequestedRef.current.has(id)
+      );
+
+    if (missingLegacyIds.length === 0) return;
+
+    missingLegacyIds.forEach((id: string) => {
+      legacyNoteCountRequestedRef.current.add(id);
+    });
+
+    let cancelled = false;
+
+    firestoreService.getLeadNoteCountsForIds(missingLegacyIds)
+      .then((counts: Record<string, number>) => {
+        if (cancelled) return;
+        setLegacyNoteCounts(prev => ({ ...prev, ...counts }));
+      })
+      .catch(err => {
+        console.error('Failed to load legacy Lead note counts:', err);
+        missingLegacyIds.forEach((id: string) => {
+          legacyNoteCountRequestedRef.current.delete(id);
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleLeads]);
+
+  useEffect(() => {
     if (!hasMountedLeadViewRef.current) {
       hasMountedLeadViewRef.current = true;
       return;
@@ -1042,13 +1172,33 @@ export default function Leads() {
         (value: string) => safeLower(value) === safeLower(source)
       );
 
+      const nextSources = isSelected
+        ? prev.sources.filter(
+            (value: string) => safeLower(value) !== safeLower(source)
+          )
+        : [...prev.sources, source];
+
+      let nextCountries = prev.countries;
+
+      if (nextSources.length > 0 && prev.countries.length > 0) {
+        const selectedSources = new Set(nextSources.map((value: string) => safeLower(value)));
+        const availableCountries = new Set<string>();
+
+        leads.forEach((lead: any) => {
+          if (!selectedSources.has(safeLower(lead?.source))) return;
+          const country = String(lead?.country || '').trim();
+          if (country) availableCountries.add(safeLower(country));
+        });
+
+        nextCountries = prev.countries.filter(
+          (country: string) => availableCountries.has(safeLower(country))
+        );
+      }
+
       return {
         ...prev,
-        sources: isSelected
-          ? prev.sources.filter(
-              (value: string) => safeLower(value) !== safeLower(source)
-            )
-          : [...prev.sources, source]
+        sources: nextSources,
+        countries: nextCountries
       };
     });
 
@@ -1934,7 +2084,7 @@ export default function Leads() {
 
         {showFilters && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-[#0A0F1C] p-4 rounded-xl border border-white/5 shadow-sm">
-            <div className="space-y-1.5 relative">
+            <div className="space-y-1.5 relative" data-leads-filter-dropdown="true">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Status</label>
               <button 
                 onClick={() => setActiveDropdown(activeDropdown === 'status' ? null : 'status')}
@@ -1981,7 +2131,7 @@ export default function Leads() {
               )}
             </div>
 
-            <div className="space-y-1.5 relative">
+            <div className="space-y-1.5 relative" data-leads-filter-dropdown="true">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Source</label>
               <div className="relative">
                 <input
@@ -2085,7 +2235,7 @@ export default function Leads() {
             </div>
 
             {currentUser.role !== 'Agent' && (
-              <div className="space-y-1.5 relative">
+              <div className="space-y-1.5 relative" data-leads-filter-dropdown="true">
                 <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Agent</label>
                 <button 
                   onClick={() => setActiveDropdown(activeDropdown === 'agent' ? null : 'agent')}
@@ -2133,7 +2283,7 @@ export default function Leads() {
               </div>
             )}
 
-            <div className="space-y-1.5 relative">
+            <div className="space-y-1.5 relative" data-leads-filter-dropdown="true">
               <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Country</label>
               <div className="relative">
                 <input
@@ -2454,6 +2604,14 @@ export default function Leads() {
                             className="group/copy relative flex items-center space-x-2 text-sm text-slate-300 hover:text-blue-400"
                           >
                             <span>{lead.phone}</span>
+                            {getCountryCode(lead.country) && (
+                              <span
+                                className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] font-bold text-slate-400"
+                                title={lead.country || ''}
+                              >
+                                {getCountryCode(lead.country)}
+                              </span>
+                            )}
                             {copiedId === lead.id ? (
                               <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">Copied!</span>
                             ) : (
@@ -2507,11 +2665,16 @@ export default function Leads() {
                         <button
                           type="button"
                           onClick={() => openNotesPreview(lead)}
-                          className="p-1 rounded text-slate-500 hover:text-cyan-400 hover:bg-white/5"
+                          className="inline-flex items-center gap-1 p-1 rounded text-slate-500 hover:text-cyan-400 hover:bg-white/5"
                           title="View Notes"
                           aria-label={`View notes for ${lead.name || 'lead'}`}
                         >
                           <Eye className="w-3.5 h-3.5" />
+                          <span className="min-w-[10px] text-[9px] font-bold leading-none">
+                            {lead?.noteCountInitialized === true
+                              ? Number(lead?.noteCount || 0)
+                              : Number(legacyNoteCounts[String(lead.id)] || 0)}
+                          </span>
                         </button>
                       </div>
 
