@@ -3,6 +3,7 @@ import {
   ShieldAlert,
   RefreshCw,
   CheckCircle2,
+  XCircle,
   AlertTriangle,
   Plus,
   Route,
@@ -501,6 +502,26 @@ export default function Settings() {
       await loadLeadStatuses();
     } catch (err: any) {
       setLeadStatusError(err?.message || 'Failed to update Lead status.');
+    } finally {
+      setLeadStatusBusyId('');
+    }
+  };
+
+  const toggleLeadStatusAnswered = async (status: any) => {
+    if (!currentUserId) return;
+
+    try {
+      setLeadStatusBusyId(`answered-${String(status.id)}`);
+      setLeadStatusError('');
+      setLeadStatusSuccess('');
+      await firestoreService.setLeadStatusCountsAsAnswered(
+        status.id,
+        status.countsAsAnswered !== true,
+        currentUserId
+      );
+      await loadLeadStatuses();
+    } catch (err: any) {
+      setLeadStatusError(err?.message || 'Failed to update Answered logic.');
     } finally {
       setLeadStatusBusyId('');
     }
@@ -1159,7 +1180,7 @@ export default function Settings() {
             <h2 className="text-xl font-semibold text-white">Lead Statuses</h2>
           </div>
           <p className="text-sm text-slate-400 mb-5">
-            Add or disable the statuses Agents can use on Leads. In Process is included by default. Core workflow statuses are protected so Lead routing, callbacks and finance logic cannot be broken accidentally.
+            Add or disable the statuses Agents can use on Leads. "Counts as Answered" controls Performance statistics only; it does not change Lead routing, callbacks or finance logic. Core workflow statuses remain protected.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-3">
@@ -1222,10 +1243,33 @@ export default function Settings() {
                       {locked && (
                         <span className="text-[10px] uppercase text-amber-400">Protected</span>
                       )}
+                      <span className={`text-[10px] uppercase ${status.countsAsAnswered === true ? 'text-cyan-400' : 'text-slate-500'}`}>
+                        {status.countsAsAnswered === true ? 'Answered: Yes' : 'Answered: No'}
+                      </span>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => toggleLeadStatusAnswered(status)}
+                      disabled={busy || leadStatusBusyId === `answered-${String(status.id)}`}
+                      title="Controls whether this outcome is counted as a real answered Lead in Performance"
+                      className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-40 ${
+                        status.countsAsAnswered === true
+                          ? 'bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20'
+                          : 'bg-slate-500/10 text-slate-400 hover:bg-slate-500/20'
+                      }`}
+                    >
+                      {leadStatusBusyId === `answered-${String(status.id)}` ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : status.countsAsAnswered === true ? (
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5" />
+                      )}
+                      Answered {status.countsAsAnswered === true ? 'Yes' : 'No'}
+                    </button>
+
                     <button
                       onClick={() => toggleLeadStatus(status)}
                       disabled={busy || locked}
