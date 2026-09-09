@@ -125,6 +125,8 @@ export default function Dashboard() {
   const [myShift, setMyShift] = useState<any>(null);
   const [shiftLoading, setShiftLoading] = useState(false);
   const [shiftError, setShiftError] = useState('');
+  const [myPerformance, setMyPerformance] = useState<any>(null);
+  const [myPerformanceLoading, setMyPerformanceLoading] = useState(false);
 
   const loadMyShift = async () => {
     if (currentUserRole !== 'Agent' || !currentUserId) return;
@@ -133,6 +135,63 @@ export default function Dashboard() {
       setMyShift(shift);
     } catch (err) {
       console.error('Failed to load shift:', err);
+    }
+  };
+
+
+  const loadMyPerformance = async () => {
+    if (currentUserRole !== 'Agent' || !currentUserId) return;
+
+    try {
+      setMyPerformanceLoading(true);
+
+      const todayBounds = firestoreService.getYerevanTodayBounds();
+      const lookbackStart = new Date(
+        todayBounds.start.getTime() - 7 * 24 * 60 * 60 * 1000
+      );
+
+      const events = await firestoreService.getPerformanceEvents(
+        lookbackStart,
+        todayBounds.end
+      );
+
+      const mine = (events as any[]).filter(
+        (event: any) =>
+          String(event.agentId || event.user_id || '') === String(currentUserId)
+      );
+
+      const todayKey = firestoreService.getYerevanDateKey(new Date());
+      const todayEvents = mine.filter(
+        (event: any) => String(event.yerevanDateKey || '') === todayKey
+      );
+
+      const summary = firestoreService.summarizePerformanceEvents(todayEvents);
+
+      const activeDays = new Set(
+        mine
+          .map((event: any) => String(event.yerevanDateKey || ''))
+          .filter(Boolean)
+      );
+
+      let streak = 0;
+      for (let offset = 0; offset < 8; offset++) {
+        const day = new Date(
+          todayBounds.start.getTime() - offset * 24 * 60 * 60 * 1000
+        );
+        const key = firestoreService.getYerevanDateKey(day);
+        if (!activeDays.has(key)) break;
+        streak++;
+      }
+
+      setMyPerformance({
+        ...summary,
+        streak,
+        dailyGoal: 50
+      });
+    } catch (err) {
+      console.error('Failed to load My Performance:', err);
+    } finally {
+      setMyPerformanceLoading(false);
     }
   };
 
@@ -230,6 +289,16 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [currentUserId, currentUserRole]);
 
+  useEffect(() => {
+    loadMyPerformance();
+  }, [currentUserId, currentUserRole]);
+
+  useEffect(() => {
+    const handlePerformanceUpdated = () => loadMyPerformance();
+    window.addEventListener('crm:performance-updated', handlePerformanceUpdated);
+    return () => window.removeEventListener('crm:performance-updated', handlePerformanceUpdated);
+  }, [currentUserId, currentUserRole]);
+
   if (error) {
     return (
       <div className="p-8 text-center">
@@ -307,6 +376,83 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+
+      {currentUserRole === 'Agent' && (
+        <div className="rounded-2xl border border-white/5 bg-[#0A0F1C] p-5 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-400">
+                Today · My Performance
+              </p>
+              <h3 className="mt-1 text-lg font-semibold text-white">
+                CRM Call Outcomes
+              </h3>
+              <p className="mt-1 text-xs text-slate-500">
+                Yerevan Time · based on saved CRM outcomes, not Atlant answered status
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 flex-1 lg:max-w-4xl">
+              <div className="rounded-xl border border-white/5 bg-white/[0.025] p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Called</p>
+                <p className="mt-1 text-xl font-bold text-white">
+                  {myPerformanceLoading ? '…' : Number(myPerformance?.called || 0)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/5 bg-white/[0.025] p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Answered</p>
+                <p className="mt-1 text-xl font-bold text-emerald-400">
+                  {myPerformanceLoading ? '…' : Number(myPerformance?.answered || 0)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/5 bg-white/[0.025] p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">HP</p>
+                <p className="mt-1 text-xl font-bold text-violet-400">
+                  {myPerformanceLoading ? '…' : Number(myPerformance?.statusCounts?.['High Potential'] || 0)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/5 bg-white/[0.025] p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">JOR</p>
+                <p className="mt-1 text-xl font-bold text-cyan-400">
+                  {myPerformanceLoading ? '…' : Number(myPerformance?.statusCounts?.JOR || 0)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/5 bg-white/[0.025] p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Answer Rate</p>
+                <p className="mt-1 text-xl font-bold text-blue-400">
+                  {myPerformanceLoading ? '…' : `${Number(myPerformance?.answerRate || 0).toFixed(0)}%`}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-4 text-xs">
+              <span className="text-orange-300">
+                🔥 {Number(myPerformance?.streak || 0)} Day Streak
+              </span>
+              <span className="text-slate-400">
+                Goal: {Number(myPerformance?.called || 0)} / {Number(myPerformance?.dailyGoal || 50)}
+              </span>
+            </div>
+
+            <div className="h-2 w-full sm:w-72 overflow-hidden rounded-full bg-white/5">
+              <div
+                className="h-full rounded-full bg-cyan-500 transition-all"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    (Number(myPerformance?.called || 0) /
+                      Math.max(1, Number(myPerformance?.dailyGoal || 50))) *
+                      100
+                  )}%`
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {currentUserRole === 'Agent' && <AgentFinancePanel />}
 
