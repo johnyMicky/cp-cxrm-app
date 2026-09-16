@@ -244,6 +244,9 @@ export default function Leads() {
   
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [callingLeadId, setCallingLeadId] = useState<string | null>(null);
+  // Keep the last successful manual Click2Call lead highlighted locally.
+  // UI-only state: no Firestore read/write, listener or polling is added.
+  const [click2CallLeadId, setClick2CallLeadId] = useState<string | null>(null);
   const [autoDialerSession, setAutoDialerSession] = useState<any>(null);
   const [isAutoDialerChanging, setIsAutoDialerChanging] = useState(false);
   const [telephonyProfiles, setTelephonyProfiles] = useState<any[]>([]);
@@ -672,6 +675,7 @@ export default function Leads() {
 
     try {
       await firestoreService.initiateAtlantCall(lead.phone, selectedTelephonyProfile?.providerId);
+      setClick2CallLeadId(leadId);
       showToastMessage(
         `Call initiated via ${selectedTelephonyProfile?.providerName || 'VOIP'} to ${lead.name || lead.phone}`
       );
@@ -2607,9 +2611,11 @@ export default function Leads() {
                         : ['awaiting_status', 'waiting'].includes(String(autoDialerSession?.state || ''))
                           ? 'bg-amber-500/[0.08] ring-1 ring-inset ring-amber-500/25'
                           : 'bg-blue-500/[0.09] ring-1 ring-inset ring-blue-500/30'
-                      : selectedLeads.includes(lead.id)
-                        ? 'bg-blue-500/[0.03] hover:bg-white/[0.02]'
-                        : 'hover:bg-white/[0.02]'
+                      : click2CallLeadId === lead.id
+                        ? 'bg-blue-500/[0.09] ring-1 ring-inset ring-blue-500/30'
+                        : selectedLeads.includes(lead.id)
+                          ? 'bg-blue-500/[0.03] hover:bg-white/[0.02]'
+                          : 'hover:bg-white/[0.02]'
                   }`}
                 >
                   <td className="px-6 py-4">
