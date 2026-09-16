@@ -742,6 +742,15 @@ export default function App() {
       return;
     }
 
+    // Leads.tsx owns the Agent's realtime lead stream while that page is open.
+    // Suspending this global assignment listener there prevents two identical
+    // Firestore listeners from reading the same Agent lead collection at once.
+    // On every other page the global listener remains active, so assignment
+    // notifications keep working exactly as before.
+    if (location.pathname === '/leads') {
+      return;
+    }
+
     const leadsQuery = query(
       collection(db, 'leads'),
       where('assigned_to', '==', currentUserId)
@@ -782,7 +791,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [isAuthenticated, currentUserId, currentUserRole]);
+  }, [isAuthenticated, currentUserId, currentUserRole, location.pathname]);
 
   useEffect(() => {
     return () => {
