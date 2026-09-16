@@ -855,8 +855,8 @@ export default function Leads() {
           );
         }
 
-        // Refresh Leads without clearing the Agent's current filters/selection state.
-        await fetchLeads();
+        // The Agent's scoped realtime listener receives the status update.
+        // No duplicate full lead refetch is needed here.
         window.dispatchEvent(new CustomEvent('crm:performance-updated'));
         return;
       }
@@ -967,7 +967,11 @@ export default function Leads() {
   // No Call Outcome popup or extra listener is required.
 
   useEffect(() => {
-    fetchLeads();
+    // Agents receive their initial/current lead list from the scoped realtime
+    // listener below. Avoid a second getDocs() read of the same lead set.
+    if (currentUser.role !== 'Agent') {
+      fetchLeads();
+    }
     fetchAgents();
 
     const handleClickOutside = (e: MouseEvent) => {
@@ -1001,6 +1005,35 @@ export default function Leads() {
       (snapshot) => {
         const currentIds = new Set(snapshot.docs.map((doc) => doc.id));
 
+        // This scoped snapshot is the Agent's single Leads-page data source.
+        // Reuse the documents already delivered by Firestore instead of doing
+        // a second getDocs() whenever a lead is assigned or its status changes.
+        const nextLeads = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as any;
+          return {
+            id: docSnap.id,
+            name: data.name || '',
+            email: data.email || '',
+            phone: data.phone || '',
+            country: data.country || '',
+            status: data.status || 'New',
+            source: data.source || '',
+            assigned_to: data.assigned_to || '',
+            importId: data.importId || '',
+            importFileName: data.importFileName || '',
+            callbackAt: data.callbackAt || null,
+            createdBy: data.createdBy || '',
+            createdAt: data.createdAt || null,
+            updatedAt: data.updatedAt || null
+          };
+        }).sort((a: any, b: any) => {
+          const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+          const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+          return dateB.getTime() - dateA.getTime();
+        });
+
+        setLeads(nextLeads);
+
         if (initialAgentLeadLoadRef.current) {
           previousLeadIdsRef.current = currentIds;
           initialAgentLeadLoadRef.current = false;
@@ -1008,7 +1041,6 @@ export default function Leads() {
         }
 
         let newLeadsCount = 0;
-
         snapshot.docChanges().forEach((change) => {
           if (change.type === 'added' && !previousLeadIdsRef.current.has(change.doc.id)) {
             newLeadsCount += 1;
@@ -1021,7 +1053,6 @@ export default function Leads() {
               ? 'You received 1 new lead'
               : `You received ${newLeadsCount} new leads`
           );
-          fetchLeads();
         }
 
         previousLeadIdsRef.current = currentIds;
@@ -1030,12 +1061,13 @@ export default function Leads() {
         console.error('Realtime lead listener failed:', error);
       }
     );
-
     return () => unsubscribe();
   }, [currentUser.id, currentUser.role]);
 
   const handleSuccess = (message?: string, skipFetch = false) => {
-    if (!skipFetch) fetchLeads();
+    // Agent rows update through the realtime scoped listener; avoid rereading
+    // the same collection after every mutation. Other roles keep legacy fetch.
+    if (!skipFetch && currentUser.role !== 'Agent') fetchLeads();
     setSelectedLeads([]);
     setBulkAction({ type: null, value: null });
     setIsReshuffleModalOpen(false);
