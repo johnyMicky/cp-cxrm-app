@@ -910,6 +910,36 @@ export default function Leads() {
 
     let cancelled = false;
     let timer: number | null = null;
+    let requestInFlight = false;
+    let lastSessionSignature = '';
+
+    // Auto Dialer status is intentionally polled because the server owns the call
+    // state. Keep call transitions responsive, but avoid forcing the entire Leads
+    // screen to re-render when the returned session has not actually changed.
+    const sessionSignature = (session: any) => JSON.stringify({
+      enabled: Boolean(session?.enabled),
+      state: String(session?.state || ''),
+      currentLeadId: String(session?.currentLeadId || ''),
+      awaitingStatusLeadId: String(session?.awaitingStatusLeadId || ''),
+      currentIndex: Number(session?.currentIndex ?? -1),
+      queueLength: Number(session?.queueLength ?? session?.queue?.length ?? 0),
+      stopRequested: Boolean(session?.stopRequested),
+      error: String(session?.error || '')
+    });
+
+    const nextPollDelay = (session: any) => {
+      const state = String(session?.state || '');
+
+      // Fast only while a short server-side transition is expected.
+      if (state === 'dialing' || state === 'waiting' || state === 'stopping') return 1800;
+
+      // During a conversation/status selection there is no reason to repaint the
+      // large Leads table every 1.8 seconds. 2.8s still detects call-end changes
+      // quickly while substantially reducing background requests.
+      if (state === 'in_call' || state === 'awaiting_status') return 2800;
+
+      return session?.enabled ? 2800 : 7000;
+    };
 
     const scheduleNext = (delay: number) => {
       if (cancelled) return;
@@ -918,36 +948,38 @@ export default function Leads() {
     };
 
     const poll = async () => {
-      if (cancelled) return;
+      if (cancelled || requestInFlight) return;
 
       if (document.visibilityState !== 'visible') {
-        scheduleNext(5000);
+        scheduleNext(7000);
         return;
       }
 
+      requestInFlight = true;
       try {
         const session = await firestoreService.getAtlantAutoDialerStatus();
 
         if (!cancelled) {
-          setAutoDialerSession(session);
+          const signature = sessionSignature(session);
+          if (signature !== lastSessionSignature) {
+            lastSessionSignature = signature;
+            setAutoDialerSession(session);
+          }
 
-          const active = Boolean(
-            session?.enabled ||
-            ['dialing', 'in_call', 'awaiting_status', 'waiting', 'stopping'].includes(
-              String(session?.state || '')
-            )
-          );
-
-          scheduleNext(active ? 1800 : 5000);
+          scheduleNext(nextPollDelay(session));
         }
       } catch (err) {
         console.error('Auto Dialer polling failed:', err);
-        scheduleNext(5000);
+        scheduleNext(7000);
+      } finally {
+        requestInFlight = false;
       }
     };
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
+        if (timer !== null) window.clearTimeout(timer);
+        timer = null;
         poll();
       }
     };
