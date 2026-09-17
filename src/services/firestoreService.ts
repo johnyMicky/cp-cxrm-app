@@ -5401,7 +5401,8 @@ export const firestoreService = {
       processed: number;
       total: number;
       phase: 'preparing' | 'updating' | 'history' | 'complete';
-    }) => void
+    }) => void,
+    leadScopeIds?: string[]
   ) {
     if (!userId) {
       throw new Error('Current user is required.');
@@ -5562,8 +5563,16 @@ export const firestoreService = {
       rawLeadDocs = snap.docs;
     }
 
+    // Optional frontend scope: when Reshuffle is started from a filtered Leads
+    // view, only those already-visible Lead IDs may participate. Existing role,
+    // status and protected-status checks below remain authoritative.
+    const scopedLeadIds = Array.isArray(leadScopeIds)
+      ? new Set(leadScopeIds.map(id => String(id)).filter(Boolean))
+      : null;
+
     const seenLeadIds = new Set<string>();
     let eligibleLeads = rawLeadDocs
+      .filter((leadDoc: any) => !scopedLeadIds || scopedLeadIds.has(String(leadDoc.id)))
       .filter((leadDoc: any) => {
         if (seenLeadIds.has(leadDoc.id)) return false;
         seenLeadIds.add(leadDoc.id);
