@@ -1385,18 +1385,21 @@ export default function Leads() {
 
   const reshufflePreview = useMemo(() => {
     const statusCounts: Record<string, number> = {};
+    const eligibleLeadIds: string[] = [];
 
-    leads.forEach(lead => {
+    // IMPORTANT: Reshuffle must respect the Leads page's ACTIVE filters.
+    // Use the already-computed filteredLeads array so Source/Country/Agent/Search/
+    // Dashboard filters do not get lost when the Reshuffle modal is opened.
+    // This is client-side only and adds no Firestore reads/listeners/polling.
+    filteredLeads.forEach(lead => {
       const status = normalizeStatus(lead.status);
       if (reshuffleStatuses.includes(status)) {
         statusCounts[status] = (statusCounts[status] || 0) + 1;
+        eligibleLeadIds.push(String(lead.id));
       }
     });
 
-    const total = Object.values(statusCounts).reduce(
-      (sum, count) => sum + Number(count || 0),
-      0
-    );
+    const total = eligibleLeadIds.length;
 
     const recipientIds =
       reshuffleAgents.length > 0
@@ -1408,8 +1411,8 @@ export default function Leads() {
       return user?.name || user?.email || String(id);
     });
 
-    return { statusCounts, total, recipientIds, recipientNames };
-  }, [leads, reshuffleStatuses, reshuffleAgents, agents]);
+    return { statusCounts, total, recipientIds, recipientNames, eligibleLeadIds };
+  }, [filteredLeads, reshuffleStatuses, reshuffleAgents, agents]);
 
   const openReshuffleConfirmation = () => {
     if (reshuffleStatuses.length === 0) {
@@ -1457,7 +1460,8 @@ export default function Leads() {
         String(currentUser.id || ''),
         reshuffleStatuses,
         reshuffleTargetStatus || undefined,
-        progress => setReshuffleProgress(progress)
+        progress => setReshuffleProgress(progress),
+        reshufflePreview.eligibleLeadIds
       );
 
       setReshuffleProgress({
@@ -1934,9 +1938,7 @@ export default function Leads() {
 
                 <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-2">
                   {(() => {
-                    const matchingCount = leads.filter(lead =>
-                      reshuffleStatuses.includes(normalizeStatus(lead.status))
-                    ).length;
+                    const matchingCount = reshufflePreview.total;
 
                     const minPerAgent =
                       reshuffleAgents.length > 0
