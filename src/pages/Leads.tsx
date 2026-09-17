@@ -234,6 +234,7 @@ export default function Leads() {
   const [countrySearch, setCountrySearch] = useState('');
   const [isReshuffleModalOpen, setIsReshuffleModalOpen] = useState(false);
   const [reshuffleStatuses, setReshuffleStatuses] = useState<string[]>([]);
+  const [reshuffleSources, setReshuffleSources] = useState<string[]>([]);
   const [reshuffleAgents, setReshuffleAgents] = useState<string[]>([]);
   const [reshuffleTargetStatus, setReshuffleTargetStatus] = useState('');
   const [isReshuffleTargetOpen, setIsReshuffleTargetOpen] = useState(false);
@@ -1386,14 +1387,15 @@ export default function Leads() {
   const reshufflePreview = useMemo(() => {
     const statusCounts: Record<string, number> = {};
     const eligibleLeadIds: string[] = [];
+    const selectedSourceKeys = new Set(reshuffleSources.map(source => safeLower(source)));
 
-    // IMPORTANT: Reshuffle must respect the Leads page's ACTIVE filters.
-    // Use the already-computed filteredLeads array so Source/Country/Agent/Search/
-    // Dashboard filters do not get lost when the Reshuffle modal is opened.
-    // This is client-side only and adds no Firestore reads/listeners/polling.
-    filteredLeads.forEach(lead => {
+    // Reshuffle has its own explicit Source scope. Reuse the Leads already loaded
+    // for this user, so this adds no Firestore query, listener or polling.
+    leads.forEach(lead => {
       const status = normalizeStatus(lead.status);
-      if (reshuffleStatuses.includes(status)) {
+      const sourceMatches = selectedSourceKeys.has(safeLower(lead?.source));
+
+      if (sourceMatches && reshuffleStatuses.includes(status)) {
         statusCounts[status] = (statusCounts[status] || 0) + 1;
         eligibleLeadIds.push(String(lead.id));
       }
@@ -1412,11 +1414,16 @@ export default function Leads() {
     });
 
     return { statusCounts, total, recipientIds, recipientNames, eligibleLeadIds };
-  }, [filteredLeads, reshuffleStatuses, reshuffleAgents, agents]);
+  }, [leads, reshuffleStatuses, reshuffleSources, reshuffleAgents, agents]);
 
   const openReshuffleConfirmation = () => {
     if (reshuffleStatuses.length === 0) {
       alert('Select at least one status to reshuffle.');
+      return;
+    }
+
+    if (reshuffleSources.length === 0) {
+      alert('Select at least one source to reshuffle.');
       return;
     }
 
@@ -1461,7 +1468,8 @@ export default function Leads() {
         reshuffleStatuses,
         reshuffleTargetStatus || undefined,
         progress => setReshuffleProgress(progress),
-        reshufflePreview.eligibleLeadIds
+        undefined,
+        reshuffleSources
       );
 
       setReshuffleProgress({
@@ -1764,6 +1772,7 @@ export default function Leads() {
                       )
                     )
                   );
+                  setReshuffleSources(filters.sources.length > 0 ? [...filters.sources] : []);
                   setReshuffleAgents(agents.map(a => a.id));
                   setReshuffleTargetStatus('');
                   setIsReshuffleTargetOpen(false);
@@ -1815,6 +1824,43 @@ export default function Leads() {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Select Sources to Reshuffle</label>
+                    <button
+                      type="button"
+                      onClick={() => setReshuffleSources(
+                        reshuffleSources.length === sourceOptions.length ? [] : [...sourceOptions]
+                      )}
+                      className="text-[10px] text-blue-400 hover:text-blue-300 shrink-0"
+                    >
+                      {reshuffleSources.length === sourceOptions.length && sourceOptions.length > 0 ? 'Deselect All' : 'Select All'}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto custom-scrollbar p-1">
+                    {sourceOptions.map(source => (
+                      <button
+                        type="button"
+                        key={source}
+                        onClick={() => setReshuffleSources(prev =>
+                          prev.includes(source) ? prev.filter(item => item !== source) : [...prev, source]
+                        )}
+                        className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs ${
+                          reshuffleSources.includes(source)
+                            ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'
+                        }`}
+                      >
+                        <span className="truncate">{source}</span>
+                        {reshuffleSources.includes(source) && <CheckSquare className="w-3 h-3 shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                  {sourceOptions.length === 0 && (
+                    <p className="text-[11px] text-slate-500">No lead sources are available.</p>
+                  )}
                 </div>
 
                 <div className="rounded-xl border border-slate-700/60 bg-white/[0.02] p-4 space-y-3">
