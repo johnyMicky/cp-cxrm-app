@@ -5402,7 +5402,8 @@ export const firestoreService = {
       total: number;
       phase: 'preparing' | 'updating' | 'history' | 'complete';
     }) => void,
-    leadScopeIds?: string[]
+    leadScopeIds?: string[],
+    sourceFilter?: string[]
   ) {
     if (!userId) {
       throw new Error('Current user is required.');
@@ -5489,6 +5490,16 @@ export const firestoreService = {
     const normalizedTargetStatus = targetStatus
       ? canonicalStatus(targetStatus)
       : '';
+
+    const normalizedSources = Array.from(
+      new Set((sourceFilter || []).map(source => String(source || '').trim().toLowerCase()).filter(Boolean))
+    );
+
+    if (normalizedSources.length === 0) {
+      throw new Error('Select at least one source to reshuffle.');
+    }
+
+    const allowedSourceKeys = new Set(normalizedSources);
 
     let allowedRecipientIds = new Set<string>();
     let visibleLeadAssigneeIds: Set<string> | null = null;
@@ -5585,6 +5596,9 @@ export const firestoreService = {
       .filter((lead: any) => {
         const assignedTo = String(lead.assigned_to || '');
         if (!assignedTo) return false;
+
+        const leadSourceKey = String(lead.source || '').trim().toLowerCase();
+        if (!allowedSourceKeys.has(leadSourceKey)) return false;
 
         const leadStatus = canonicalStatus(lead.status);
 
