@@ -5403,7 +5403,9 @@ export const firestoreService = {
       phase: 'preparing' | 'updating' | 'history' | 'complete';
     }) => void,
     leadScopeIds?: string[],
-    sourceFilter?: string[]
+    sourceFilter?: string[],
+    countryFilter?: string[],
+    currentAgentFilter?: string[]
   ) {
     if (!userId) {
       throw new Error('Current user is required.');
@@ -5494,12 +5496,18 @@ export const firestoreService = {
     const normalizedSources = Array.from(
       new Set((sourceFilter || []).map(source => String(source || '').trim().toLowerCase()).filter(Boolean))
     );
+    const normalizedCountries = Array.from(
+      new Set((countryFilter || []).map(country => String(country || '').trim().toLowerCase()).filter(Boolean))
+    );
+    const normalizedCurrentAgentIds = Array.from(
+      new Set((currentAgentFilter || []).map(id => String(id || '').trim()).filter(Boolean))
+    );
 
-    if (normalizedSources.length === 0) {
-      throw new Error('Select at least one source to reshuffle.');
-    }
-
+    // Empty optional filters mean ALL. They narrow the existing role-visible Lead pool
+    // without adding listeners or polling.
     const allowedSourceKeys = new Set(normalizedSources);
+    const allowedCountryKeys = new Set(normalizedCountries);
+    const allowedCurrentAgentIds = new Set(normalizedCurrentAgentIds);
 
     let allowedRecipientIds = new Set<string>();
     let visibleLeadAssigneeIds: Set<string> | null = null;
@@ -5598,7 +5606,12 @@ export const firestoreService = {
         if (!assignedTo) return false;
 
         const leadSourceKey = String(lead.source || '').trim().toLowerCase();
-        if (!allowedSourceKeys.has(leadSourceKey)) return false;
+        if (allowedSourceKeys.size > 0 && !allowedSourceKeys.has(leadSourceKey)) return false;
+
+        const leadCountryKey = String(lead.country || '').trim().toLowerCase();
+        if (allowedCountryKeys.size > 0 && !allowedCountryKeys.has(leadCountryKey)) return false;
+
+        if (allowedCurrentAgentIds.size > 0 && !allowedCurrentAgentIds.has(assignedTo)) return false;
 
         const leadStatus = canonicalStatus(lead.status);
 
