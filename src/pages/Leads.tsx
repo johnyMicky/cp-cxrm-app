@@ -1494,6 +1494,20 @@ export default function Leads() {
     }
   };
 
+  const resetReshuffleFilters = () => {
+    setReshuffleStatuses([]);
+    setReshuffleSources([]);
+    setReshuffleCountries([]);
+    setReshuffleCurrentAgents([]);
+    setReshuffleAgents([]);
+    setReshuffleSourceSearch('');
+    setReshuffleCountrySearch('');
+    setReshuffleCurrentAgentSearch('');
+    setReshuffleRecipientSearch('');
+    setReshuffleTargetStatus('');
+    setIsReshuffleTargetOpen(false);
+  };
+
   const reshufflePreview = useMemo(() => {
     const statusCounts: Record<string, number> = {};
     const eligibleLeadIds: string[] = [];
@@ -1521,7 +1535,17 @@ export default function Leads() {
       return user?.name || user?.email || String(id);
     });
 
-    return { statusCounts, total: eligibleLeadIds.length, recipientIds, recipientNames, eligibleLeadIds };
+    const estimatedRecipientCounts = recipientIds.map((id, index) => {
+      const base = recipientIds.length > 0 ? Math.floor(eligibleLeadIds.length / recipientIds.length) : 0;
+      const remainder = recipientIds.length > 0 ? eligibleLeadIds.length % recipientIds.length : 0;
+      return {
+        id,
+        name: recipientNames[index] || id,
+        count: base + (index < remainder ? 1 : 0)
+      };
+    });
+
+    return { statusCounts, total: eligibleLeadIds.length, recipientIds, recipientNames, eligibleLeadIds, estimatedRecipientCounts };
   }, [leads, reshuffleStatuses, reshuffleSources, reshuffleCountries, reshuffleCurrentAgents, reshuffleAgents, agents]);
 
   const openReshuffleConfirmation = () => {
@@ -1905,13 +1929,23 @@ export default function Leads() {
                   <RefreshCw className="w-5 h-5 text-amber-400" />
                   <span>Reshuffle Leads</span>
                 </h2>
-                <button 
-                  onClick={() => !isReshuffling && setIsReshuffleModalOpen(false)}
-                  disabled={isReshuffling}
-                  className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white disabled:opacity-50"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={resetReshuffleFilters}
+                    disabled={isReshuffling}
+                    className="px-3 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-white/5 border border-white/10 disabled:opacity-50"
+                  >
+                    Reset Filters
+                  </button>
+                  <button 
+                    onClick={() => !isReshuffling && setIsReshuffleModalOpen(false)}
+                    disabled={isReshuffling}
+                    className="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white disabled:opacity-50"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
               <div className="p-4 md:p-5 space-y-4 overflow-y-auto custom-scrollbar min-h-0 flex-1">
                 <div className="space-y-3">
@@ -2172,6 +2206,13 @@ export default function Leads() {
                           Recipients: {reshuffleAgents.length} • Estimated distribution: {minPerAgent}
                           {maxPerAgent !== minPerAgent ? `–${maxPerAgent}` : ''} per recipient
                         </p>
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {Object.entries(reshufflePreview.statusCounts).map(([status, count]) => (
+                            <span key={status} className="rounded-md border border-amber-500/20 bg-black/10 px-2 py-1 text-[10px] text-amber-200">
+                              {status}: {count as number}
+                            </span>
+                          ))}
+                        </div>
                         <p className="text-[11px] text-amber-400/90">
                           Status after reshuffle: {reshuffleTargetStatus || 'Keep current status'}
                         </p>
@@ -2254,6 +2295,24 @@ export default function Leads() {
                   <p className="text-sm text-blue-300 mt-1 leading-relaxed">
                     {reshufflePreview.recipientNames.join(', ')}
                   </p>
+
+                  <div className="mt-4 pt-4 border-t border-white/5">
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold">Distribution Preview</p>
+                      <span className="text-[10px] text-slate-500">Estimated</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {reshufflePreview.estimatedRecipientCounts.map((item: any) => (
+                        <div key={item.id} className="flex items-center justify-between rounded-lg bg-white/[0.025] border border-white/5 px-3 py-2">
+                          <span className="text-xs text-slate-300 truncate pr-3">{item.name}</span>
+                          <span className="text-xs font-semibold text-blue-300">≈ {item.count}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">
+                      Final counts can differ slightly because the existing Reshuffle logic avoids assigning a Lead back to its current owner when another recipient is available.
+                    </p>
+                  </div>
                 </div>
 
                 <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
