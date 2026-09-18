@@ -235,7 +235,13 @@ export default function Leads() {
   const [isReshuffleModalOpen, setIsReshuffleModalOpen] = useState(false);
   const [reshuffleStatuses, setReshuffleStatuses] = useState<string[]>([]);
   const [reshuffleSources, setReshuffleSources] = useState<string[]>([]);
+  const [reshuffleCountries, setReshuffleCountries] = useState<string[]>([]);
+  const [reshuffleCurrentAgents, setReshuffleCurrentAgents] = useState<string[]>([]);
   const [reshuffleAgents, setReshuffleAgents] = useState<string[]>([]);
+  const [reshuffleSourceSearch, setReshuffleSourceSearch] = useState('');
+  const [reshuffleCountrySearch, setReshuffleCountrySearch] = useState('');
+  const [reshuffleCurrentAgentSearch, setReshuffleCurrentAgentSearch] = useState('');
+  const [reshuffleRecipientSearch, setReshuffleRecipientSearch] = useState('');
   const [reshuffleTargetStatus, setReshuffleTargetStatus] = useState('');
   const [isReshuffleTargetOpen, setIsReshuffleTargetOpen] = useState(false);
   const [selectedBulkAgents, setSelectedBulkAgents] = useState<string[]>([]);
@@ -1388,33 +1394,31 @@ export default function Leads() {
     const statusCounts: Record<string, number> = {};
     const eligibleLeadIds: string[] = [];
     const selectedSourceKeys = new Set(reshuffleSources.map(source => safeLower(source)));
+    const selectedCountryKeys = new Set(reshuffleCountries.map(country => safeLower(country)));
+    const selectedCurrentAgentIds = new Set(reshuffleCurrentAgents.map(id => String(id)));
 
-    // Reshuffle has its own explicit Source scope. Reuse the Leads already loaded
-    // for this user, so this adds no Firestore query, listener or polling.
+    // Reshuffle is independent from the main Leads filters. Empty Source/Country/Current
+    // Agent selections mean ALL. This is calculated from leads already loaded for the
+    // current role, so no extra Firestore query/listener/polling is introduced.
     leads.forEach(lead => {
       const status = normalizeStatus(lead.status);
-      const sourceMatches = selectedSourceKeys.has(safeLower(lead?.source));
+      if (!reshuffleStatuses.includes(status)) return;
+      if (selectedSourceKeys.size > 0 && !selectedSourceKeys.has(safeLower(lead?.source))) return;
+      if (selectedCountryKeys.size > 0 && !selectedCountryKeys.has(safeLower(lead?.country))) return;
+      if (selectedCurrentAgentIds.size > 0 && !selectedCurrentAgentIds.has(String(lead?.assigned_to || ''))) return;
 
-      if (sourceMatches && reshuffleStatuses.includes(status)) {
-        statusCounts[status] = (statusCounts[status] || 0) + 1;
-        eligibleLeadIds.push(String(lead.id));
-      }
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+      eligibleLeadIds.push(String(lead.id));
     });
 
-    const total = eligibleLeadIds.length;
-
-    const recipientIds =
-      reshuffleAgents.length > 0
-        ? reshuffleAgents
-        : agents.map(agent => agent.id);
-
+    const recipientIds = [...reshuffleAgents];
     const recipientNames = recipientIds.map(id => {
       const user = agents.find(agent => String(agent.id) === String(id));
       return user?.name || user?.email || String(id);
     });
 
-    return { statusCounts, total, recipientIds, recipientNames, eligibleLeadIds };
-  }, [leads, reshuffleStatuses, reshuffleSources, reshuffleAgents, agents]);
+    return { statusCounts, total: eligibleLeadIds.length, recipientIds, recipientNames, eligibleLeadIds };
+  }, [leads, reshuffleStatuses, reshuffleSources, reshuffleCountries, reshuffleCurrentAgents, reshuffleAgents, agents]);
 
   const openReshuffleConfirmation = () => {
     if (reshuffleStatuses.length === 0) {
@@ -1422,10 +1426,6 @@ export default function Leads() {
       return;
     }
 
-    if (reshuffleSources.length === 0) {
-      alert('Select at least one source to reshuffle.');
-      return;
-    }
 
     if (reshufflePreview.recipientIds.length === 0) {
       alert('Select at least one Agent to receive leads.');
@@ -1469,7 +1469,9 @@ export default function Leads() {
         reshuffleTargetStatus || undefined,
         progress => setReshuffleProgress(progress),
         undefined,
-        reshuffleSources
+        reshuffleSources,
+        reshuffleCountries,
+        reshuffleCurrentAgents
       );
 
       setReshuffleProgress({
@@ -1763,33 +1765,37 @@ export default function Leads() {
                 )}
               </div>
 
-              <button 
-                onClick={() => {
-                  setReshuffleStatuses(
-                    filters.statuses.filter(
-                      status => !RESHUFFLE_PROTECTED_SOURCE_STATUSES.has(
-                        normalizeStatus(status)
-                      )
-                    )
-                  );
-                  setReshuffleSources(filters.sources.length > 0 ? [...filters.sources] : []);
-                  setReshuffleAgents(agents.map(a => a.id));
-                  setReshuffleTargetStatus('');
-                  setIsReshuffleTargetOpen(false);
-                  setIsReshuffleModalOpen(true);
-                }}
-                className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-xs font-medium text-amber-400 border border-amber-500/20"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Reshuffle</span>
-              </button>
             </div>
+          )}
+
+          {currentUser.role !== 'Agent' && (
+            <button
+              type="button"
+              onClick={() => {
+                setReshuffleStatuses([]);
+                setReshuffleSources([]);
+                setReshuffleCountries([]);
+                setReshuffleCurrentAgents([]);
+                setReshuffleAgents([]);
+                setReshuffleSourceSearch('');
+                setReshuffleCountrySearch('');
+                setReshuffleCurrentAgentSearch('');
+                setReshuffleRecipientSearch('');
+                setReshuffleTargetStatus('');
+                setIsReshuffleTargetOpen(false);
+                setIsReshuffleModalOpen(true);
+              }}
+              className="ml-3 flex items-center space-x-2 px-4 py-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-sm font-medium text-amber-400 border border-amber-500/30 shrink-0"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Reshuffle</span>
+            </button>
           )}
         </div>
 
         {isReshuffleModalOpen && (
           <div className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto p-4 md:p-6 bg-black/60">
-            <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md max-h-[calc(100vh-2rem)] md:max-h-[calc(100vh-3rem)] shadow-2xl overflow-hidden flex flex-col">
+            <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-6xl max-h-[calc(100vh-2rem)] md:max-h-[calc(100vh-3rem)] shadow-2xl overflow-hidden flex flex-col">
               <div className="flex items-center justify-between p-4 md:p-5 border-b border-white/5 bg-white/[0.02] shrink-0">
                 <h2 className="text-xl font-semibold text-white tracking-tight flex items-center space-x-2">
                   <RefreshCw className="w-5 h-5 text-amber-400" />
@@ -1826,41 +1832,86 @@ export default function Leads() {
                   </div>
                 </div>
 
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Select Sources to Reshuffle</label>
-                    <button
-                      type="button"
-                      onClick={() => setReshuffleSources(
-                        reshuffleSources.length === sourceOptions.length ? [] : [...sourceOptions]
-                      )}
-                      className="text-[10px] text-blue-400 hover:text-blue-300 shrink-0"
-                    >
-                      {reshuffleSources.length === sourceOptions.length && sourceOptions.length > 0 ? 'Deselect All' : 'Select All'}
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto custom-scrollbar p-1">
-                    {sourceOptions.map(source => (
-                      <button
-                        type="button"
-                        key={source}
-                        onClick={() => setReshuffleSources(prev =>
-                          prev.includes(source) ? prev.filter(item => item !== source) : [...prev, source]
-                        )}
-                        className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs ${
-                          reshuffleSources.includes(source)
-                            ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
-                            : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'
-                        }`}
-                      >
-                        <span className="truncate">{source}</span>
-                        {reshuffleSources.includes(source) && <CheckSquare className="w-3 h-3 shrink-0" />}
-                      </button>
-                    ))}
-                  </div>
-                  {sourceOptions.length === 0 && (
-                    <p className="text-[11px] text-slate-500">No lead sources are available.</p>
-                  )}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {[
+                    {
+                      label: 'Sources',
+                      placeholder: 'Search sources...',
+                      options: sourceOptions.map(value => ({ id: value, label: value })),
+                      selected: reshuffleSources,
+                      setSelected: setReshuffleSources,
+                      search: reshuffleSourceSearch,
+                      setSearch: setReshuffleSourceSearch
+                    },
+                    {
+                      label: 'Countries',
+                      placeholder: 'Search countries...',
+                      options: allCountryOptions.map(value => ({ id: value, label: value })),
+                      selected: reshuffleCountries,
+                      setSelected: setReshuffleCountries,
+                      search: reshuffleCountrySearch,
+                      setSearch: setReshuffleCountrySearch
+                    },
+                    {
+                      label: 'Current Agents (FROM)',
+                      placeholder: 'Search current agents...',
+                      options: agents.map(agent => ({ id: String(agent.id), label: agent.name || agent.email || String(agent.id) })),
+                      selected: reshuffleCurrentAgents,
+                      setSelected: setReshuffleCurrentAgents,
+                      search: reshuffleCurrentAgentSearch,
+                      setSearch: setReshuffleCurrentAgentSearch
+                    }
+                  ].map((group: any) => {
+                    const visibleOptions = group.options.filter((option: any) =>
+                      !group.search || safeLower(option.label).includes(safeLower(group.search))
+                    );
+                    const allSelected = group.options.length > 0 && group.selected.length === group.options.length;
+                    return (
+                      <details key={group.label} className="group rounded-xl border border-white/10 bg-white/[0.025] p-3">
+                        <summary className="list-none cursor-pointer flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-slate-300 uppercase tracking-wider">{group.label}</p>
+                            <p className="text-[11px] text-slate-500 mt-1 truncate">
+                              {group.selected.length === 0 ? 'All' : `${group.selected.length} selected`}
+                            </p>
+                          </div>
+                          <ChevronDown className="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform shrink-0" />
+                        </summary>
+                        <div className="mt-3 pt-3 border-t border-white/5 space-y-2">
+                          <div className="relative">
+                            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                            <input
+                              value={group.search}
+                              onChange={(e) => group.setSearch(e.target.value)}
+                              placeholder={group.placeholder}
+                              className="w-full bg-[#111827] border border-white/10 rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] text-slate-500">Empty selection = All</span>
+                            <div className="flex items-center gap-3">
+                              <button type="button" onClick={() => group.setSelected(group.options.map((option: any) => option.id))} className="text-[10px] text-blue-400 hover:text-blue-300">Select All</button>
+                              <button type="button" onClick={() => group.setSelected([])} className="text-[10px] text-slate-400 hover:text-white">Deselect All</button>
+                            </div>
+                          </div>
+                          <div className="max-h-44 overflow-y-auto custom-scrollbar space-y-1 pr-1">
+                            {visibleOptions.map((option: any) => (
+                              <button
+                                type="button"
+                                key={option.id}
+                                onClick={() => group.setSelected((prev: string[]) => prev.includes(option.id) ? prev.filter(id => id !== option.id) : [...prev, option.id])}
+                                className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs text-left ${group.selected.includes(option.id) ? 'bg-blue-600/20 border-blue-500/50 text-blue-300' : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'}`}
+                              >
+                                <span className="truncate">{option.label}</span>
+                                {group.selected.includes(option.id) && <CheckSquare className="w-3 h-3 shrink-0" />}
+                              </button>
+                            ))}
+                            {visibleOptions.length === 0 && <p className="text-[11px] text-slate-500 px-2 py-3">No matches.</p>}
+                          </div>
+                        </div>
+                      </details>
+                    );
+                  })}
                 </div>
 
                 <div className="rounded-xl border border-slate-700/60 bg-white/[0.02] p-4 space-y-3">
@@ -1949,36 +2000,43 @@ export default function Leads() {
                   </div>
                 </div>
 
-                <div className="space-y-3">
-                  <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Select Agents to Receive Leads</label>
-                  <div className="grid grid-cols-2 gap-2 max-h-40 md:max-h-44 overflow-y-auto custom-scrollbar p-1">
-                    {agents.map(agent => (
-                      <button
-                        key={agent.id}
-                        onClick={() => setReshuffleAgents(prev => 
-                          prev.includes(agent.id) ? prev.filter(id => id !== agent.id) : [...prev, agent.id]
-                        )}
-                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs ${
-                          reshuffleAgents.includes(agent.id)
-                            ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
-                            : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'
-                        }`}
-                      >
-                        <div className="flex items-center space-x-2">
-                          <img src={agent.avatar} alt="" className="w-4 h-4 rounded-full" />
-                          <span className="truncate">{agent.name}</span>
-                        </div>
-                        {reshuffleAgents.includes(agent.id) && <CheckSquare className="w-3 h-3" />}
-                      </button>
-                    ))}
+                <div className="space-y-3 rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-4">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                    <div>
+                      <label className="text-xs font-medium text-slate-300 uppercase tracking-wider">Select Agents to Receive Leads (TO)</label>
+                      <p className="text-[11px] text-slate-500 mt-1">Choose the destination Agents for the filtered Leads.</p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <button type="button" onClick={() => setReshuffleAgents(agents.map(a => String(a.id)))} className="text-xs text-blue-400 hover:text-blue-300">Select All</button>
+                      <button type="button" onClick={() => setReshuffleAgents([])} className="text-xs text-slate-400 hover:text-white">Deselect All</button>
+                    </div>
                   </div>
-                  <div className="flex justify-end">
-                    <button 
-                      onClick={() => setReshuffleAgents(reshuffleAgents.length === agents.length ? [] : agents.map(a => a.id))}
-                      className="text-[10px] text-blue-400 hover:text-blue-300"
-                    >
-                      {reshuffleAgents.length === agents.length ? 'Deselect All' : 'Select All'}
-                    </button>
+                  <div className="relative">
+                    <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                    <input
+                      value={reshuffleRecipientSearch}
+                      onChange={(e) => setReshuffleRecipientSearch(e.target.value)}
+                      placeholder="Search Agent to receive Leads..."
+                      className="w-full bg-[#111827] border border-white/10 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-52 overflow-y-auto custom-scrollbar p-1">
+                    {agents
+                      .filter(agent => !reshuffleRecipientSearch || safeLower(agent.name || agent.email).includes(safeLower(reshuffleRecipientSearch)))
+                      .map(agent => (
+                        <button
+                          key={agent.id}
+                          type="button"
+                          onClick={() => setReshuffleAgents(prev => prev.includes(String(agent.id)) ? prev.filter(id => id !== String(agent.id)) : [...prev, String(agent.id)])}
+                          className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs ${reshuffleAgents.includes(String(agent.id)) ? 'bg-blue-600/20 border-blue-500/50 text-blue-300' : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'}`}
+                        >
+                          <div className="flex items-center space-x-2 min-w-0">
+                            <img src={agent.avatar} alt="" className="w-5 h-5 rounded-full shrink-0" />
+                            <span className="truncate">{agent.name || agent.email}</span>
+                          </div>
+                          {reshuffleAgents.includes(String(agent.id)) && <CheckSquare className="w-3.5 h-3.5 shrink-0" />}
+                        </button>
+                      ))}
                   </div>
                 </div>
 
@@ -2013,7 +2071,7 @@ export default function Leads() {
                   })()}
 
                   <p className="text-xs text-amber-400 leading-relaxed pt-1">
-                    <strong>Warning:</strong> This action redistributes the selected source statuses and cannot be undone.
+                    <strong>Warning:</strong> This action redistributes only Leads matching the Reshuffle filters above and cannot be undone.
                   </p>
                 </div>
               </div>
