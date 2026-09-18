@@ -461,6 +461,110 @@ export default function Leads() {
     [statuses]
   );
 
+
+  // Cascading Reshuffle filter dictionaries are derived only from the leads that are
+  // already loaded for the current role. No Firestore query/listener/polling is added.
+  // Status -> Sources -> Countries -> Current Agents (FROM).
+  const reshuffleCascade = useMemo(() => {
+    const selectedStatuses = new Set(reshuffleStatuses.map(status => normalizeStatus(status)));
+    const selectedSourceKeys = new Set(reshuffleSources.map(source => safeLower(source)));
+    const selectedCountryKeys = new Set(reshuffleCountries.map(country => safeLower(country)));
+
+    const statusScoped = reshuffleStatuses.length === 0
+      ? []
+      : leads.filter((lead: any) => selectedStatuses.has(normalizeStatus(lead?.status)));
+
+    const sourceCounts = new Map<string, { label: string; count: number }>();
+    statusScoped.forEach((lead: any) => {
+      const label = String(lead?.source || '').trim();
+      if (!label) return;
+      const key = safeLower(label);
+      const current = sourceCounts.get(key);
+      if (current) current.count += 1;
+      else sourceCounts.set(key, { label, count: 1 });
+    });
+
+    const sourceScoped = statusScoped.filter((lead: any) =>
+      selectedSourceKeys.size === 0 || selectedSourceKeys.has(safeLower(lead?.source))
+    );
+
+    const countryCounts = new Map<string, { label: string; count: number }>();
+    sourceScoped.forEach((lead: any) => {
+      const label = String(lead?.country || '').trim();
+      if (!label) return;
+      const key = safeLower(label);
+      const current = countryCounts.get(key);
+      if (current) current.count += 1;
+      else countryCounts.set(key, { label, count: 1 });
+    });
+
+    const countryScoped = sourceScoped.filter((lead: any) =>
+      selectedCountryKeys.size === 0 || selectedCountryKeys.has(safeLower(lead?.country))
+    );
+
+    const agentCounts = new Map<string, number>();
+    countryScoped.forEach((lead: any) => {
+      const agentId = String(lead?.assigned_to || '').trim();
+      if (!agentId) return;
+      agentCounts.set(agentId, (agentCounts.get(agentId) || 0) + 1);
+    });
+
+    const sourceOptions = Array.from(sourceCounts.values())
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map(item => ({ id: item.label, label: item.label, count: item.count }));
+
+    const countryOptions = Array.from(countryCounts.values())
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map(item => ({ id: item.label, label: item.label, count: item.count }));
+
+    const agentOptions = agents
+      .filter((agent: any) => agentCounts.has(String(agent.id)))
+      .map((agent: any) => ({
+        id: String(agent.id),
+        label: agent.name || agent.email || String(agent.id),
+        count: agentCounts.get(String(agent.id)) || 0
+      }))
+      .sort((a: any, b: any) => String(a.label).localeCompare(String(b.label)));
+
+    return { sourceOptions, countryOptions, agentOptions };
+  }, [leads, agents, reshuffleStatuses, reshuffleSources, reshuffleCountries]);
+
+  const reshuffleStatusKey = useMemo(
+    () => [...reshuffleStatuses].map(normalizeStatus).sort().join('||'),
+    [reshuffleStatuses]
+  );
+  const reshuffleSourceKey = useMemo(
+    () => [...reshuffleSources].map(safeLower).sort().join('||'),
+    [reshuffleSources]
+  );
+  const reshuffleCountryKey = useMemo(
+    () => [...reshuffleCountries].map(safeLower).sort().join('||'),
+    [reshuffleCountries]
+  );
+
+  // When the upstream scope changes, preselect every currently valid downstream
+  // option. The user can then deselect individual values without any background read.
+  useEffect(() => {
+    if (!isReshuffleModalOpen) return;
+    if (!reshuffleStatusKey) {
+      setReshuffleSources([]);
+      setReshuffleCountries([]);
+      setReshuffleCurrentAgents([]);
+      return;
+    }
+    setReshuffleSources(reshuffleCascade.sourceOptions.map(option => option.id));
+  }, [isReshuffleModalOpen, reshuffleStatusKey]);
+
+  useEffect(() => {
+    if (!isReshuffleModalOpen || !reshuffleStatusKey) return;
+    setReshuffleCountries(reshuffleCascade.countryOptions.map(option => option.id));
+  }, [isReshuffleModalOpen, reshuffleStatusKey, reshuffleSourceKey]);
+
+  useEffect(() => {
+    if (!isReshuffleModalOpen || !reshuffleStatusKey) return;
+    setReshuffleCurrentAgents(reshuffleCascade.agentOptions.map(option => option.id));
+  }, [isReshuffleModalOpen, reshuffleStatusKey, reshuffleSourceKey, reshuffleCountryKey]);
+
   useEffect(() => {
     if (currentUser.role !== 'Agent' || !currentUser.id) {
       setTelephonyProfiles([]);
@@ -1837,7 +1941,7 @@ export default function Leads() {
                     {
                       label: 'Sources',
                       placeholder: 'Search sources...',
-                      options: sourceOptions.map(value => ({ id: value, label: value })),
+                      options: reshuffleCascade.sourceOptions,
                       selected: reshuffleSources,
                       setSelected: setReshuffleSources,
                       search: reshuffleSourceSearch,
@@ -1846,7 +1950,7 @@ export default function Leads() {
                     {
                       label: 'Countries',
                       placeholder: 'Search countries...',
-                      options: allCountryOptions.map(value => ({ id: value, label: value })),
+                      options: reshuffleCascade.countryOptions,
                       selected: reshuffleCountries,
                       setSelected: setReshuffleCountries,
                       search: reshuffleCountrySearch,
@@ -1855,7 +1959,7 @@ export default function Leads() {
                     {
                       label: 'Current Agents (FROM)',
                       placeholder: 'Search current agents...',
-                      options: agents.map(agent => ({ id: String(agent.id), label: agent.name || agent.email || String(agent.id) })),
+                      options: reshuffleCascade.agentOptions,
                       selected: reshuffleCurrentAgents,
                       setSelected: setReshuffleCurrentAgents,
                       search: reshuffleCurrentAgentSearch,
@@ -1903,6 +2007,11 @@ export default function Leads() {
                                 className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-xs text-left ${group.selected.includes(option.id) ? 'bg-blue-600/20 border-blue-500/50 text-blue-300' : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'}`}
                               >
                                 <span className="truncate">{option.label}</span>
+                                {typeof option.count === 'number' && (
+                                  <span className="ml-auto mr-2 shrink-0 rounded-md bg-black/20 px-2 py-0.5 text-[10px] tabular-nums text-slate-400">
+                                    {option.count}
+                                  </span>
+                                )}
                                 {group.selected.includes(option.id) && <CheckSquare className="w-3 h-3 shrink-0" />}
                               </button>
                             ))}
