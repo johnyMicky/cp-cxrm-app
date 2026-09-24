@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall, Check, Eye } from 'lucide-react';
+import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, Download, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall, Check, Eye } from 'lucide-react';
 import { format } from 'date-fns';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import LeadForm from '../components/LeadForm';
@@ -1286,6 +1286,75 @@ export default function Leads() {
     });
   }, [leads, deferredSearch, filters.statuses, filters.sources, filters.agents, filters.countries, dashboardStatus, dashboardView, dashboardRange]);
 
+  // Lightweight Excel-compatible export. Reuses leads already loaded in memory,
+  // so exporting adds no Firestore query/listener and does not affect CRM load.
+  const handleExportLeads = () => {
+    const exportLeads = selectedLeads.length > 0
+      ? filteredLeads.filter((lead: any) => selectedLeads.includes(String(lead.id)))
+      : filteredLeads;
+
+    if (exportLeads.length === 0) {
+      showToastMessage('No leads to export');
+      return;
+    }
+
+    const agentNameById = new Map(
+      agents.map((agent: any) => [
+        String(agent?.id || ''),
+        String(agent?.name || agent?.email || agent?.id || '')
+      ])
+    );
+
+    const csvCell = (value: any) => {
+      const text = String(value ?? '').replace(/\r?\n/g, ' ').trim();
+      return `"${text.replace(/"/g, '""')}"`;
+    };
+
+    const exportDate = (value: any) => {
+      if (!value) return '';
+      const date = value?.toDate ? value.toDate() : new Date(value);
+      return Number.isNaN(date.getTime()) ? '' : format(date, 'yyyy-MM-dd HH:mm:ss');
+    };
+
+    const headers = [
+      'Full Name', 'Email', 'Phone', 'Country', 'Status', 'Source',
+      'Assigned Agent', 'Callback', 'Created At', 'Updated At'
+    ];
+
+    const rows = exportLeads.map((lead: any) => [
+      lead.name || '',
+      lead.email || '',
+      lead.phone || '',
+      lead.country || '',
+      normalizeStatus(lead.status),
+      lead.source || '',
+      agentNameById.get(String(lead.assigned_to || '')) || '',
+      exportDate(lead.callbackAt),
+      exportDate(lead.createdAt),
+      exportDate(lead.updatedAt)
+    ]);
+
+    const csv = [headers, ...rows]
+      .map(row => row.map(csvCell).join(','))
+      .join('\r\n');
+
+    const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const stamp = format(new Date(), 'yyyy-MM-dd_HH-mm');
+
+    link.href = url;
+    link.download = `leads_${stamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    showToastMessage(
+      `Exported ${exportLeads.length} lead${exportLeads.length === 1 ? '' : 's'} for Excel`
+    );
+  };
+
   // Rendering thousands of table rows is one of the biggest UI bottlenecks.
   // Keep all records available for filters/bulk actions but render 100 at a time.
   const visibleLeads = useMemo(
@@ -1733,6 +1802,16 @@ export default function Leads() {
               <span>Delete {selectedLeads.length} Selected</span>
             </button>
           )}
+
+          <button
+            onClick={handleExportLeads}
+            disabled={filteredLeads.length === 0}
+            title={selectedLeads.length > 0 ? 'Export selected leads to Excel' : 'Export filtered leads to Excel'}
+            className="shimmer-btn bg-emerald-500/10 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed text-emerald-400 px-4 py-2 rounded-lg text-sm font-medium flex items-center space-x-2 border border-emerald-500/20"
+          >
+            <Download className="w-4 h-4" />
+            <span>{selectedLeads.length > 0 ? `Export ${selectedLeads.length}` : 'Export Excel'}</span>
+          </button>
 
           {currentUser.role !== 'Agent' && (
             <button 
