@@ -1286,9 +1286,10 @@ export default function Leads() {
     });
   }, [leads, deferredSearch, filters.statuses, filters.sources, filters.agents, filters.countries, dashboardStatus, dashboardView, dashboardRange]);
 
-  // Lightweight Excel-compatible export. Reuses leads already loaded in memory,
-  // so exporting adds no Firestore query/listener and does not affect CRM load.
-  const handleExportLeads = () => {
+  // Export is intentionally user-triggered: no listener/polling is added.
+  // XLSX and lead notes are loaded only when Export is clicked, keeping the normal
+  // Leads page bundle and day-to-day CRM workload unchanged.
+  const handleExportLeads = async () => {
     const exportLeads = selectedLeads.length > 0
       ? filteredLeads.filter((lead: any) => selectedLeads.includes(String(lead.id)))
       : filteredLeads;
@@ -1298,61 +1299,67 @@ export default function Leads() {
       return;
     }
 
-    const agentNameById = new Map(
-      agents.map((agent: any) => [
-        String(agent?.id || ''),
-        String(agent?.name || agent?.email || agent?.id || '')
-      ])
-    );
+    try {
+      showToastMessage(`Preparing ${exportLeads.length} lead${exportLeads.length === 1 ? '' : 's'} for Excel...`);
 
-    const csvCell = (value: any) => {
-      const text = String(value ?? '').replace(/\r?\n/g, ' ').trim();
-      return `"${text.replace(/"/g, '""')}"`;
-    };
+      const agentNameById = new Map(
+        agents.map((agent: any) => [
+          String(agent?.id || ''),
+          String(agent?.name || agent?.email || agent?.id || '')
+        ])
+      );
 
-    const exportDate = (value: any) => {
-      if (!value) return '';
-      const date = value?.toDate ? value.toDate() : new Date(value);
-      return Number.isNaN(date.getTime()) ? '' : format(date, 'yyyy-MM-dd HH:mm:ss');
-    };
+      const exportDate = (value: any) => {
+        if (!value) return '';
+        const date = value?.toDate ? value.toDate() : new Date(value);
+        return Number.isNaN(date.getTime()) ? '' : format(date, 'yyyy-MM-dd HH:mm:ss');
+      };
 
-    const headers = [
-      'Full Name', 'Email', 'Phone', 'Country', 'Status', 'Source',
-      'Assigned Agent', 'Callback', 'Created At', 'Updated At'
-    ];
+      // Notes live in their own Firestore collection. Fetch them only for the
+      // leads being exported and only after the user explicitly clicks Export.
+      const noteMap = await firestoreService.getLeadNotesForIds(
+        exportLeads.map((lead: any) => String(lead.id || '')).filter(Boolean)
+      );
 
-    const rows = exportLeads.map((lead: any) => [
-      lead.name || '',
-      lead.email || '',
-      lead.phone || '',
-      lead.country || '',
-      normalizeStatus(lead.status),
-      lead.source || '',
-      agentNameById.get(String(lead.assigned_to || '')) || '',
-      exportDate(lead.callbackAt),
-      exportDate(lead.createdAt),
-      exportDate(lead.updatedAt)
-    ]);
+      const rows = exportLeads.map((lead: any) => ({
+        'Full Name': lead.name || '',
+        'Email': lead.email || '',
+        'Phone': lead.phone || '',
+        'Country': lead.country || '',
+        'Status': normalizeStatus(lead.status),
+        'Source': lead.source || '',
+        'Assigned Agent': agentNameById.get(String(lead.assigned_to || '')) || '',
+        'Callback': exportDate(lead.callbackAt),
+        'Comment': (noteMap[String(lead.id || '')] || [])
+          .map((note: any) => String(note?.content || '').trim())
+          .filter(Boolean)
+          .join(' | '),
+        'Created At': exportDate(lead.createdAt),
+        'Updated At': exportDate(lead.updatedAt)
+      }));
 
-    const csv = [headers, ...rows]
-      .map(row => row.map(csvCell).join(','))
-      .join('\r\n');
+      // xlsx is already a project dependency. Dynamic import keeps it out of the
+      // initial Leads bundle and avoids slowing normal CRM navigation.
+      const XLSX = await import('xlsx');
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      worksheet['!cols'] = [
+        { wch: 28 }, { wch: 32 }, { wch: 18 }, { wch: 18 }, { wch: 18 },
+        { wch: 28 }, { wch: 24 }, { wch: 20 }, { wch: 55 }, { wch: 20 }, { wch: 20 }
+      ];
 
-    const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    const stamp = format(new Date(), 'yyyy-MM-dd_HH-mm');
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Leads');
 
-    link.href = url;
-    link.download = `leads_${stamp}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+      const stamp = format(new Date(), 'yyyy-MM-dd_HH-mm');
+      XLSX.writeFile(workbook, `leads_${stamp}.xlsx`, { compression: true });
 
-    showToastMessage(
-      `Exported ${exportLeads.length} lead${exportLeads.length === 1 ? '' : 's'} for Excel`
-    );
+      showToastMessage(
+        `Exported ${exportLeads.length} lead${exportLeads.length === 1 ? '' : 's'} to Excel`
+      );
+    } catch (err: any) {
+      console.error('Failed to export leads:', err);
+      showToastMessage(`Export failed: ${err?.message || 'Unknown error'}`);
+    }
   };
 
   // Rendering thousands of table rows is one of the biggest UI bottlenecks.
