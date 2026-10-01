@@ -2,7 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, Download, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall, Check, Eye } from 'lucide-react';
 import { format } from 'date-fns';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
 import { firestoreService } from '../services/firestoreService';
@@ -1317,9 +1317,52 @@ export default function Leads() {
 
       // Notes live in their own Firestore collection. Fetch them only for the
       // leads being exported and only after the user explicitly clicks Export.
-      const noteMap = await firestoreService.getLeadNotesForIds(
-        exportLeads.map((lead: any) => String(lead.id || '')).filter(Boolean)
-      );
+      const exportLeadIds = exportLeads
+        .map((lead: any) => String(lead.id || '').trim())
+        .filter(Boolean);
+
+      // Prefer the service helper when the deployed service bundle exposes it.
+      // Keep a local batched fallback so Export still works if Leads.tsx and
+      // firestoreService.ts are deployed from temporarily mismatched builds.
+      let noteMap: Record<string, any[]> = {};
+      if (typeof (firestoreService as any).getLeadNotesForIds === 'function') {
+        noteMap = await (firestoreService as any).getLeadNotesForIds(exportLeadIds);
+      } else {
+        const uniqueIds = Array.from(new Set(exportLeadIds));
+        uniqueIds.forEach(id => { noteMap[id] = []; });
+
+        const chunks: string[][] = [];
+        for (let i = 0; i < uniqueIds.length; i += 30) {
+          chunks.push(uniqueIds.slice(i, i + 30));
+        }
+
+        const CONCURRENCY = 4;
+        for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+          const snapshots = await Promise.all(
+            chunks.slice(i, i + CONCURRENCY).map(chunk =>
+              getDocs(query(collection(db, 'notes'), where('lead_id', 'in', chunk)))
+            )
+          );
+
+          snapshots.forEach(snapshot => {
+            snapshot.docs.forEach(noteDoc => {
+              const note: any = { id: noteDoc.id, ...noteDoc.data() };
+              const leadId = String(note?.lead_id || '');
+              if (!leadId) return;
+              if (!noteMap[leadId]) noteMap[leadId] = [];
+              noteMap[leadId].push(note);
+            });
+          });
+        }
+
+        Object.values(noteMap).forEach((notes: any[]) => {
+          notes.sort((a: any, b: any) => {
+            const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+            const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+            return dateB.getTime() - dateA.getTime();
+          });
+        });
+      }
 
       const rows = exportLeads.map((lead: any) => ({
         'Full Name': lead.name || '',
