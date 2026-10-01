@@ -2454,6 +2454,59 @@ export const firestoreService = {
       });
   },
 
+  // Export-only batched notes reader. No realtime listener is created.
+  // Firestore `in` queries are kept to 30 Lead IDs per request.
+  async getLeadNotesForIds(leadIds: string[]) {
+    const ids = Array.from(
+      new Set(
+        (leadIds || [])
+          .map(id => String(id || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    const notesByLead: Record<string, any[]> = {};
+    ids.forEach(id => { notesByLead[id] = []; });
+
+    const CHUNK_SIZE = 30;
+    const CONCURRENCY = 4;
+    const chunks: string[][] = [];
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      chunks.push(ids.slice(i, i + CHUNK_SIZE));
+    }
+
+    // A small concurrency cap makes large exports faster without flooding
+    // Firestore or affecting normal CRM listeners.
+    for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+      const group = chunks.slice(i, i + CONCURRENCY);
+      const snapshots = await Promise.all(
+        group.map(chunk =>
+          getDocs(query(collection(db, "notes"), where("lead_id", "in", chunk)))
+        )
+      );
+
+      snapshots.forEach(snapshot => {
+        snapshot.docs.forEach(noteDoc => {
+          const note: any = { id: noteDoc.id, ...noteDoc.data() };
+          const leadId = String(note?.lead_id || '');
+          if (!leadId) return;
+          if (!notesByLead[leadId]) notesByLead[leadId] = [];
+          notesByLead[leadId].push(note);
+        });
+      });
+    }
+
+    Object.values(notesByLead).forEach((notes: any[]) => {
+      notes.sort((a: any, b: any) => {
+        const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+        const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+        return dateB.getTime() - dateA.getTime();
+      });
+    });
+
+    return notesByLead;
+  },
+
   // Legacy-note fallback for the Leads table.
   // Queries only Lead IDs that do not yet have noteCountInitialized=true,
   // batches IDs in groups of 30, and adds no realtime listener/polling.
