@@ -2255,12 +2255,13 @@ async function computeDashboardStats(
   // Recent activity (same visibility rules)
   const visibleUserIds = new Set(visibleUsers.map((u: any) => String(u.id)));
   const visibleLeadIds = new Set(normalizedLeads.map((l: any) => String(l.id)));
-  const userNameById = new Map(allUsers.map((u: any) => [String(u.id), u.name]));
+  const userNameById = new Map(allUsers.map((u: any) => [String(u.id), u.name || u.email || 'User']));
 
   stats.recentActivity = historySnap.docs
     .map(d => {
       const data = d.data() as any;
-      return { id: d.id, ...data, userName: userNameById.get(String(data.user_id)) || 'Unknown User' };
+      // A history entry whose user no longer exists belongs to a deleted account.
+      return { id: d.id, ...data, userName: userNameById.get(String(data.user_id)) || data.userName || 'Deleted user' };
     })
     .filter((activity: any) => {
       if (currentRole === 'Administrator' || currentRole === 'Manager') return true;
