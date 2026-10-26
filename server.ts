@@ -1402,6 +1402,36 @@ app.get('/api/atlant/webhook-events', async (req, res) => {
 });
 
 
+// Verifies the Firebase token of a destructive request and checks the CRM role.
+// Sends 401/403 itself and returns null when the request is not allowed.
+async function requireCrmRole(
+  req: express.Request,
+  res: express.Response,
+  allowedRoles: string[]
+) {
+  let decoded: any;
+  try {
+    decoded = await getVerifiedRequestUser(req);
+  } catch {
+    res.status(401).json({ success: false, error: 'Authentication required.' });
+    return null;
+  }
+
+  const isAdmin = await isAdministrator(decoded.uid, decoded.email);
+  let role = isAdmin ? 'Administrator' : '';
+  if (!role) {
+    const userDoc = await db.collection('users').doc(decoded.uid).get();
+    role = userDoc.exists ? String(userDoc.data()?.role || '') : '';
+  }
+
+  if (!role || !allowedRoles.includes(role)) {
+    res.status(403).json({ success: false, error: 'You do not have permission for this action.' });
+    return null;
+  }
+
+  return { uid: decoded.uid as string, email: String(decoded.email || ''), role };
+}
+
 // Helper for chunked deletion
 async function deleteInChunks(docRefs: admin.firestore.DocumentReference[]) {
   const CHUNK_SIZE = 200;
@@ -1431,6 +1461,9 @@ async function deleteInChunks(docRefs: admin.firestore.DocumentReference[]) {
 
 // Delete All Leads Endpoint
 app.post('/api/leads/delete-all', async (req, res) => {
+  const requester = await requireCrmRole(req, res, ['Administrator']);
+  if (!requester) return;
+
   console.log('Starting Delete All Leads operation');
   const startTime = Date.now();
 
@@ -1463,6 +1496,9 @@ app.post('/api/leads/delete-all', async (req, res) => {
 
 // Delete Selected Leads Endpoint
 app.post('/api/leads/delete-selected', async (req, res) => {
+  const requester = await requireCrmRole(req, res, ['Administrator', 'Manager', 'Financial Manager', 'Team Leader']);
+  if (!requester) return;
+
   const { ids } = req.body;
   console.log(`Starting Delete Selected Leads operation for ${ids?.length || 0} IDs`);
   
@@ -1492,6 +1528,9 @@ app.post('/api/leads/delete-selected', async (req, res) => {
 
 // Reset All Data Endpoint
 app.post('/api/admin/reset-all', async (req, res) => {
+  const requester = await requireCrmRole(req, res, ['Administrator']);
+  if (!requester) return;
+
   const { userId } = req.body;
   console.log(`Starting Reset All operation triggered by ${userId}`);
   const startTime = Date.now();
