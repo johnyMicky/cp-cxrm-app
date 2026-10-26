@@ -16,7 +16,8 @@ import {
   writeBatch,
   runTransaction,
   onSnapshot,
-  increment
+  increment,
+  deleteField
 } from "firebase/firestore";
 import { 
   signInWithEmailAndPassword,
@@ -335,7 +336,6 @@ export const firestoreService = {
         isOnline: true,
         createdAt: userData?.createdAt || serverTimestamp(),
         lastSeen: serverTimestamp(),
-        password: userData?.password || '',
         teamId: userData?.teamId || '',
         teamName: userData?.teamName || '',
         atlantExtension: String(userData?.atlantExtension || '').trim(),
@@ -1076,7 +1076,25 @@ export const firestoreService = {
   },
 
   async updateUser(id: string, userData: any) {
-    const sanitized = sanitizeData(userData);
+    const { password: newPassword, ...sanitized } = sanitizeData(userData);
+
+    // A new password must change the real Firebase Authentication password
+    // (server-side, Administrator only). It is never stored in Firestore.
+    if (typeof newPassword === 'string' && newPassword.trim()) {
+      const authToken = await auth.currentUser?.getIdToken();
+      const response = await fetch('/api/admin/set-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || ''}`
+        },
+        body: JSON.stringify({ userId: id, password: newPassword })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to change password');
+      }
+    }
     const nextEmail = sanitized.email ? normalizeEmail(sanitized.email) : undefined;
     const adminUser = nextEmail ? isAdminEmail(nextEmail) : false;
 
@@ -1144,6 +1162,8 @@ export const firestoreService = {
     await updateDoc(docRef, {
       ...sanitized,
       ...(nextEmail ? { email: nextEmail } : {}),
+      // Remove any old plain-text password copy from the user document.
+      password: deleteField(),
       role: finalRole,
       teamId: nextTeamId || '',
       teamName: nextTeamName || ''
