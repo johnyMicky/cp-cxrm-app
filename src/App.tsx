@@ -550,9 +550,11 @@ export default function App() {
   const currentUserRole = sessionUser?.role || 'Agent';
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
-  const openStandaloneChat = () => {
+  const openStandaloneChat = (chatIdArg?: unknown) => {
+    // Sidebar buttons pass a click event here; only a real string is a chat id.
+    const chatId = typeof chatIdArg === 'string' ? chatIdArg : '';
     const popup = window.open(
-      '/chat-app',
+      chatId ? `/chat-app?chat=${encodeURIComponent(chatId)}` : '/chat-app',
       'camptainm-team-chat',
       'popup=yes,width=1280,height=860,resizable=yes,scrollbars=yes'
     );
@@ -671,7 +673,10 @@ export default function App() {
 
   // Dashboard "Message" buttons use this event to open the existing ChatPanel.
   useEffect(() => {
-    const handleOpenChat = () => openStandaloneChat();
+    const handleOpenChat = (event: Event) => {
+      const chatId = String((event as CustomEvent)?.detail?.chatId || '');
+      openStandaloneChat(chatId || undefined);
+    };
     window.addEventListener('crm:open-chat', handleOpenChat as EventListener);
 
     return () => {
@@ -697,7 +702,18 @@ export default function App() {
       const unsubscribe = chatService.getChats(currentUserId, currentUserRole, (chats) => {
         let hasNewIncomingMessage = false;
 
+        // Chats the user deleted "for me" (and no newer message) are ignored,
+        // and muted chats never play a sound or count in the badge.
+        const isHiddenForMe = (chat: any) => {
+          const hiddenAt = chat.hiddenFor?.[currentUserId];
+          if (!hiddenAt?.toMillis) return false;
+          return (chat.lastMessageAt?.toMillis?.() || 0) <= hiddenAt.toMillis();
+        };
+        const isMutedForMe = (chat: any) =>
+          Array.isArray(chat.mutedBy) && chat.mutedBy.includes(currentUserId);
+
         chats.forEach(chat => {
+          if (isHiddenForMe(chat) || isMutedForMe(chat)) return;
           if (chat.lastMessageAt && chat.lastMessageSenderId !== currentUserId) {
             const currentTime = chat.lastMessageAt.toMillis?.() || 0;
             const previousTime = lastMessageTimestamps[chat.id] || 0;
@@ -720,7 +736,12 @@ export default function App() {
 
         isInitialLoad = false;
 
-        const unreadCount = chats.filter(c => c.lastMessage && !c.lastMessageSeenBy?.includes(currentUserId)).length;
+        const unreadCount = chats.filter(c => {
+          if (isHiddenForMe(c) || isMutedForMe(c)) return false;
+          const counter = c.unread?.[currentUserId];
+          if (typeof counter === 'number') return counter > 0;
+          return c.lastMessage && !c.lastMessageSeenBy?.includes(currentUserId);
+        }).length;
         setUnreadChatCount(unreadCount);
       });
 
