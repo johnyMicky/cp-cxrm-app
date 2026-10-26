@@ -1741,6 +1741,593 @@ app.post('/api/admin/delete-user', async (req, res) => {
   }
 });
 
+// ===========================================================================
+// Dashboard statistics (server-side).
+// Same calculations as firestoreService.getDashboardStatsLocal(), but the
+// leads are read here with only the fields the Dashboard needs, so the browser
+// no longer downloads every lead. Results are cached briefly per scope.
+// ===========================================================================
+const DASHBOARD_CACHE_MS = 30 * 1000;
+const dashboardCache = new Map<string, { at: number; body: any }>();
+const DASHBOARD_LEAD_FIELDS = [
+  'status', 'source', 'assigned_to', 'importId', 'importFileName',
+  'callbackAt', 'createdAt', 'updatedAt'
+];
+
+// Firestore Timestamps -> { __ts: millis } so the browser can rebuild them.
+function serializeDashboardValue(value: any): any {
+  if (value === null || value === undefined) return value;
+  if (value instanceof admin.firestore.Timestamp) return { __ts: value.toMillis() };
+  if (value instanceof Date) return { __ts: value.getTime() };
+  if (Array.isArray(value)) return value.map(serializeDashboardValue);
+  if (typeof value === 'object') {
+    const out: any = {};
+    Object.keys(value).forEach(key => { out[key] = serializeDashboardValue(value[key]); });
+    return out;
+  }
+  return value;
+}
+
+async function computeDashboardStats(
+  requestUid: string,
+  timeRange: '1d' | '1w' | '1m' | 'all',
+  tzOffsetMinutes: number
+) {
+  // ---- Local-time helpers (browser timezone, sent by the client) ----------
+  const tz = Number.isFinite(tzOffsetMinutes) ? tzOffsetMinutes : -240;
+  const toWall = (d: Date) => new Date(d.getTime() - tz * 60000);
+  const fromWall = (d: Date) => new Date(d.getTime() + tz * 60000);
+  const startOfLocalDay = (d: Date) => { const w = toWall(d); w.setUTCHours(0, 0, 0, 0); return fromWall(w); };
+  const addLocalDays = (d: Date, n: number) => { const w = toWall(d); w.setUTCDate(w.getUTCDate() + n); return fromWall(w); };
+  const addLocalMonths = (d: Date, n: number) => { const w = toWall(d); w.setUTCMonth(w.getUTCMonth() + n); return fromWall(w); };
+  const localDateKey = (d: Date) => {
+    const w = toWall(d);
+    return `${w.getUTCFullYear()}-${String(w.getUTCMonth() + 1).padStart(2, '0')}-${String(w.getUTCDate()).padStart(2, '0')}`;
+  };
+
+  const usersSnap = await db.collection('users').get();
+  const allUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+  const currentUser: any = allUsers.find((u: any) => String(u.id) === String(requestUid)) || { id: requestUid };
+  const currentRole = String(currentUser.role || 'Agent').trim();
+  const currentTeamId = String(currentUser.teamId || '');
+
+  const mapLead = (docSnap: any) => {
+    const data = docSnap.data() || {};
+    return {
+      id: docSnap.id,
+      status: data.status || 'New',
+      source: data.source || '',
+      assigned_to: data.assigned_to || '',
+      importId: data.importId || '',
+      importFileName: data.importFileName || '',
+      callbackAt: data.callbackAt || null,
+      createdAt: data.createdAt || null,
+      updatedAt: data.updatedAt || null
+    };
+  };
+
+  let visibleUsers = allUsers as any[];
+  let leadLoader: Promise<any[]>;
+
+  if (currentRole === 'Agent') {
+    visibleUsers = allUsers.filter((u: any) => String(u.id) === String(currentUser.id));
+    leadLoader = db.collection('leads')
+      .where('assigned_to', '==', String(currentUser.id))
+      .select(...DASHBOARD_LEAD_FIELDS)
+      .get()
+      .then(snap => snap.docs.map(mapLead));
+  } else if (currentRole === 'Team Leader') {
+    if (!currentTeamId) {
+      visibleUsers = [currentUser].filter(Boolean);
+      leadLoader = Promise.resolve([]);
+    } else {
+      visibleUsers = allUsers.filter((u: any) => String(u.teamId || '') === currentTeamId);
+      const allowedUserIds = Array.from(new Set(
+        visibleUsers
+          .filter((m: any) => ['Agent', 'Team Leader'].includes(String(m.role || '')))
+          .map((m: any) => String(m.id))
+          .filter(Boolean)
+      ));
+      leadLoader = (async () => {
+        if (allowedUserIds.length === 0) return [];
+        const snaps = await Promise.all(allowedUserIds.map(memberId =>
+          db.collection('leads').where('assigned_to', '==', memberId).select(...DASHBOARD_LEAD_FIELDS).get()
+        ));
+        const seen = new Set<string>();
+        const rows: any[] = [];
+        snaps.forEach(snap => snap.docs.forEach(docSnap => {
+          if (seen.has(docSnap.id)) return;
+          seen.add(docSnap.id);
+          rows.push(mapLead(docSnap));
+        }));
+        return rows;
+      })();
+    }
+  } else {
+    // Administrator / Manager: organization-wide (same query as getLeads()).
+    leadLoader = db.collection('leads')
+      .orderBy('createdAt', 'desc')
+      .select(...DASHBOARD_LEAD_FIELDS)
+      .get()
+      .then(snap => snap.docs.map(mapLead));
+  }
+
+  const now = new Date();
+  const todayKey = localDateKey(now);
+
+  const [scopedLeads, historySnap, todayShiftsSnap, importsSnap, approvedFinanceSnapshot] = await Promise.all([
+    leadLoader,
+    db.collection('history').orderBy('createdAt', 'desc').limit(100).get(),
+    db.collection('shift_sessions').where('dateKey', '==', todayKey).get(),
+    db.collection('imports').select('fileName').get(),
+    db.collection('finance_deposits').where('status', '==', 'Approved').get()
+  ]);
+
+  const allLeads = scopedLeads as any[];
+
+  const normalizeStatus = (value: any) => {
+    const raw = String(value || 'New').trim();
+    const key = raw.toLowerCase().replace(/\s+/g, ' ');
+    const canonical: Record<string, string> = {
+      'new': 'New', 'vm': 'VM', 'no answer': 'No answer', 'deposit': 'Deposit',
+      'callback': 'Callback', 'low potential': 'Low Potential', 'high potential': 'High Potential',
+      'no potential': 'No Potential', 'language barrier': 'Language Barrier', 'wrong person': 'Wrong Person',
+      'underage': 'Underage', 'no experience': 'No Experience', 'not interested': 'Not Interested',
+      'hung up': 'Hung Up', 'hang up': 'Hung Up', 'wrong number': 'Wrong Number', 'drop': 'Drop',
+      'jor': 'JOR', 'lost': 'Lost'
+    };
+    return canonical[key] || raw;
+  };
+
+  const toDate = (value: any) => {
+    if (!value) return null;
+    const date = value?.toDate ? value.toDate() : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+
+  const normalizedLeads = allLeads.map((lead: any) => ({ ...lead, status: normalizeStatus(lead.status) }));
+
+  const today = startOfLocalDay(now);
+  const tomorrow = addLocalDays(today, 1);
+
+  let startDate = new Date(0);
+  let prevStartDate = new Date(0);
+  let prevEndDate = new Date(0);
+
+  if (timeRange === '1d') {
+    startDate = new Date(today);
+    prevStartDate = addLocalDays(today, -1);
+    prevEndDate = new Date(today);
+  } else if (timeRange === '1w') {
+    startDate = addLocalDays(now, -7);
+    prevStartDate = addLocalDays(startDate, -7);
+    prevEndDate = new Date(startDate);
+  } else if (timeRange === '1m') {
+    startDate = addLocalMonths(now, -1);
+    prevStartDate = addLocalMonths(startDate, -1);
+    prevEndDate = new Date(startDate);
+  }
+
+  const getLeadsInPeriod = (list: any[], start: Date, end: Date = new Date()) =>
+    list.filter((lead: any) => {
+      const created = toDate(lead.createdAt);
+      return !!created && created >= start && created < end;
+    });
+
+  const currentLeads = timeRange === 'all' ? normalizedLeads : getLeadsInPeriod(normalizedLeads, startDate);
+  const previousLeads = timeRange === 'all' ? [] : getLeadsInPeriod(normalizedLeads, prevStartDate, prevEndDate);
+
+  const terminalStatuses = new Set(['Deposit', 'Lost', 'No Potential', 'JOR']);
+
+  const calculateStats = (list: any[]) => ({
+    total: list.length,
+    active: list.filter((l: any) => !terminalStatuses.has(l.status)).length,
+    converted: list.filter((l: any) => l.status === 'Deposit').length,
+    lost: list.filter((l: any) => ['Lost', 'No Potential'].includes(l.status)).length
+  });
+
+  const currentStats = calculateStats(currentLeads);
+  const previousStats = calculateStats(previousLeads);
+
+  const getChange = (current: number, previous: number) => {
+    if (previous === 0) return current > 0 ? 100 : 0;
+    return Math.round(((current - previous) / previous) * 100);
+  };
+
+  const callbacksToday = normalizedLeads.filter((l: any) => {
+    const cb = toDate(l.callbackAt);
+    return !!cb && cb >= today && cb < tomorrow;
+  }).length;
+
+  const overdueCallbacks = normalizedLeads.filter((l: any) => {
+    const cb = toDate(l.callbackAt);
+    return !!cb && cb < now && l.status === 'Callback';
+  }).length;
+
+  const unassigned = normalizedLeads.filter((l: any) => !String(l.assigned_to || '').trim()).length;
+
+  const untouched24h = normalizedLeads.filter((l: any) => {
+    if (terminalStatuses.has(l.status)) return false;
+    const updated = toDate(l.updatedAt) || toDate(l.createdAt);
+    return !!updated && now.getTime() - updated.getTime() >= 24 * 60 * 60 * 1000;
+  }).length;
+
+  const stale7d = normalizedLeads.filter((l: any) => {
+    if (terminalStatuses.has(l.status)) return false;
+    const updated = toDate(l.updatedAt) || toDate(l.createdAt);
+    return !!updated && now.getTime() - updated.getTime() >= 7 * 24 * 60 * 60 * 1000;
+  }).length;
+
+  const jor = currentLeads.filter((l: any) => l.status === 'JOR').length;
+  const highPotential = currentLeads.filter((l: any) => l.status === 'High Potential').length;
+
+  const stats: any = {
+    total: currentStats.total,
+    totalChange: getChange(currentStats.total, previousStats.total),
+    newToday: normalizedLeads.filter((l: any) => {
+      const created = toDate(l.createdAt);
+      return !!created && created >= today;
+    }).length,
+    active: currentStats.active,
+    activeChange: getChange(currentStats.active, previousStats.active),
+    converted: currentStats.converted,
+    convertedChange: getChange(currentStats.converted, previousStats.converted),
+    lost: currentStats.lost,
+    lostChange: getChange(currentStats.lost, previousStats.lost),
+    duplicates: 0,
+    jor,
+    highPotential,
+    callbacksToday,
+    overdueCallbacks,
+    unassigned,
+    untouched24h,
+    stale7d,
+    leadsByStatus: [],
+    usersByRole: [],
+    topSources: [],
+    sourceAnalytics: [],
+    agentPerformance: [],
+    teamPerformance: [],
+    teamMembers: [],
+    dailyFlow: [],
+    criticalAlerts: [],
+    attendance: { totalAgents: 0, ready: 0, break: 0, ended: 0, notStarted: 0, notStartedAgents: [] as any[] },
+    misconfiguredUserDetails: [] as any[],
+    financeReady: false
+  };
+
+  // Status distribution
+  const statusMap: Record<string, number> = {};
+  currentLeads.forEach((l: any) => { statusMap[l.status] = (statusMap[l.status] || 0) + 1; });
+  stats.leadsByStatus = Object.entries(statusMap)
+    .map(([status, count]) => ({ status, count }))
+    .sort((a: any, b: any) => b.count - a.count);
+
+  // Roles / configuration
+  const roleMap: Record<string, number> = {};
+  visibleUsers.forEach((u: any) => {
+    const role = String(u.role || 'Undefined').trim() || 'Undefined';
+    roleMap[role] = (roleMap[role] || 0) + 1;
+  });
+  stats.usersByRole = Object.entries(roleMap)
+    .map(([role, count]) => ({ role, count }))
+    .sort((a: any, b: any) => b.count - a.count);
+  stats.misconfiguredUsers = Number(roleMap['Undefined'] || 0);
+  stats.misconfiguredUserDetails = visibleUsers
+    .filter((u: any) => { const role = String(u.role || '').trim(); return !role || role === 'Undefined'; })
+    .map((u: any) => ({ id: u.id, name: u.name || u.email || 'User', email: u.email || '', role: u.role || 'Undefined', teamName: u.teamName || '' }));
+
+  // Import file names
+  const importNameMap = new Map<string, string>();
+  importsSnap.docs.forEach(importDoc => {
+    const data = importDoc.data() as any;
+    importNameMap.set(String(importDoc.id), String(data.fileName || `Import ${importDoc.id}`));
+  });
+  const fileNameForLead = (lead: any) => {
+    if (lead.importFileName) return String(lead.importFileName);
+    if (lead.importId && importNameMap.has(String(lead.importId))) return String(importNameMap.get(String(lead.importId)));
+    return 'Manual / Legacy';
+  };
+
+  // Source -> File -> Status analytics
+  const sourceBuckets = new Map<string, any>();
+  currentLeads.forEach((lead: any) => {
+    const source = String(lead.source || 'Unknown').trim() || 'Unknown';
+    const fileName = fileNameForLead(lead);
+    if (!sourceBuckets.has(source)) {
+      sourceBuckets.set(source, { source, count: 0, statuses: {} as Record<string, number>, files: new Map<string, any>() });
+    }
+    const sb = sourceBuckets.get(source);
+    sb.count++;
+    sb.statuses[lead.status] = (sb.statuses[lead.status] || 0) + 1;
+    if (!sb.files.has(fileName)) {
+      sb.files.set(fileName, { fileName, count: 0, statuses: {} as Record<string, number> });
+    }
+    const fb = sb.files.get(fileName);
+    fb.count++;
+    fb.statuses[lead.status] = (fb.statuses[lead.status] || 0) + 1;
+  });
+
+  const qualityScore = (statuses: Record<string, number>, total: number) => {
+    if (!total) return 0;
+    const positive = Number(statuses['Deposit'] || 0) * 3 + Number(statuses['High Potential'] || 0) * 2 + Number(statuses['Callback'] || 0);
+    const negative = Number(statuses['Wrong Number'] || 0) * 2 + Number(statuses['No answer'] || 0) + Number(statuses['Hung Up'] || 0) + Number(statuses['Drop'] || 0);
+    const raw = 50 + ((positive - negative) / total) * 50;
+    return Math.max(0, Math.min(100, Math.round(raw)));
+  };
+
+  stats.sourceAnalytics = Array.from(sourceBuckets.values())
+    .map((bucket: any) => {
+      const files = Array.from(bucket.files.values())
+        .map((file: any) => ({
+          fileName: file.fileName,
+          count: file.count,
+          qualityScore: qualityScore(file.statuses, file.count),
+          statuses: Object.entries(file.statuses).map(([status, count]) => ({ status, count })).sort((a: any, b: any) => b.count - a.count),
+          // Not used by the UI; omitted to keep the response small.
+          leadIds: [] as string[]
+        }))
+        .sort((a: any, b: any) => b.count - a.count);
+      return {
+        source: bucket.source,
+        count: bucket.count,
+        qualityScore: qualityScore(bucket.statuses, bucket.count),
+        statuses: Object.entries(bucket.statuses).map(([status, count]) => ({ status, count })).sort((a: any, b: any) => b.count - a.count),
+        files
+      };
+    })
+    .sort((a: any, b: any) => b.count - a.count);
+  stats.topSources = stats.sourceAnalytics.slice(0, 5);
+
+  // Agent performance + approved revenue
+  const agents = visibleUsers.filter((u: any) => String(u.role || '') === 'Agent');
+  const visibleAgentIds = new Set(agents.map((a: any) => String(a.id)));
+  const approvedRevenueByAgent = new Map<string, number>();
+  const approvedDepositCountByAgent = new Map<string, number>();
+
+  approvedFinanceSnapshot.docs.forEach(financeDoc => {
+    const deposit = financeDoc.data() as any;
+    if (timeRange !== 'all') {
+      const financeDate = toDate(deposit.approvedAt) || toDate(deposit.receivedAtDate) || toDate(deposit.submittedAt) || toDate(deposit.depositDate);
+      if (!financeDate || financeDate < startDate) return;
+    }
+    const allocations = Array.isArray(deposit.allocations) ? deposit.allocations : [];
+    allocations.forEach((allocation: any) => {
+      const userId = String(allocation.userId || '');
+      if (!userId || !visibleAgentIds.has(userId)) return;
+      const amount = Number(allocation.amount || 0);
+      if (!Number.isFinite(amount)) return;
+      approvedRevenueByAgent.set(userId, Number(approvedRevenueByAgent.get(userId) || 0) + amount);
+      if (amount > 0) approvedDepositCountByAgent.set(userId, Number(approvedDepositCountByAgent.get(userId) || 0) + 1);
+    });
+  });
+
+  // Group current leads by agent once (faster than filtering per agent).
+  const leadsByAgent = new Map<string, any[]>();
+  currentLeads.forEach((l: any) => {
+    const key = String(l.assigned_to);
+    if (!leadsByAgent.has(key)) leadsByAgent.set(key, []);
+    leadsByAgent.get(key)!.push(l);
+  });
+
+  stats.agentPerformance = agents
+    .map((agent: any) => {
+      const agentLeads = leadsByAgent.get(String(agent.id)) || [];
+      const deposits = agentLeads.filter((l: any) => l.status === 'Deposit').length;
+      const high = agentLeads.filter((l: any) => l.status === 'High Potential').length;
+      const callbacks = agentLeads.filter((l: any) => l.status === 'Callback').length;
+      const approvedRevenue = Number(Number(approvedRevenueByAgent.get(String(agent.id)) || 0).toFixed(2));
+      return {
+        id: agent.id,
+        name: agent.name || agent.email || 'Agent',
+        avatar: agent.avatar || `https://i.pravatar.cc/150?u=${agent.id}`,
+        teamId: agent.teamId || '',
+        teamName: agent.teamName || '',
+        total: agentLeads.length,
+        deposits,
+        approvedDepositCount: Number(approvedDepositCountByAgent.get(String(agent.id)) || 0),
+        highPotential: high,
+        callbacks,
+        conversionRate: agentLeads.length ? Math.round((deposits / agentLeads.length) * 1000) / 10 : 0,
+        revenue: approvedRevenue,
+        approvedRevenue
+      };
+    })
+    .sort((a: any, b: any) => {
+      if (b.approvedRevenue !== a.approvedRevenue) return b.approvedRevenue - a.approvedRevenue;
+      if (b.approvedDepositCount !== a.approvedDepositCount) return b.approvedDepositCount - a.approvedDepositCount;
+      if (b.conversionRate !== a.conversionRate) return b.conversionRate - a.conversionRate;
+      return String(a.name).localeCompare(String(b.name));
+    });
+
+  stats.financeReady = true;
+  stats.workload = stats.agentPerformance.map((agent: any) => ({
+    name: agent.name,
+    new_leads: 0,
+    in_progress: Math.max(0, agent.total - agent.deposits),
+    completed: agent.deposits,
+    total: agent.total
+  }));
+
+  // Team performance
+  const teams = new Map<string, any>();
+  visibleUsers
+    .filter((u: any) => ['Agent', 'Team Leader'].includes(String(u.role || '')))
+    .forEach((member: any) => {
+      const teamId = String(member.teamId || 'unassigned-team');
+      const teamName = String(member.teamName || 'No Team');
+      if (!teams.has(teamId)) teams.set(teamId, { teamId, teamName, memberIds: new Set<string>(), agentCount: 0 });
+      const bucket = teams.get(teamId);
+      bucket.memberIds.add(String(member.id));
+      if (member.role === 'Agent') bucket.agentCount++;
+    });
+
+  stats.teamPerformance = Array.from(teams.values())
+    .map((team: any) => {
+      const teamLeads = currentLeads.filter((l: any) => team.memberIds.has(String(l.assigned_to || '')));
+      const deposits = teamLeads.filter((l: any) => l.status === 'Deposit').length;
+      const high = teamLeads.filter((l: any) => l.status === 'High Potential').length;
+      const lostCount = teamLeads.filter((l: any) => ['Lost', 'No Potential'].includes(l.status)).length;
+      return {
+        teamId: team.teamId,
+        teamName: team.teamName,
+        agents: team.agentCount,
+        leads: teamLeads.length,
+        deposits,
+        highPotential: high,
+        lost: lostCount,
+        conversionRate: teamLeads.length ? Math.round((deposits / teamLeads.length) * 1000) / 10 : 0
+      };
+    })
+    .sort((a: any, b: any) => {
+      if (b.deposits !== a.deposits) return b.deposits - a.deposits;
+      return b.conversionRate - a.conversionRate;
+    });
+
+  // Attendance
+  const shiftMap = new Map<string, any>();
+  todayShiftsSnap.docs.forEach(shiftDoc => {
+    const shift = { id: shiftDoc.id, ...shiftDoc.data() } as any;
+    shiftMap.set(String(shift.userId), shift);
+  });
+  const visibleAgents = visibleUsers.filter((u: any) => String(u.role || '') === 'Agent');
+  stats.attendance.totalAgents = visibleAgents.length;
+  visibleAgents.forEach((agent: any) => {
+    const shift = shiftMap.get(String(agent.id));
+    const notStartedRow = { id: agent.id, name: agent.name || agent.email || 'Agent', email: agent.email || '', teamName: agent.teamName || '' };
+    if (!shift) {
+      stats.attendance.notStarted++;
+      stats.attendance.notStartedAgents.push(notStartedRow);
+    } else if (shift.status === 'ready') {
+      stats.attendance.ready++;
+    } else if (shift.status === 'break') {
+      stats.attendance.break++;
+    } else if (shift.status === 'ended') {
+      stats.attendance.ended++;
+    } else {
+      stats.attendance.notStarted++;
+      stats.attendance.notStartedAgents.push(notStartedRow);
+    }
+  });
+
+  if (currentRole === 'Team Leader') {
+    stats.teamMembers = visibleAgents
+      .map((member: any) => ({
+        id: member.id,
+        name: member.name || member.email || 'Agent',
+        email: member.email || '',
+        avatar: member.avatar || `https://i.pravatar.cc/150?u=${member.id}`,
+        isOnline: !!member.isOnline,
+        lastSeen: member.lastSeen || null,
+        shift: shiftMap.get(String(member.id)) || null
+      }))
+      .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  // Daily lead flow
+  let flowStart: Date;
+  if (timeRange === '1d') flowStart = startOfLocalDay(now);
+  else if (timeRange === '1w') flowStart = startOfLocalDay(addLocalDays(now, -6));
+  else if (timeRange === '1m') flowStart = startOfLocalDay(addLocalDays(now, -29));
+  else flowStart = startOfLocalDay(addLocalDays(now, -13));
+
+  const flowMap = new Map<string, number>();
+  let cursor = new Date(flowStart);
+  while (cursor <= now) {
+    flowMap.set(localDateKey(cursor), 0);
+    cursor = addLocalDays(cursor, 1);
+  }
+  normalizedLeads.forEach((l: any) => {
+    const created = toDate(l.createdAt);
+    if (!created || created < flowStart) return;
+    const key = localDateKey(created);
+    if (flowMap.has(key)) flowMap.set(key, Number(flowMap.get(key) || 0) + 1);
+  });
+  stats.dailyFlow = Array.from(flowMap.entries()).map(([date, count]) => ({ date, label: date.slice(5), count }));
+
+  // Critical alerts
+  if (unassigned > 0) stats.criticalAlerts.push({ type: 'unassigned', severity: 'high', label: 'Unassigned Leads', count: unassigned, detail: 'Leads currently have no assigned user.' });
+  if (overdueCallbacks > 0) stats.criticalAlerts.push({ type: 'overdue-callbacks', severity: 'high', label: 'Overdue Callbacks', count: overdueCallbacks, detail: 'Callback time has passed while status is still Callback.' });
+  if (untouched24h > 0) stats.criticalAlerts.push({ type: 'untouched', severity: 'medium', label: 'Untouched 24h+', count: untouched24h, detail: 'Active leads have not been updated for at least 24 hours.' });
+  if (stats.attendance.notStarted > 0) stats.criticalAlerts.push({ type: 'shift-not-started', severity: 'medium', label: 'Shift Not Started', count: stats.attendance.notStarted, detail: 'Visible Agents have no shift record for today.' });
+  if (stats.misconfiguredUsers > 0) stats.criticalAlerts.push({ type: 'user-config', severity: 'medium', label: 'User Configuration', count: stats.misconfiguredUsers, detail: 'Users have an undefined role and should be reviewed.' });
+
+  // Recent activity (same visibility rules)
+  const visibleUserIds = new Set(visibleUsers.map((u: any) => String(u.id)));
+  const visibleLeadIds = new Set(normalizedLeads.map((l: any) => String(l.id)));
+  const userNameById = new Map(allUsers.map((u: any) => [String(u.id), u.name]));
+
+  stats.recentActivity = historySnap.docs
+    .map(d => {
+      const data = d.data() as any;
+      return { id: d.id, ...data, userName: userNameById.get(String(data.user_id)) || 'Unknown User' };
+    })
+    .filter((activity: any) => {
+      if (currentRole === 'Administrator' || currentRole === 'Manager') return true;
+      if (currentRole === 'Agent') {
+        return String(activity.user_id || '') === String(currentUser.id) ||
+          (activity.lead_id && visibleLeadIds.has(String(activity.lead_id)));
+      }
+      if (currentRole === 'Team Leader') {
+        return visibleUserIds.has(String(activity.user_id || '')) ||
+          (activity.lead_id && visibleLeadIds.has(String(activity.lead_id)));
+      }
+      return false;
+    })
+    .slice(0, 10);
+
+  stats.scope = currentRole === 'Team Leader'
+    ? { type: 'team', teamId: currentTeamId, teamName: currentUser.teamName || '' }
+    : currentRole === 'Agent'
+      ? { type: 'agent', userId: currentUser.id }
+      : { type: 'organization' };
+
+  const cacheScope = (currentRole === 'Administrator' || currentRole === 'Manager')
+    ? 'org'
+    : `${currentRole}:${currentRole === 'Team Leader' ? currentTeamId : currentUser.id}`;
+
+  return { stats, cacheScope };
+}
+
+app.get('/api/dashboard/stats', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    const rangeParam = String(req.query.range || 'all');
+    const timeRange = (['1d', '1w', '1m', 'all'].includes(rangeParam) ? rangeParam : 'all') as any;
+    const tzOffset = Number(req.query.tz);
+
+    // Short cache per user+range. Administrators/Managers share the same
+    // organization-wide numbers, so their cache key is shared.
+    const userDoc = await db.collection('users').doc(decoded.uid).get();
+    if (!userDoc.exists) {
+      return res.status(403).json({ success: false, error: 'CRM user not found.' });
+    }
+    const role = String(userDoc.data()?.role || 'Agent');
+    const preKey = (role === 'Administrator' || role === 'Manager')
+      ? `org|${timeRange}|${tzOffset}`
+      : `${decoded.uid}|${timeRange}|${tzOffset}`;
+
+    const cached = dashboardCache.get(preKey);
+    if (cached && Date.now() - cached.at < DASHBOARD_CACHE_MS && req.query.fresh !== '1') {
+      return res.json({ success: true, cached: true, generatedAt: cached.at, stats: cached.body });
+    }
+
+    const { stats } = await computeDashboardStats(decoded.uid, timeRange, tzOffset);
+    const body = serializeDashboardValue(stats);
+    const at = Date.now();
+    dashboardCache.set(preKey, { at, body });
+    if (dashboardCache.size > 300) {
+      const oldestKey = dashboardCache.keys().next().value;
+      if (oldestKey) dashboardCache.delete(oldestKey);
+    }
+
+    res.json({ success: true, cached: false, generatedAt: at, stats: body });
+  } catch (error: any) {
+    console.error('Dashboard stats error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to load dashboard.' });
+  }
+});
+
 // Vite/Static handling
 async function setupVite() {
   if (process.env.NODE_ENV !== 'production') {
