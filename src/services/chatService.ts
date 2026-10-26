@@ -31,14 +31,11 @@ export const chatService = {
   async setUserOnline(userId: string, isOnline: boolean) {
     if (!userId || userId === "1") return;
     try {
-      await setDoc(
-        doc(db, USERS_COL, userId),
-        {
-          isOnline,
-          lastSeen: serverTimestamp()
-        },
-        { merge: true }
-      );
+      // updateDoc (not setDoc+merge) so a deleted user's doc is never recreated.
+      await updateDoc(doc(db, USERS_COL, userId), {
+        isOnline,
+        lastSeen: serverTimestamp()
+      });
     } catch (err) {
       console.error("Failed to set user status:", err);
     }
