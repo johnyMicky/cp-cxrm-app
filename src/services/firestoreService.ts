@@ -7167,7 +7167,54 @@ export const firestoreService = {
   },
 
   // Dashboard
-  async getDashboardStats(user: any, timeRange: '1d' | '1w' | '1m' | 'all' = 'all') {
+  // Dashboard statistics are calculated on the server (fast: the browser no
+  // longer downloads every lead). If the server is unavailable for any reason,
+  // the original in-browser calculation below is used as a fallback.
+  async getDashboardStats(user: any, timeRange: '1d' | '1w' | '1m' | 'all' = 'all', options: { fresh?: boolean } = {}) {
+    try {
+      const authToken = await auth.currentUser?.getIdToken();
+      if (authToken) {
+        const params = new URLSearchParams({
+          range: timeRange,
+          tz: String(new Date().getTimezoneOffset())
+        });
+        if (options.fresh) params.set('fresh', '1');
+
+        const response = await fetch(`/api/dashboard/stats?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+
+        if (response.ok) {
+          const payload = await response.json();
+          if (payload?.success && payload.stats) {
+            const revive = (value: any): any => {
+              if (value === null || value === undefined) return value;
+              if (Array.isArray(value)) return value.map(revive);
+              if (typeof value === 'object') {
+                if (typeof value.__ts === 'number' && Object.keys(value).length === 1) {
+                  return Timestamp.fromMillis(value.__ts);
+                }
+                const out: any = {};
+                Object.keys(value).forEach(key => { out[key] = revive(value[key]); });
+                return out;
+              }
+              return value;
+            };
+
+            const stats = revive(payload.stats);
+            stats.generatedAt = payload.generatedAt || Date.now();
+            return stats;
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Server dashboard stats unavailable, using local calculation:', error);
+    }
+
+    return await this.getDashboardStatsLocal(user, timeRange);
+  },
+
+  async getDashboardStatsLocal(user: any, timeRange: '1d' | '1w' | '1m' | 'all' = 'all') {
     // Load users once. The old version loaded users and then called getLeadsForUser(),
     // which could read the current user/team again. This version reuses allUsers.
     const usersSnap = await getDocs(collection(db, USERS_COL));
