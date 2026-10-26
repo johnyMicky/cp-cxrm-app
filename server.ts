@@ -1614,6 +1614,67 @@ app.post('/api/admin/reset-all', async (req, res) => {
   }
 });
 
+// Change a CRM user's real Firebase Authentication password. Administrator only.
+// Also removes any old plain-text "password" field from the user's Firestore docs.
+app.post('/api/admin/set-password', async (req, res) => {
+  const requester = await requireCrmRole(req, res, ['Administrator']);
+  if (!requester) return;
+
+  try {
+    const targetId = String(req.body?.userId || '').trim();
+    const password = String(req.body?.password || '');
+    if (!targetId) {
+      return res.status(400).json({ success: false, error: 'userId is required.' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
+    }
+
+    const targetSnap = await db.collection('users').doc(targetId).get();
+    let email = String(targetSnap.data()?.email || '').trim().toLowerCase();
+
+    let authUid = '';
+    try {
+      const authUser = await admin.auth().getUser(targetId);
+      authUid = authUser.uid;
+      email = email || String(authUser.email || '').toLowerCase();
+    } catch (e: any) {
+      if (e?.code !== 'auth/user-not-found') throw e;
+    }
+    if (!authUid && email) {
+      try {
+        authUid = (await admin.auth().getUserByEmail(email)).uid;
+      } catch (e: any) {
+        if (e?.code !== 'auth/user-not-found') throw e;
+      }
+    }
+    if (!authUid) {
+      return res.status(404).json({ success: false, error: 'This user has no login account in Firebase Authentication.' });
+    }
+
+    await admin.auth().updateUser(authUid, { password });
+
+    const refs = new Map<string, admin.firestore.DocumentReference>();
+    if (targetSnap.exists) refs.set(targetId, targetSnap.ref);
+    const authDoc = await db.collection('users').doc(authUid).get();
+    if (authDoc.exists) refs.set(authUid, authDoc.ref);
+    if (email) {
+      const sameEmail = await db.collection('users').where('email', '==', email).get();
+      sameEmail.docs.forEach(d => refs.set(d.id, d.ref));
+    }
+    if (refs.size > 0) {
+      const batch = db.batch();
+      refs.forEach(ref => batch.update(ref, { password: admin.firestore.FieldValue.delete() }));
+      await batch.commit();
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Set password error:', error);
+    res.status(500).json({ success: false, error: error.message, code: error.code || 'UNKNOWN_ERROR' });
+  }
+});
+
 // Delete a CRM user completely: Firebase Authentication account + every
 // Firestore users/ document for that UID/email. Administrator only.
 app.post('/api/admin/delete-user', async (req, res) => {
