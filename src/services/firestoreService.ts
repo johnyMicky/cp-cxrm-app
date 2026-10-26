@@ -2641,9 +2641,13 @@ export const firestoreService = {
 
   async bulkDeleteLeads(leadIds: string[], userId: string) {
     try {
+      const authToken = await auth.currentUser?.getIdToken();
       const response = await fetch('/api/leads/delete-selected', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || ''}`
+        },
         body: JSON.stringify({ ids: leadIds, userId })
       });
       
@@ -2660,9 +2664,13 @@ export const firestoreService = {
 
   async deleteAllLeads(userId: string) {
     try {
+      const authToken = await auth.currentUser?.getIdToken();
       const response = await fetch('/api/leads/delete-all', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || ''}`
+        },
         body: JSON.stringify({ userId })
       });
       
@@ -5445,9 +5453,13 @@ export const firestoreService = {
 
   async resetSystem(userId: string) {
     try {
+      const authToken = await auth.currentUser?.getIdToken();
       const response = await fetch('/api/admin/reset-all', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || ''}`
+        },
         body: JSON.stringify({ userId })
       });
       
