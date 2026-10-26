@@ -2,19 +2,13 @@ import { useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword
-} from 'firebase/auth';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { auth } from '../firebase';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isRecoveringAdmin, setIsRecoveringAdmin] = useState(false);
   const navigate = useNavigate();
 
   const getFriendlyError = (err: any) => {
@@ -38,67 +32,6 @@ export default function Login() {
         return 'Permission denied. Check Firestore rules.';
       default:
         return message || 'Failed to sign in.';
-    }
-  };
-
-  const restoreAdminFirestoreDoc = async (uid: string) => {
-    await setDoc(
-      doc(db, 'users', uid),
-      {
-        uid,
-        email: 'c.morgan@ghost.com',
-        name: 'Admin User',
-        role: 'Administrator',
-        avatar: `https://i.pravatar.cc/150?u=${uid}`,
-        isOnline: true,
-        createdAt: serverTimestamp(),
-        lastSeen: serverTimestamp()
-      },
-      { merge: true }
-    );
-  };
-
-  const handleRecoverAdmin = async () => {
-    const adminEmail = 'c.morgan@ghost.com';
-    const adminPassword = 'Q1w2e3r!';
-
-    try {
-      setIsRecoveringAdmin(true);
-      setError('');
-
-      // 1) ჯერ ვცდილობთ login-ს
-      try {
-        const cred = await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
-        await restoreAdminFirestoreDoc(cred.user.uid);
-        alert('Admin account restored successfully. ახლა შედი ჩვეულებრივად.');
-        return;
-      } catch (signInErr: any) {
-        // თუ user საერთოდ არ არსებობს, შევქმნათ
-        if (
-          signInErr?.code === 'auth/user-not-found' ||
-          signInErr?.code === 'auth/invalid-credential'
-        ) {
-          try {
-            const created = await createUserWithEmailAndPassword(auth, adminEmail, adminPassword);
-            await restoreAdminFirestoreDoc(created.user.uid);
-            alert('Admin account created successfully. ახლა შედი ჩვეულებრივად.');
-            return;
-          } catch (createErr: any) {
-            if (createErr?.code === 'auth/email-already-in-use') {
-              setError('Admin email exists in Authentication, but the password is different.');
-              return;
-            }
-            throw createErr;
-          }
-        }
-
-        throw signInErr;
-      }
-    } catch (err: any) {
-      console.error('ADMIN RECOVERY ERROR:', err);
-      setError(err?.message || 'Failed to recover admin account.');
-    } finally {
-      setIsRecoveringAdmin(false);
     }
   };
 
@@ -255,17 +188,6 @@ export default function Login() {
                 Contact Administrator
               </a>
             </p>
-
-            <div className="mt-4 text-center">
-              <button
-                type="button"
-                onClick={handleRecoverAdmin}
-                disabled={isRecoveringAdmin}
-                className="text-xs text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-50"
-              >
-                {isRecoveringAdmin ? 'Recovering admin...' : 'Recovery Access'}
-              </button>
-            </div>
           </div>
         </div>
       </div>
