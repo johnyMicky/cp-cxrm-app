@@ -14,7 +14,11 @@ import {
   getDoc,
   limit,
   setDoc,
-  writeBatch
+  writeBatch,
+  arrayRemove,
+  increment,
+  deleteField,
+  Timestamp
 } from "firebase/firestore";
 import {
   ref,
@@ -186,21 +190,52 @@ export const chatService = {
     });
   },
 
-  async sendMessage(chatId: string, messageData: any) {
+  async sendMessage(chatId: string, messageData: any, chatMembers?: string[]) {
     const msgRef = await addDoc(collection(db, CHATS_COL, chatId, MESSAGES_COL), {
       ...messageData,
       createdAt: serverTimestamp(),
       seenBy: [messageData.senderId]
     });
 
-    await updateDoc(doc(db, CHATS_COL, chatId), {
-      lastMessage: messageData.text || `[${messageData.type}]`,
+    // Members are needed for per-user unread counters. Use the list passed by
+    // the UI when available, otherwise read the chat once.
+    let members: string[] = Array.isArray(chatMembers) ? chatMembers : [];
+    if (members.length === 0) {
+      const chatSnap = await getDoc(doc(db, CHATS_COL, chatId));
+      members = Array.isArray(chatSnap.data()?.members) ? chatSnap.data()!.members : [];
+    }
+
+    const chatUpdate: any = {
+      lastMessage: this.previewTextForMessage(messageData),
       lastMessageAt: serverTimestamp(),
       lastMessageSeenBy: [messageData.senderId],
-      lastMessageSenderId: messageData.senderId
-    });
+      lastMessageSenderId: messageData.senderId,
+      lastMessageSenderName: messageData.senderName || '',
+      lastMessageId: msgRef.id,
+      lastMessageType: messageData.type || 'text'
+    };
+
+    members
+      .map((memberId: any) => String(memberId))
+      .filter((memberId: string) => memberId && memberId !== String(messageData.senderId))
+      .forEach((memberId: string) => {
+        chatUpdate[`unread.${memberId}`] = increment(1);
+      });
+    chatUpdate[`unread.${messageData.senderId}`] = 0;
+
+    await updateDoc(doc(db, CHATS_COL, chatId), chatUpdate);
 
     return msgRef;
+  },
+
+  // Short text shown in the chat list for the latest message.
+  previewTextForMessage(messageData: any) {
+    const type = String(messageData?.type || 'text');
+    if (type === 'image') return '📷 Photo';
+    if (type === 'file') return `📎 ${messageData?.fileName || 'File'}`;
+    if (type === 'gif') return 'GIF';
+    if (type === 'system') return String(messageData?.text || '');
+    return String(messageData?.text || '');
   },
 
   getMessages(chatId: string, callback: (messages: any[]) => void) {
@@ -225,7 +260,7 @@ export const chatService = {
     });
   },
 
-  async uploadFile(file: File) {
+  async uploadFile(file: File, onProgress?: (percent: number) => void) {
     if (!file) {
       throw new Error("No file selected");
     }
@@ -243,7 +278,7 @@ export const chatService = {
       throw new Error("No authenticated Firebase user found. Please log out and sign in again.");
     }
 
-    const maxSizeMb = 50;
+    const maxSizeMb = 25;
     const maxSizeBytes = maxSizeMb * 1024 * 1024;
 
     if (file.size > maxSizeBytes) {
@@ -281,6 +316,7 @@ export const chatService = {
           (snapshot) => {
             const progress =
               (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            if (onProgress) onProgress(progress);
             console.log("UPLOAD PROGRESS:", progress.toFixed(2) + "%");
             console.log("UPLOAD STATE:", snapshot.state);
           },
@@ -559,5 +595,206 @@ export const chatService = {
 
     const newDoc = await getDoc(directRef);
     return { id: newDoc.id, ...newDoc.data() };
+  },
+
+  // ===========================================================================
+  // Chat v2 features (per-user pin / mute / delete-for-me, unread counters,
+  // paginated messages, reactions, edit / delete messages, group management).
+  // All fields are additive: older chats and messages keep working unchanged.
+  // ===========================================================================
+
+  // Realtime: the latest `pageSize` messages of a chat (oldest first).
+  // `hiddenBefore` hides history the user deleted "for me".
+  subscribeMessages(
+    chatId: string,
+    pageSize: number,
+    hiddenBefore: any,
+    callback: (messages: any[], hasMore: boolean) => void,
+    onError?: (error: any) => void
+  ) {
+    const constraints: any[] = [];
+    if (hiddenBefore?.toMillis) {
+      constraints.push(where("createdAt", ">", hiddenBefore));
+    }
+    constraints.push(orderBy("createdAt", "desc"), limit(pageSize + 1));
+
+    const q = query(collection(db, CHATS_COL, chatId, MESSAGES_COL), ...constraints);
+
+    return onSnapshot(
+      q,
+      (snap) => {
+        const docs = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data({ serverTimestamps: "estimate" })
+        } as any));
+        const hasMore = docs.length > pageSize;
+        const page = docs.slice(0, pageSize).reverse();
+        callback(page, hasMore);
+      },
+      (error) => {
+        console.error("Messages listener failed:", error);
+        if (onError) onError(error);
+      }
+    );
+  },
+
+  // Marks a chat as read for one user (unread counter + legacy seen flags).
+  async markChatRead(chatId: string, userId: string, unseenMessageIds: string[] = []) {
+    if (!chatId || !userId) return;
+    const batch = writeBatch(db);
+
+    unseenMessageIds.slice(0, 200).forEach((messageId) => {
+      batch.update(doc(db, CHATS_COL, chatId, MESSAGES_COL, messageId), {
+        seenBy: arrayUnion(userId)
+      });
+    });
+
+    batch.update(doc(db, CHATS_COL, chatId), {
+      [`unread.${userId}`]: 0,
+      lastMessageSeenBy: arrayUnion(userId)
+    });
+
+    await batch.commit();
+  },
+
+  async markChatUnread(chatId: string, userId: string) {
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      [`unread.${userId}`]: 1,
+      lastMessageSeenBy: arrayRemove(userId)
+    });
+  },
+
+  async setChatPinned(chatId: string, userId: string, pinned: boolean) {
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      pinnedBy: pinned ? arrayUnion(userId) : arrayRemove(userId)
+    });
+  },
+
+  async setChatMuted(chatId: string, userId: string, muted: boolean) {
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      mutedBy: muted ? arrayUnion(userId) : arrayRemove(userId)
+    });
+  },
+
+  // "Delete for me": hides the chat and its current history only for this
+  // user. The other person keeps everything. A new message brings the chat
+  // back with only the new messages.
+  async hideChatForUser(chatId: string, userId: string) {
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      [`hiddenFor.${userId}`]: Timestamp.now(),
+      [`unread.${userId}`]: 0,
+      pinnedBy: arrayRemove(userId)
+    });
+  },
+
+  // Message reactions. Keys are short ids so they are safe Firestore fields.
+  async toggleReaction(chatId: string, messageId: string, reactionKey: string, userId: string, add: boolean) {
+    await updateDoc(doc(db, CHATS_COL, chatId, MESSAGES_COL, messageId), {
+      [`reactions.${reactionKey}`]: add ? arrayUnion(userId) : arrayRemove(userId)
+    });
+  },
+
+  async editMessage(chatId: string, messageId: string, text: string, isLastMessage = false) {
+    const cleanText = String(text || '').trim();
+    if (!cleanText) throw new Error("Message cannot be empty");
+
+    await updateDoc(doc(db, CHATS_COL, chatId, MESSAGES_COL, messageId), {
+      text: cleanText,
+      editedAt: serverTimestamp()
+    });
+
+    if (isLastMessage) {
+      await updateDoc(doc(db, CHATS_COL, chatId), { lastMessage: cleanText });
+    }
+  },
+
+  // Delete for everyone (sender, or Administrator). The message stays as a
+  // "deleted" placeholder so replies and history keep their order.
+  async deleteMessage(chatId: string, messageId: string, deletedBy: string, isLastMessage = false) {
+    await updateDoc(doc(db, CHATS_COL, chatId, MESSAGES_COL, messageId), {
+      deleted: true,
+      deletedBy,
+      deletedAt: serverTimestamp(),
+      text: '',
+      fileUrl: deleteField(),
+      fileName: deleteField(),
+      gifUrl: deleteField(),
+      gifPreviewUrl: deleteField(),
+      gifOriginalUrl: deleteField(),
+      reactions: deleteField()
+    });
+
+    const chatUpdate: any = {};
+    if (isLastMessage) chatUpdate.lastMessage = 'Message deleted';
+
+    const chatSnap = await getDoc(doc(db, CHATS_COL, chatId));
+    if (chatSnap.data()?.pinnedMessageId === messageId) chatUpdate.pinnedMessageId = null;
+
+    if (Object.keys(chatUpdate).length > 0) {
+      await updateDoc(doc(db, CHATS_COL, chatId), chatUpdate);
+    }
+  },
+
+  // Small grey info line inside a group ("Ana added Bob"). Does not change
+  // unread counters or the chat list preview.
+  async addSystemMessage(chatId: string, text: string, actorId: string) {
+    await addDoc(collection(db, CHATS_COL, chatId, MESSAGES_COL), {
+      type: 'system',
+      text,
+      senderId: actorId,
+      senderName: '',
+      createdAt: serverTimestamp(),
+      seenBy: [actorId]
+    });
+  },
+
+  async createGroup(name: string, createdBy: string, memberIds: string[], creatorName = '') {
+    const chat: any = await this.createChat(name, createdBy, memberIds);
+    await updateDoc(doc(db, CHATS_COL, chat.id), { admins: [createdBy] });
+    await this.addSystemMessage(chat.id, `${creatorName || 'Someone'} created the group`, createdBy).catch(console.error);
+    return { ...chat, admins: [createdBy] };
+  },
+
+  async renameGroup(chatId: string, name: string, actorId: string, actorName = '') {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) throw new Error("Group name is required");
+    await updateDoc(doc(db, CHATS_COL, chatId), { name: cleanName });
+    await this.addSystemMessage(chatId, `${actorName || 'Someone'} renamed the group to "${cleanName}"`, actorId).catch(console.error);
+  },
+
+  async addMembersWithNotice(chatId: string, userIds: string[], actorId: string, actorName: string, addedNames: string[]) {
+    const count = await this.addMembersToChat(chatId, userIds);
+    if (addedNames.length > 0) {
+      await this.addSystemMessage(chatId, `${actorName || 'Someone'} added ${addedNames.join(', ')}`, actorId).catch(console.error);
+    }
+    return count;
+  },
+
+  async removeMemberFromChat(chatId: string, userId: string, actorId: string, actorName = '', removedName = '') {
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      members: arrayRemove(userId),
+      admins: arrayRemove(userId),
+      pinnedBy: arrayRemove(userId),
+      mutedBy: arrayRemove(userId),
+      [`unread.${userId}`]: deleteField()
+    });
+    await this.addSystemMessage(chatId, `${actorName || 'Someone'} removed ${removedName || 'a member'}`, actorId).catch(console.error);
+  },
+
+  async leaveGroup(chatId: string, userId: string, userName = '') {
+    await this.addSystemMessage(chatId, `${userName || 'Someone'} left the group`, userId).catch(console.error);
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      members: arrayRemove(userId),
+      admins: arrayRemove(userId),
+      pinnedBy: arrayRemove(userId),
+      mutedBy: arrayRemove(userId),
+      [`unread.${userId}`]: deleteField()
+    });
+  },
+
+  async setGroupAdmin(chatId: string, userId: string, isAdmin: boolean) {
+    await updateDoc(doc(db, CHATS_COL, chatId), {
+      admins: isAdmin ? arrayUnion(userId) : arrayRemove(userId)
+    });
   }
 };
