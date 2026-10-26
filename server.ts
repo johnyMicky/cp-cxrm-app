@@ -1575,6 +1575,72 @@ app.post('/api/admin/reset-all', async (req, res) => {
   }
 });
 
+// Delete a CRM user completely: Firebase Authentication account + every
+// Firestore users/ document for that UID/email. Administrator only.
+app.post('/api/admin/delete-user', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    if (!(await isAdministrator(decoded.uid, decoded.email))) {
+      return res.status(403).json({ success: false, error: 'Only Administrators can delete users.' });
+    }
+
+    const targetId = String(req.body?.userId || '').trim();
+    if (!targetId) {
+      return res.status(400).json({ success: false, error: 'userId is required.' });
+    }
+    if (targetId === decoded.uid) {
+      return res.status(400).json({ success: false, error: 'You cannot delete your own account.' });
+    }
+
+    const targetSnap = await db.collection('users').doc(targetId).get();
+    let email = String(targetSnap.data()?.email || '').trim().toLowerCase();
+
+    // 1) Firebase Authentication account (by UID, then by email for legacy docs)
+    let authUid = '';
+    try {
+      const authUser = await admin.auth().getUser(targetId);
+      authUid = authUser.uid;
+      email = email || String(authUser.email || '').toLowerCase();
+    } catch (e: any) {
+      if (e?.code !== 'auth/user-not-found') throw e;
+    }
+    if (!authUid && email) {
+      try {
+        authUid = (await admin.auth().getUserByEmail(email)).uid;
+      } catch (e: any) {
+        if (e?.code !== 'auth/user-not-found') throw e;
+      }
+    }
+    if (email === ADMIN_EMAIL) {
+      return res.status(400).json({ success: false, error: 'The main Administrator cannot be deleted.' });
+    }
+    if (authUid === decoded.uid || (email && email === String(decoded.email || '').toLowerCase())) {
+      return res.status(400).json({ success: false, error: 'You cannot delete your own account.' });
+    }
+    if (authUid) {
+      await admin.auth().revokeRefreshTokens(authUid).catch(() => {});
+      await admin.auth().deleteUser(authUid);
+    }
+
+    // 2) Every users/ document for this person (exact UID, auth UID, same email)
+    const refs = new Map<string, admin.firestore.DocumentReference>();
+    refs.set(targetId, db.collection('users').doc(targetId));
+    if (authUid) refs.set(authUid, db.collection('users').doc(authUid));
+    if (email) {
+      const sameEmail = await db.collection('users').where('email', '==', email).get();
+      sameEmail.docs.forEach(d => refs.set(d.id, d.ref));
+    }
+    const batch = db.batch();
+    refs.forEach(ref => batch.delete(ref));
+    await batch.commit();
+
+    res.json({ success: true, deletedAuth: !!authUid, deletedDocs: refs.size });
+  } catch (error: any) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ success: false, error: error.message, code: error.code || 'UNKNOWN_ERROR' });
+  }
+});
+
 // Vite/Static handling
 async function setupVite() {
   if (process.env.NODE_ENV !== 'production') {
