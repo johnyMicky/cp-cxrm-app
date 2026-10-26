@@ -1192,7 +1192,25 @@ export const firestoreService = {
       })
     );
 
-    await deleteDoc(doc(db, USERS_COL, id));
+    // Delete the Firebase Auth account AND all Firestore user docs on the server.
+    // Deleting only the Firestore doc lets the user come back: their Auth account
+    // still exists, and the next login / page load recreates the users/ doc.
+    const currentAuthUser = auth.currentUser;
+    if (!currentAuthUser) throw new Error('You must be signed in to delete users.');
+    const token = await currentAuthUser.getIdToken();
+
+    const response = await fetch('/api/admin/delete-user', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ userId: id })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || 'Failed to delete user');
+    }
   },
 
   // Teams
