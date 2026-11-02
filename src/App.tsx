@@ -19,7 +19,6 @@ const SettingsPage = lazy(() => import('./pages/Settings'));
 const WorkLogs = lazy(() => import('./pages/WorkLogs'));
 const SecurityLogs = lazy(() => import('./pages/SecurityLogs'));
 const Finance = lazy(() => import('./pages/Finance'));
-const LiveCalls = lazy(() => import('./pages/LiveCalls'));
 const Performance = lazy(() => import('./pages/Performance'));
 const SecureInfo = lazy(() => import('./pages/SecureInfo'));
 const ChatPanel = lazy(() => import('./components/ChatPanel'));
@@ -30,6 +29,15 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { firestoreService } from './services/firestoreService';
 import { chatService } from './services/chatService';
 import ErrorBoundary from './components/ErrorBoundary';
+import CallbackReminders from './components/CallbackReminders';
+import IdleLogout from './components/IdleLogout';
+import {
+  notifyBrowser,
+  browserNotificationPermission,
+  requestBrowserNotificationPermission,
+  isNotifyPromptDismissed,
+  dismissNotifyPrompt
+} from './utils/browserNotify';
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
@@ -63,6 +71,25 @@ function Sidebar({
   const userAvatar =
     sessionUser?.avatar ||
     `https://i.pravatar.cc/150?u=${currentUserId || 'user'}`;
+
+  // Clicking a desktop notification opens the related page in the CRM.
+  useEffect(() => {
+    const onNavigate = (event: Event) => {
+      const path = String((event as CustomEvent)?.detail?.path || '');
+      if (path) navigate(path);
+    };
+    window.addEventListener('crm:navigate', onNavigate as EventListener);
+    return () => window.removeEventListener('crm:navigate', onNavigate as EventListener);
+  }, [navigate]);
+
+  const [showNotifyPrompt, setShowNotifyPrompt] = useState(
+    () => browserNotificationPermission() === 'default' && !isNotifyPromptDismissed()
+  );
+
+  const handleEnableDesktopNotifications = async () => {
+    await requestBrowserNotificationPermission();
+    setShowNotifyPrompt(false);
+  };
 
   const handleAvatarFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -138,6 +165,12 @@ function Sidebar({
       },
       newest => {
         setNotificationToast(newest);
+        notifyBrowser({
+          title: newest?.title || 'CRM notification',
+          body: newest?.message || '',
+          tag: `notification-${newest?.id || ''}`,
+          path: newest?.lead_id ? `/leads/${newest.lead_id}` : (newest?.secure_info_request_id ? '/secure-info' : undefined)
+        });
 
         if (notificationToastTimeoutRef.current) {
           clearTimeout(notificationToastTimeoutRef.current);
@@ -244,7 +277,6 @@ function Sidebar({
     { name: 'Leads', path: '/leads', icon: Users, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'JOR', path: '/jor', icon: CheckCircle2, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent'] },
     { name: 'Finance', path: '/finance', icon: DollarSign, roles: ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'] },
-    { name: 'Live Calls', path: '/live-calls', icon: Radio, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Performance', path: '/performance', icon: Trophy, roles: ['Administrator', 'Manager', 'Team Leader'] },
     { name: 'Secure Info', path: '/secure-info', icon: LockKeyhole, roles: ['Administrator', 'Manager', 'Team Leader', 'Agent', 'Financial Manager'] },
     { name: 'Team', path: '/team', icon: UserCog, roles: ['Administrator', 'Team Leader'] },
@@ -309,6 +341,8 @@ function Sidebar({
               </span>
             )}
           </button>
+
+          {currentUserId && <CallbackReminders userId={String(currentUserId)} />}
           
           <div className="relative">
             <button 
@@ -490,6 +524,31 @@ function Sidebar({
         })}
       </nav>
       
+      {showNotifyPrompt && (
+        <div className="mx-4 mb-3 rounded-xl border border-blue-500/20 bg-blue-500/[0.06] p-3">
+          <p className="text-xs font-semibold text-white">Desktop notifications</p>
+          <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+            Get alerts for new leads, messages and callbacks even when the CRM tab is in the background.
+          </p>
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              type="button"
+              onClick={handleEnableDesktopNotifications}
+              className="px-2.5 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold"
+            >
+              Enable
+            </button>
+            <button
+              type="button"
+              onClick={() => { dismissNotifyPrompt(); setShowNotifyPrompt(false); }}
+              className="px-2.5 py-1 rounded-md text-slate-400 hover:text-white text-[11px]"
+            >
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="p-4 border-t border-white/5">
         <div className="flex items-center space-x-3 px-3 py-2">
           <div className="relative shrink-0">
@@ -580,6 +639,7 @@ export default function App() {
   const showLeadAssignmentToast = (message: string) => {
     setLeadToastMessage(message);
     setShowLeadToast(true);
+    notifyBrowser({ title: 'New leads', body: message, tag: 'lead-assignment', path: '/leads' });
 
     if (leadToastTimeoutRef.current) {
       clearTimeout(leadToastTimeoutRef.current);
@@ -701,6 +761,7 @@ export default function App() {
 
       const unsubscribe = chatService.getChats(currentUserId, currentUserRole, (chats) => {
         let hasNewIncomingMessage = false;
+        let newestIncomingChat: any = null;
 
         // Chats the user deleted "for me" (and no newer message) are ignored,
         // and muted chats never play a sound or count in the badge.
@@ -721,11 +782,23 @@ export default function App() {
             if (currentTime > previousTime) {
               if (!isInitialLoad) {
                 hasNewIncomingMessage = true;
+                if (!newestIncomingChat || currentTime > (newestIncomingChat.lastMessageAt?.toMillis?.() || 0)) {
+                  newestIncomingChat = chat;
+                }
               }
               lastMessageTimestamps[chat.id] = currentTime;
             }
           }
         });
+
+        if (hasNewIncomingMessage && newestIncomingChat) {
+          const sender = newestIncomingChat.lastMessageSenderName || 'New message';
+          notifyBrowser({
+            title: newestIncomingChat.isDirect ? sender : `${sender} · ${newestIncomingChat.name || 'Group'}`,
+            body: String(newestIncomingChat.lastMessage || ''),
+            tag: `chat-${newestIncomingChat.id}`
+          });
+        }
 
         if (hasNewIncomingMessage) {
           if (audioRef.current) {
@@ -880,6 +953,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <Router>
+        <IdleLogout enabled={isAuthenticated} />
         <Routes>
           <Route
             path="/chat-app"
@@ -969,14 +1043,6 @@ export default function App() {
                         element={
                           ['Administrator', 'Manager', 'Team Leader', 'Financial Manager'].includes(currentUserRole)
                             ? <Finance />
-                            : <Navigate to="/" replace />
-                        }
-                      />
-                      <Route
-                        path="/live-calls"
-                        element={
-                          ['Administrator', 'Manager', 'Team Leader'].includes(currentUserRole)
-                            ? <LiveCalls />
                             : <Navigate to="/" replace />
                         }
                       />
