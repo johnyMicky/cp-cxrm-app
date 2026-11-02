@@ -321,11 +321,10 @@ function Sidebar({
   return (
     <div className="w-64 bg-[#0A0F1C] border-r border-white/5 flex flex-col h-screen">
       <div className="p-6 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 rounded bg-blue-600 flex items-center justify-center">
-            <span className="text-white font-bold text-sm">CM</span>
+        <div className="flex items-center shrink-0">
+          <div className="h-9 px-2.5 rounded-lg bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+            <span className="text-white font-bold text-sm tracking-wide">CRM</span>
           </div>
-          <span className="text-white font-semibold text-xl tracking-tight">CamptainM-CRM</span>
         </div>
         
         <div className="flex items-center space-x-1">
