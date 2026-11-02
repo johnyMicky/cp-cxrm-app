@@ -695,6 +695,10 @@ export default function App() {
             );
             localStorage.setItem('userTeamId', canonicalUser.teamId || '');
             localStorage.setItem('userTeamName', canonicalUser.teamName || '');
+            localStorage.setItem(
+              'userLeaderTeamIds',
+              JSON.stringify(Array.isArray((canonicalUser as any).leaderTeamIds) ? (canonicalUser as any).leaderTeamIds : [])
+            );
           } else {
             if (cancelled) return;
 
@@ -914,10 +918,14 @@ export default function App() {
           const celebration = { id: change.doc.id, ...change.doc.data() } as any;
           const userTeamId = String(sessionUser?.teamId || '');
           const role = String(currentUserRole || '');
+          const leaderDesks: string[] = Array.isArray(sessionUser?.leaderTeamIds)
+            ? sessionUser.leaderTeamIds.map(String)
+            : [];
 
           const canSee =
             ['Administrator', 'Manager', 'Financial Manager'].includes(role) ||
-            (!!userTeamId && String(celebration.teamId || '') === userTeamId);
+            (!!userTeamId && String(celebration.teamId || '') === userTeamId) ||
+            (role === 'Team Leader' && leaderDesks.includes(String(celebration.teamId || '')));
 
           if (!canSee) return;
 
