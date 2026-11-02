@@ -6162,8 +6162,10 @@ export const firestoreService = {
     ).catch(() => null);
     const undoneKeys = new Set<string>();
     undoneSnap?.docs.forEach((d) => {
-      const key = String((d.data() as any).reshuffleRunKey || '');
-      if (key) undoneKeys.add(key);
+      const data = d.data() as any;
+      const key = String(data.reshuffleRunKey || '');
+      // Only real restores count; an "undo checked" note does not hide the button.
+      if (key && String(data.details || '').startsWith('Reshuffle undone:')) undoneKeys.add(key);
     });
     runs.forEach((r) => { if (undoneKeys.has(r.key)) r.undone = true; });
 
@@ -6228,6 +6230,7 @@ export const firestoreService = {
             leadId: String(h.lead_id || ''),
             oldAgentId: m ? idForName(m[1]) : '',
             newAgentId: m ? idForName(m[2]) : '',
+            newAgentName: m ? String(m[2]).trim() : '',
             oldStatus: m?.[3] || '',
             newStatus: m?.[4] || ''
           };
@@ -6243,6 +6246,13 @@ export const firestoreService = {
     let skippedMovedAgain = 0;
     let skippedUnknownAgent = 0;
     let done = 0;
+    // Where the skipped leads are now (shown to the user).
+    const skippedNowWith: Record<string, number> = {};
+    const nameById = new Map<string, string>(
+      users.map((u: any) => [String(u.id), String(u.name || u.email || u.id)] as [string, string])
+    );
+    const sameName = (a: string, b: string) =>
+      !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
 
     for (let i = 0; i < moves.length; i += 400) {
       const chunk = moves.slice(i, i + 400);
@@ -6254,10 +6264,27 @@ export const firestoreService = {
         const snap = snaps[index];
         done++;
         if (!snap.exists()) return;
-        if (!m.oldAgentId || !m.newAgentId) { skippedUnknownAgent++; return; }
+        if (!m.oldAgentId || (!m.newAgentId && !m.newAgentName)) { skippedUnknownAgent++; return; }
 
         const lead = snap.data() as any;
-        if (String(lead.assigned_to || '') !== m.newAgentId) { skippedMovedAgain++; return; }
+        const currentOwner = String(lead.assigned_to || '');
+        const ownerExists = userIds.has(currentOwner);
+        const ownerName = nameById.get(currentOwner) || '';
+
+        // The lead is still "where the reshuffle put it" when it is with the
+        // recorded recipient, with a user of the same name (account was
+        // re-created), or with an account that no longer exists.
+        const stillThere =
+          currentOwner === m.newAgentId ||
+          sameName(ownerName, m.newAgentName || nameById.get(m.newAgentId) || '') ||
+          (!!currentOwner && !ownerExists);
+
+        if (!stillThere) {
+          skippedMovedAgain++;
+          const label = currentOwner ? (ownerName || 'Deleted user') : 'Unassigned';
+          skippedNowWith[label] = (skippedNowWith[label] || 0) + 1;
+          return;
+        }
 
         const update: any = { assigned_to: m.oldAgentId, updatedAt: serverTimestamp() };
         if (m.oldStatus && m.newStatus && m.oldStatus !== m.newStatus && String(lead.status || '') === m.newStatus) {
@@ -6283,17 +6310,9 @@ export const firestoreService = {
     // Mark the run as undone.
     if (run.reshuffleId) {
       await updateDoc(doc(db, 'reshuffle_runs', run.reshuffleId), { undone: true, undoneAt: serverTimestamp(), undoneBy: String(userId) }).catch(console.error);
-    } else if (restored === 0) {
-      await addDoc(collection(db, 'history'), {
-        user_id: String(userId),
-        action: 'Reshuffle undone',
-        details: 'Reshuffle undo checked: nothing to restore',
-        reshuffleRunKey: run.key,
-        createdAt: serverTimestamp()
-      }).catch(console.error);
     }
 
-    return { total: moves.length, restored, skippedMovedAgain, skippedUnknownAgent };
+    return { total: moves.length, restored, skippedMovedAgain, skippedUnknownAgent, skippedNowWith };
   },
 
   // Activity / History
