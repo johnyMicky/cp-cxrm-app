@@ -17,7 +17,8 @@ import {
   runTransaction,
   onSnapshot,
   increment,
-  deleteField
+  deleteField,
+  arrayRemove
 } from "firebase/firestore";
 import { 
   signInWithEmailAndPassword,
@@ -380,6 +381,44 @@ export const firestoreService = {
       ''
     );
 
+    // SAFE LOGIN: when the user's own document exists, login only READS it and
+    // updates presence. Role, team and Team Leader assignments are never
+    // changed automatically on login - only an Administrator changes them in
+    // Team. (The older "repair" logic below could silently move or add a Team
+    // Leader to another team; it now runs only for legacy accounts that have
+    // no user document yet.)
+    if (exactData) {
+      const role = isAdminEmail(effectiveEmail)
+        ? 'Administrator'
+        : String(exactData.role || 'Agent');
+
+      const presenceUpdate: any = {
+        uid,
+        isOnline: true,
+        lastSeen: serverTimestamp()
+      };
+      if (!exactData.email && effectiveEmail) presenceUpdate.email = effectiveEmail;
+      if (!exactData.name) presenceUpdate.name = effectiveEmail.split('@')[0] || 'User';
+      if (!exactData.avatar) presenceUpdate.avatar = `https://i.pravatar.cc/150?u=${uid}`;
+
+      await setDoc(exactRef, presenceUpdate, { merge: true }).catch((error) => {
+        console.error('Presence update on login failed:', error);
+      });
+
+      return {
+        id: uid,
+        ...exactData,
+        ...presenceUpdate,
+        uid,
+        email: effectiveEmail || exactData.email || '',
+        role,
+        teamId: exactData.teamId || '',
+        teamName: exactData.teamName || '',
+        name: exactData.name || presenceUpdate.name || 'User',
+        avatar: exactData.avatar || presenceUpdate.avatar
+      };
+    }
+
     const emailSnapshot = effectiveEmail
       ? await getDocs(query(collection(db, USERS_COL), where("email", "==", effectiveEmail)))
       : null;
@@ -648,11 +687,10 @@ export const firestoreService = {
     if (['Administrator', 'Manager', 'Agent'].includes(role)) {
       usersPromise = this.getUsers();
     } else if (role === 'Team Leader') {
-      if (!teamId && userId) {
-        const freshUser = await this.getUser(userId);
-        teamId = String(freshUser?.teamId || '');
-      }
-      usersPromise = teamId ? this.getUsersByTeam(teamId) : Promise.resolve([]);
+      const freshUser = userId ? await this.getUser(userId) : null;
+      if (!teamId) teamId = String(freshUser?.teamId || '');
+      const desks = this.leaderTeamIdsOf(freshUser || currentUser);
+      usersPromise = desks.length ? this.getUsersByTeams(desks) : Promise.resolve([]);
     }
 
     const [statuses, users] = await Promise.all([statusesPromise, usersPromise]);
@@ -917,6 +955,7 @@ export const firestoreService = {
             createdAt: data.createdAt || null,
             teamId: data.teamId || '',
             teamName: data.teamName || '',
+            leaderTeamIds: Array.isArray(data.leaderTeamIds) ? data.leaderTeamIds.map((value: any) => String(value)) : [],
             atlantExtension: data.atlantExtension || '',
             telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
           };
@@ -950,6 +989,7 @@ export const firestoreService = {
           createdAt: data.createdAt || null,
           teamId: data.teamId || '',
           teamName: data.teamName || '',
+          leaderTeamIds: Array.isArray(data.leaderTeamIds) ? data.leaderTeamIds.map((value: any) => String(value)) : [],
           atlantExtension: String(data.atlantExtension || '').trim(),
           telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
         };
@@ -984,9 +1024,36 @@ export const firestoreService = {
       createdAt: data.createdAt || null,
       teamId: data.teamId || '',
       teamName: data.teamName || '',
+      leaderTeamIds: Array.isArray(data.leaderTeamIds) ? data.leaderTeamIds.map((value: any) => String(value)) : [],
       atlantExtension: String(data.atlantExtension || '').trim(),
       telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
     };
+  },
+
+  // Desks a Team Leader leads: their own team plus every desk an
+  // Administrator added them to (leaderTeamIds). Set only from Team.
+  leaderTeamIdsOf(user: any): string[] {
+    const ids = [
+      ...(Array.isArray(user?.leaderTeamIds) ? user.leaderTeamIds : []),
+      user?.teamId
+    ].map((value: any) => String(value || '').trim()).filter(Boolean);
+    return Array.from(new Set(ids));
+  },
+
+  // Is this team inside the user's scope? (Team Leaders: any of their desks.)
+  inLeaderScope(user: any, teamId: any): boolean {
+    const id = String(teamId || '').trim();
+    return !!id && this.leaderTeamIdsOf(user).includes(id);
+  },
+
+  // Members of several desks (deduplicated).
+  async getUsersByTeams(teamIds: string[]) {
+    const unique = Array.from(new Set((teamIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+    if (unique.length === 0) return [];
+    const lists = await Promise.all(unique.map((id) => this.getUsersByTeam(id)));
+    const byId = new Map<string, any>();
+    lists.flat().forEach((member: any) => byId.set(String(member.id), member));
+    return Array.from(byId.values());
   },
 
   async getUsersByTeam(teamId: string) {
@@ -1011,6 +1078,7 @@ export const firestoreService = {
         createdAt: data.createdAt || null,
         teamId: data.teamId || '',
         teamName: data.teamName || '',
+        leaderTeamIds: Array.isArray(data.leaderTeamIds) ? data.leaderTeamIds.map((value: any) => String(value)) : [],
         atlantExtension: String(data.atlantExtension || '').trim()
       };
     });
@@ -1114,7 +1182,22 @@ export const firestoreService = {
         ? sanitized.teamName
         : (currentUserData.teamName || '');
 
-    // Remove this user from leadership arrays when the role/team changes.
+    // Desks this person keeps leading after the edit:
+    // - not a Team Leader any more  -> none
+    // - still a Team Leader         -> their current desks, minus the old main
+    //   desk if the main desk was changed here, plus the new main desk.
+    const previousLeaderTeamIds = this.leaderTeamIdsOf(currentUserData);
+    const previousMainTeamId = String((currentUserData as any).teamId || '');
+    const keptLeaderTeamIds = finalRole === 'Team Leader'
+      ? Array.from(new Set([
+          ...previousLeaderTeamIds.filter((teamId) =>
+            !(nextTeamId !== previousMainTeamId && teamId === previousMainTeamId)
+          ),
+          ...(nextTeamId ? [String(nextTeamId)] : [])
+        ]))
+      : [];
+
+    // Remove this user only from desks they no longer lead.
     const allTeamsSnapshot = await getDocs(collection(db, TEAMS_COL));
 
     await Promise.all(
@@ -1126,10 +1209,7 @@ export const firestoreService = {
 
         if (!leaderIds.includes(id)) return;
 
-        const shouldRemainLeader =
-          finalRole === 'Team Leader' &&
-          !!nextTeamId &&
-          teamDoc.id === nextTeamId;
+        const shouldRemainLeader = keptLeaderTeamIds.includes(teamDoc.id);
 
         if (shouldRemainLeader) return;
 
@@ -1166,7 +1246,8 @@ export const firestoreService = {
       password: deleteField(),
       role: finalRole,
       teamId: nextTeamId || '',
-      teamName: nextTeamName || ''
+      teamName: nextTeamName || '',
+      leaderTeamIds: keptLeaderTeamIds
     });
 
     if (finalRole === 'Team Leader' && nextTeamId) {
@@ -1419,13 +1500,31 @@ export const firestoreService = {
     let batch = writeBatch(db);
     let count = 0;
 
+    const deskNames = new Map((await this.getTeams()).map((t: any) => [String(t.id), String(t.name || '')]));
+
+    // Team Leaders who lead this desk as an extra desk just lose this desk.
+    const extraLeadersSnapshot = await getDocs(
+      query(collection(db, USERS_COL), where('leaderTeamIds', 'array-contains', id))
+    ).catch(() => null);
+    const mainMemberIds = new Set(membersSnapshot.docs.map((d) => d.id));
+    extraLeadersSnapshot?.docs.forEach((leaderDoc) => {
+      if (mainMemberIds.has(leaderDoc.id)) return;
+      batch.update(doc(db, USERS_COL, leaderDoc.id), { leaderTeamIds: arrayRemove(id) });
+      count++;
+    });
+
     for (const memberDoc of membersSnapshot.docs) {
-      const memberData = memberDoc.data();
-      batch.update(doc(db, USERS_COL, memberDoc.id), {
-        teamId: '',
-        teamName: '',
-        ...(memberData.role === 'Team Leader' ? { role: 'Agent' } : {})
-      });
+      const memberData = memberDoc.data() as any;
+      const otherDesks = this.leaderTeamIdsOf(memberData).filter((deskId) => deskId !== id);
+      const keepsLeading = memberData.role === 'Team Leader' && otherDesks.length > 0;
+      batch.update(doc(db, USERS_COL, memberDoc.id), keepsLeading
+        ? { teamId: otherDesks[0], teamName: deskNames.get(otherDesks[0]) || '', leaderTeamIds: otherDesks }
+        : {
+            teamId: '',
+            teamName: '',
+            leaderTeamIds: [],
+            ...(memberData.role === 'Team Leader' ? { role: 'Agent' } : {})
+          });
       count++;
 
       if (count === 500) {
@@ -1466,33 +1565,8 @@ export const firestoreService = {
       throw new Error('Administrator or Manager cannot be assigned as a Team Leader.');
     }
 
-    // A Team Leader belongs to one team, but that team can have many leaders.
-    // Remove this user from leadership of any OTHER team first.
-    const allTeams = await this.getTeams();
-
-    await Promise.all(
-      allTeams
-        .filter((otherTeam: any) =>
-          otherTeam.id !== teamId &&
-          (otherTeam.teamLeaderIds || []).includes(leaderId)
-        )
-        .map(async (otherTeam: any) => {
-          const nextPairs = (otherTeam.teamLeaderIds || [])
-            .map((id: string, index: number) => ({
-              id,
-              name: (otherTeam.teamLeaderNames || [])[index] || ''
-            }))
-            .filter((item: any) => item.id !== leaderId);
-
-          await updateDoc(doc(db, TEAMS_COL, otherTeam.id), {
-            teamLeaderIds: nextPairs.map((item: any) => item.id),
-            teamLeaderNames: nextPairs.map((item: any) => item.name),
-            teamLeaderId: nextPairs[0]?.id || '',
-            teamLeaderName: nextPairs[0]?.name || '',
-            updatedAt: serverTimestamp()
-          });
-        })
-    );
+    // A Team Leader can lead several desks. Adding them here never removes
+    // them from their other desks - only an Administrator removes a desk.
 
     const currentIds = Array.isArray((team as any).teamLeaderIds)
       ? [...(team as any).teamLeaderIds]
@@ -1513,11 +1587,25 @@ export const firestoreService = {
       currentNames.push(leader.name || '');
     }
 
-    await updateDoc(doc(db, USERS_COL, leaderId), {
-      role: 'Team Leader',
-      teamId,
-      teamName: team.name
-    });
+    const alreadyLeader = String(leader.role || '') === 'Team Leader';
+
+    if (alreadyLeader) {
+      // Existing Team Leader: add this desk, keep the main desk and all others.
+      const desks = Array.from(new Set([...this.leaderTeamIdsOf(leader), teamId]));
+      await updateDoc(doc(db, USERS_COL, leaderId), {
+        role: 'Team Leader',
+        leaderTeamIds: desks,
+        ...(leader.teamId ? {} : { teamId, teamName: team.name })
+      });
+    } else {
+      // Agent promoted to Team Leader of this desk: this becomes their desk.
+      await updateDoc(doc(db, USERS_COL, leaderId), {
+        role: 'Team Leader',
+        teamId,
+        teamName: team.name,
+        leaderTeamIds: [teamId]
+      });
+    }
 
     await updateDoc(doc(db, TEAMS_COL, teamId), {
       teamLeaderIds: currentIds,
@@ -1562,16 +1650,29 @@ export const firestoreService = {
     const leaderSnap = await getDoc(doc(db, USERS_COL, leaderId));
 
     if (leaderSnap.exists()) {
-      const leaderData = leaderSnap.data();
-      if (
-        leaderData.role === 'Team Leader' &&
-        String(leaderData.teamId || '') === String(teamId)
-      ) {
-        await updateDoc(doc(db, USERS_COL, leaderId), {
-          role: 'Agent',
-          teamId,
-          teamName: team.name
-        });
+      const leaderData = leaderSnap.data() as any;
+
+      if (leaderData.role === 'Team Leader') {
+        const remaining = this.leaderTeamIdsOf(leaderData).filter((id) => id !== String(teamId));
+
+        if (remaining.length === 0) {
+          // Not leading any desk any more: back to Agent in this desk (as before).
+          await updateDoc(doc(db, USERS_COL, leaderId), {
+            role: 'Agent',
+            teamId,
+            teamName: team.name,
+            leaderTeamIds: []
+          });
+        } else {
+          const update: any = { leaderTeamIds: remaining };
+          if (String(leaderData.teamId || '') === String(teamId)) {
+            // Their main desk was removed: another of their desks becomes main.
+            const nextMain = await this.getTeam(remaining[0]);
+            update.teamId = remaining[0];
+            update.teamName = nextMain?.name || '';
+          }
+          await updateDoc(doc(db, USERS_COL, leaderId), update);
+        }
       }
     }
 
@@ -2217,7 +2318,7 @@ export const firestoreService = {
       const teamId = String(currentUser.teamId || '');
       if (!teamId) return [];
 
-      const teamUsers = await this.getUsersByTeam(teamId);
+      const teamUsers = await this.getUsersByTeams(this.leaderTeamIdsOf(currentUser));
       return teamUsers.filter((member: any) => member.role === 'Agent');
     }
 
@@ -2261,7 +2362,7 @@ export const firestoreService = {
         throw new Error('Your Team Leader account is not assigned to a team.');
       }
 
-      const teamUsers = await this.getUsersByTeam(teamId);
+      const teamUsers = await this.getUsersByTeams(this.leaderTeamIdsOf(currentUser));
       const allowedAgentIds = new Set(
         teamUsers
           .filter((member: any) => member.role === 'Agent')
@@ -3899,12 +4000,13 @@ export const firestoreService = {
     let snap;
 
     if (role === 'Team Leader') {
-      if (!currentUser.teamId) return [];
+      const desks = this.leaderTeamIdsOf(currentUser).slice(0, 30);
+      if (desks.length === 0) return [];
 
       snap = await getDocs(
         query(
           collection(db, FINANCE_DEPOSITS_COL),
-          where('teamId', '==', String(currentUser.teamId)),
+          where('teamId', 'in', desks),
           limit(300)
         )
       );
@@ -3955,7 +4057,7 @@ export const firestoreService = {
       if (!uid || !target || String(target.role || '') !== 'Agent' || pct <= 0) {
         throw new Error('Every attribution row must contain a valid Agent and percentage.');
       }
-      if (reviewerRole === 'Team Leader' && String(target.teamId || '') !== String(reviewer.teamId || '')) {
+      if (reviewerRole === 'Team Leader' && !this.inLeaderScope(reviewer, target.teamId)) {
         throw new Error('Team Leaders can create manual income only for Agents in their own team.');
       }
       allocationMap.set(uid, Number(allocationMap.get(uid) || 0) + pct);
@@ -4157,7 +4259,7 @@ export const firestoreService = {
 
     if (
       reviewerRole === 'Team Leader' &&
-      String(deposit.teamId || '') !== String(reviewer.teamId || '')
+      !this.inLeaderScope(reviewer, deposit.teamId)
     ) {
       throw new Error('Team Leaders can record arrivals only for their own team.');
     }
@@ -4463,7 +4565,7 @@ export const firestoreService = {
 
       if (
         role === 'Team Leader' &&
-        String(deposit.teamId || '') !== String(reviewer.teamId || '')
+        !this.inLeaderScope(reviewer, deposit.teamId)
       ) {
         throw new Error('Team Leaders can review deposits only for their own team.');
       }
@@ -4778,17 +4880,11 @@ export const firestoreService = {
     }
 
     if (cleanRole === 'Team Leader') {
-      const teams = await this.getTeams();
-      const teamIds = (teams || [])
-        .filter((team: any) => {
-          const ids = Array.isArray(team?.teamLeaderIds)
-            ? team.teamLeaderIds.map((value: any) => String(value))
-            : (team?.teamLeaderId ? [String(team.teamLeaderId)] : []);
-          return ids.includes(cleanUserId);
-        })
-        .map((team: any) => String(team.id));
-
-      return { teamIds, all: false };
+      // A Team Leader sees only the team on their own user record - the same
+      // scope the Leads page uses. Old leftover entries in other teams'
+      // leader lists no longer give access to those teams.
+      const leader = await this.getUser(cleanUserId);
+      return { teamIds: this.leaderTeamIdsOf(leader), all: false };
     }
 
     return { teamIds: [] as string[], all: false };
@@ -5606,6 +5702,12 @@ export const firestoreService = {
       new Set((currentAgentFilter || []).map(id => String(id || '').trim()).filter(Boolean))
     );
 
+    // SAFETY: leads are taken ONLY from agents that were explicitly selected
+    // as "From". An empty selection no longer means "everyone in the company".
+    if (normalizedCurrentAgentIds.length === 0) {
+      throw new Error('Select which agents the leads should be taken FROM.');
+    }
+
     // Empty optional filters mean ALL. They narrow the existing role-visible Lead pool
     // without adding listeners or polling.
     const allowedSourceKeys = new Set(normalizedSources);
@@ -5623,7 +5725,7 @@ export const firestoreService = {
         throw new Error('Your Team Leader account is not assigned to a team.');
       }
 
-      const teamUsers = await this.getUsersByTeam(teamId);
+      const teamUsers = await this.getUsersByTeams(this.leaderTeamIdsOf(currentUser));
 
       recipientUsers = teamUsers.filter(
         (member: any) => String(member.role || '') === 'Agent'
@@ -5855,6 +5957,10 @@ export const firestoreService = {
       phase: 'preparing'
     });
 
+    // One id per reshuffle run, stored on every history record so the run
+    // can be reviewed and undone later.
+    const reshuffleId = `rs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
     const BATCH_SIZE = 450;
     let processedUpdates = 0;
 
@@ -5922,6 +6028,11 @@ export const firestoreService = {
               recipientNameMap[agentId] ||
               agentId
             }${statusText}`,
+          reshuffleId,
+          oldAgentId: oldAgentId || '',
+          newAgentId: agentId || '',
+          oldStatus,
+          newStatus: normalizedTargetStatus || oldStatus,
           createdAt: serverTimestamp()
         });
       }
@@ -5940,6 +6051,29 @@ export const firestoreService = {
       });
     }
 
+    // Run summary (used by "Reshuffle history & Undo").
+    try {
+      const fromCounts: Record<string, number> = {};
+      changedAssignments.forEach(({ oldAgentId }) => {
+        const name = recipientNameMap[oldAgentId] || oldAgentId || 'Unassigned';
+        fromCounts[name] = (fromCounts[name] || 0) + 1;
+      });
+      await setDoc(doc(db, 'reshuffle_runs', reshuffleId), {
+        reshuffleId,
+        createdBy: userId,
+        createdByName: currentUser.name || '',
+        createdAt: serverTimestamp(),
+        totalChanged,
+        statuses: normalizedStatuses,
+        targetStatus: normalizedTargetStatus || '',
+        fromCounts,
+        toCounts: recipientCounts,
+        undone: false
+      });
+    } catch (error) {
+      console.error('Failed to save reshuffle run summary:', error);
+    }
+
     onProgress?.({
       percent: 100,
       processed: totalChanged,
@@ -5952,8 +6086,214 @@ export const firestoreService = {
       totalChanged,
       targetStatus: normalizedTargetStatus || '',
       statusChanges,
-      recipientCounts
+      recipientCounts,
+      reshuffleId
     };
+  },
+
+  // ---------------------------------------------------------------------------
+  // Reshuffle history & Undo
+  // ---------------------------------------------------------------------------
+
+  // Reshuffle runs of the last `days` days started by this user.
+  // New runs come from reshuffle_runs; older runs (before run tracking) are
+  // rebuilt from their "Reshuffled" history records.
+  async listRecentReshuffles(userId: string, days = 14) {
+    if (!userId) return [];
+    const since = Date.now() - days * 24 * 60 * 60 * 1000;
+    const toMs = (value: any) => (value?.toMillis ? value.toMillis() : new Date(value || 0).getTime());
+
+    const [runsSnap, historySnap] = await Promise.all([
+      getDocs(query(collection(db, 'reshuffle_runs'), where('createdBy', '==', userId))).catch(() => null),
+      getDocs(query(collection(db, 'history'), where('user_id', '==', userId), where('action', '==', 'Reshuffled')))
+    ]);
+
+    const runs: any[] = [];
+    const trackedIds = new Set<string>();
+
+    runsSnap?.docs.forEach((d) => {
+      const data = d.data() as any;
+      trackedIds.add(d.id);
+      if (toMs(data.createdAt) < since) return;
+      runs.push({
+        key: d.id,
+        reshuffleId: d.id,
+        legacy: false,
+        startedAt: toMs(data.createdAt),
+        count: Number(data.totalChanged || 0),
+        fromCounts: data.fromCounts || {},
+        toCounts: data.toCounts || {},
+        targetStatus: data.targetStatus || '',
+        undone: !!data.undone
+      });
+    });
+
+    // Older runs: group history records written within 3 minutes of each other.
+    const legacy = historySnap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as any) }))
+      .filter((h: any) => !h.reshuffleId && toMs(h.createdAt) >= since)
+      .sort((a: any, b: any) => toMs(a.createdAt) - toMs(b.createdAt));
+
+    let current: any = null;
+    const parse = (details: string) => {
+      const m = String(details || '').match(/^Lead reshuffled from (.+?) to (.+?)(?: • Status (.+?) → (.+))?$/);
+      return m ? { from: m[1], to: m[2], oldStatus: m[3] || '', newStatus: m[4] || '' } : null;
+    };
+
+    legacy.forEach((h: any) => {
+      const t = toMs(h.createdAt);
+      if (!current || t - current.lastAt > 3 * 60 * 1000) {
+        current = { key: `legacy_${t}`, reshuffleId: '', legacy: true, startedAt: t, lastAt: t, count: 0, fromCounts: {}, toCounts: {}, targetStatus: '', undone: false };
+        runs.push(current);
+      }
+      current.lastAt = t;
+      current.count++;
+      const p = parse(h.details);
+      if (p) {
+        current.fromCounts[p.from] = (current.fromCounts[p.from] || 0) + 1;
+        current.toCounts[p.to] = (current.toCounts[p.to] || 0) + 1;
+        if (p.newStatus) current.targetStatus = p.newStatus;
+      }
+    });
+
+    // Legacy runs already undone are marked by an "undo" record.
+    const undoneSnap = await getDocs(
+      query(collection(db, 'history'), where('user_id', '==', userId), where('action', '==', 'Reshuffle undone'))
+    ).catch(() => null);
+    const undoneKeys = new Set<string>();
+    undoneSnap?.docs.forEach((d) => {
+      const key = String((d.data() as any).reshuffleRunKey || '');
+      if (key) undoneKeys.add(key);
+    });
+    runs.forEach((r) => { if (undoneKeys.has(r.key)) r.undone = true; });
+
+    return runs.sort((a, b) => b.startedAt - a.startedAt);
+  },
+
+  // Undo one reshuffle run: every lead goes back to the agent it had before,
+  // but ONLY if it is still with the agent the reshuffle gave it to (leads that
+  // were moved again later are left alone). A status changed by the reshuffle
+  // is restored only if nobody changed it afterwards. Notes/history are kept.
+  async undoReshuffle(run: any, userId: string, onProgress?: (done: number, total: number) => void) {
+    if (!run?.key || !userId) throw new Error('Reshuffle run is required.');
+
+    const currentUser = await this.getUser(String(userId));
+    if (!currentUser || !['Administrator', 'Manager', 'Team Leader'].includes(String(currentUser.role || ''))) {
+      throw new Error('You do not have permission to undo reshuffles.');
+    }
+
+    const toMs = (value: any) => (value?.toMillis ? value.toMillis() : new Date(value || 0).getTime());
+    const users = await this.getUsers();
+    const idsByName = new Map<string, string[]>();
+    users.forEach((u: any) => {
+      const name = String(u.name || u.email || '').trim();
+      if (!name) return;
+      idsByName.set(name, [...(idsByName.get(name) || []), String(u.id)]);
+      const email = String(u.email || '').trim();
+      if (email && email !== name) idsByName.set(email, [...(idsByName.get(email) || []), String(u.id)]);
+    });
+    const userIds = new Set(users.map((u: any) => String(u.id)));
+    const idForName = (name: string) => {
+      const clean = String(name || '').trim();
+      // Old history wrote the raw id when the agent had no name.
+      if (userIds.has(clean)) return clean;
+      const ids = idsByName.get(clean) || [];
+      // Two users with the same name: unsafe to guess, skip that lead.
+      return ids.length === 1 ? ids[0] : '';
+    };
+
+    // Collect the moves of this run.
+    let records: any[] = [];
+    if (run.reshuffleId) {
+      const snap = await getDocs(query(collection(db, 'history'), where('reshuffleId', '==', run.reshuffleId)));
+      records = snap.docs.map((d) => d.data() as any).map((h: any) => ({
+        leadId: String(h.lead_id || ''),
+        oldAgentId: String(h.oldAgentId || ''),
+        newAgentId: String(h.newAgentId || ''),
+        oldStatus: String(h.oldStatus || ''),
+        newStatus: String(h.newStatus || '')
+      }));
+    } else {
+      const snap = await getDocs(
+        query(collection(db, 'history'), where('user_id', '==', String(userId)), where('action', '==', 'Reshuffled'))
+      );
+      const from = Number(run.startedAt) - 1000;
+      const to = Number(run.lastAt || run.startedAt) + 1000;
+      records = snap.docs
+        .map((d) => d.data() as any)
+        .filter((h: any) => !h.reshuffleId && toMs(h.createdAt) >= from && toMs(h.createdAt) <= to)
+        .map((h: any) => {
+          const m = String(h.details || '').match(/^Lead reshuffled from (.+?) to (.+?)(?: • Status (.+?) → (.+))?$/);
+          return {
+            leadId: String(h.lead_id || ''),
+            oldAgentId: m ? idForName(m[1]) : '',
+            newAgentId: m ? idForName(m[2]) : '',
+            oldStatus: m?.[3] || '',
+            newStatus: m?.[4] || ''
+          };
+        });
+    }
+
+    // If a lead was reshuffled more than once in this run, keep the first move.
+    const byLead = new Map<string, any>();
+    records.forEach((r) => { if (r.leadId && !byLead.has(r.leadId)) byLead.set(r.leadId, r); });
+    const moves = Array.from(byLead.values());
+
+    let restored = 0;
+    let skippedMovedAgain = 0;
+    let skippedUnknownAgent = 0;
+    let done = 0;
+
+    for (let i = 0; i < moves.length; i += 400) {
+      const chunk = moves.slice(i, i + 400);
+      const snaps = await Promise.all(chunk.map((m) => getDoc(doc(db, LEADS_COL, m.leadId))));
+      const batch = writeBatch(db);
+      let writes = 0;
+
+      chunk.forEach((m, index) => {
+        const snap = snaps[index];
+        done++;
+        if (!snap.exists()) return;
+        if (!m.oldAgentId || !m.newAgentId) { skippedUnknownAgent++; return; }
+
+        const lead = snap.data() as any;
+        if (String(lead.assigned_to || '') !== m.newAgentId) { skippedMovedAgain++; return; }
+
+        const update: any = { assigned_to: m.oldAgentId, updatedAt: serverTimestamp() };
+        if (m.oldStatus && m.newStatus && m.oldStatus !== m.newStatus && String(lead.status || '') === m.newStatus) {
+          update.status = m.oldStatus;
+        }
+        batch.update(doc(db, LEADS_COL, m.leadId), update);
+        batch.set(doc(collection(db, 'history')), {
+          lead_id: m.leadId,
+          user_id: String(userId),
+          action: 'Reshuffle undone',
+          details: 'Reshuffle undone: lead returned to its previous agent',
+          reshuffleRunKey: run.key,
+          createdAt: serverTimestamp()
+        });
+        writes += 2;
+        restored++;
+      });
+
+      if (writes > 0) await batch.commit();
+      onProgress?.(done, moves.length);
+    }
+
+    // Mark the run as undone.
+    if (run.reshuffleId) {
+      await updateDoc(doc(db, 'reshuffle_runs', run.reshuffleId), { undone: true, undoneAt: serverTimestamp(), undoneBy: String(userId) }).catch(console.error);
+    } else if (restored === 0) {
+      await addDoc(collection(db, 'history'), {
+        user_id: String(userId),
+        action: 'Reshuffle undone',
+        details: 'Reshuffle undo checked: nothing to restore',
+        reshuffleRunKey: run.key,
+        createdAt: serverTimestamp()
+      }).catch(console.error);
+    }
+
+    return { total: moves.length, restored, skippedMovedAgain, skippedUnknownAgent };
   },
 
   // Activity / History
@@ -6150,8 +6490,7 @@ export const firestoreService = {
 
         if (role === 'Team Leader') {
           return (
-            !!currentUser.teamId &&
-            String(candidate.teamId || '') === String(currentUser.teamId)
+            this.inLeaderScope(currentUser, candidate.teamId)
           );
         }
 
@@ -6333,27 +6672,28 @@ export const firestoreService = {
 
       records = Array.from(merged.values());
     } else if (role === 'Team Leader') {
-      if (!currentUser.teamId) return [];
+      const desks = this.leaderTeamIdsOf(currentUser);
+      if (desks.length === 0) return [];
 
-      const [legacyTeamSnap, teamArraySnap] = await Promise.all([
+      const deskSnaps = await Promise.all(desks.flatMap((deskId) => [
         getDocs(
           query(
             collection(db, SECURE_INFO_REQUESTS_COL),
-            where('teamId', '==', String(currentUser.teamId)),
+            where('teamId', '==', deskId),
             limit(300)
           )
         ),
         getDocs(
           query(
             collection(db, SECURE_INFO_REQUESTS_COL),
-            where('teamIds', 'array-contains', String(currentUser.teamId)),
+            where('teamIds', 'array-contains', deskId),
             limit(300)
           )
         )
-      ]);
+      ]));
 
       const merged = new Map<string, any>();
-      [...legacyTeamSnap.docs, ...teamArraySnap.docs].forEach(requestDoc => {
+      deskSnaps.flatMap((snapItem) => snapItem.docs).forEach(requestDoc => {
         merged.set(requestDoc.id, {
           id: requestDoc.id,
           ...requestDoc.data()
@@ -6469,28 +6809,31 @@ export const firestoreService = {
         )
       );
     } else if (role === 'Team Leader') {
-      if (!teamId) {
+      const desks = this.leaderTeamIdsOf({ ...user, teamId });
+      if (desks.length === 0) {
         callback([]);
         return () => {};
       }
 
-      watch(
-        'team-legacy',
-        query(
-          collection(db, SECURE_INFO_REQUESTS_COL),
-          where('teamId', '==', teamId),
-          limit(300)
-        )
-      );
+      desks.forEach((deskId) => {
+        watch(
+          `team-legacy-${deskId}`,
+          query(
+            collection(db, SECURE_INFO_REQUESTS_COL),
+            where('teamId', '==', deskId),
+            limit(300)
+          )
+        );
 
-      watch(
-        'team-array',
-        query(
-          collection(db, SECURE_INFO_REQUESTS_COL),
-          where('teamIds', 'array-contains', teamId),
-          limit(300)
-        )
-      );
+        watch(
+          `team-array-${deskId}`,
+          query(
+            collection(db, SECURE_INFO_REQUESTS_COL),
+            where('teamIds', 'array-contains', deskId),
+            limit(300)
+          )
+        );
+      });
     } else if (['Administrator', 'Manager', 'Financial Manager'].includes(role)) {
       watch(
         'management-all',
@@ -6600,7 +6943,7 @@ export const firestoreService = {
 
     if (
       role === 'Team Leader' &&
-      String(request.teamId || '') !== String(reviewer.teamId || '')
+      !this.inLeaderScope(reviewer, request.teamId)
     ) {
       throw new Error('Team Leaders can deliver details only to Agents in their own team.');
     }
@@ -6660,7 +7003,7 @@ export const firestoreService = {
       ['Administrator', 'Manager', 'Financial Manager'].includes(role) ||
       (
         role === 'Team Leader' &&
-        String(request.teamId || '') === String(currentUser.teamId || '')
+        this.inLeaderScope(currentUser, request.teamId)
       );
 
     if (!canCancel) throw new Error('You do not have permission to cancel this request.');
@@ -6709,7 +7052,7 @@ export const firestoreService = {
 
     if (
       role === 'Team Leader' &&
-      String(request.teamId || '') !== String(currentUser.teamId || '')
+      !this.inLeaderScope(currentUser, request.teamId)
     ) {
       throw new Error('Team Leaders can expire details only for their own team.');
     }
@@ -6857,7 +7200,7 @@ export const firestoreService = {
       const teamId = effectiveUser.teamId || '';
       if (!teamId) return [];
 
-      const teamUsers = await this.getUsersByTeam(teamId);
+      const teamUsers = await this.getUsersByTeams(this.leaderTeamIdsOf(effectiveUser));
       const allowedUserIds = Array.from(new Set(
         teamUsers
           .filter((member: any) => ['Agent', 'Team Leader'].includes(member.role))
@@ -6944,7 +7287,7 @@ export const firestoreService = {
         throw new Error('ACCESS_DENIED_LEAD');
       }
 
-      const teamUsers = await this.getUsersByTeam(teamId);
+      const teamUsers = await this.getUsersByTeams(this.leaderTeamIdsOf(effectiveUser));
       const allowedUserIds = new Set(
         teamUsers
           .filter((member: any) => ['Agent', 'Team Leader'].includes(member.role))
@@ -7241,8 +7584,9 @@ export const firestoreService = {
         visibleUsers = [currentUser].filter(Boolean);
         leadLoader = Promise.resolve([]);
       } else {
+        const leaderDesks = this.leaderTeamIdsOf(currentUser);
         visibleUsers = allUsers.filter(
-          (u: any) => String(u.teamId || '') === currentTeamId
+          (u: any) => leaderDesks.includes(String(u.teamId || ''))
         );
 
         const allowedUserIds = Array.from(
