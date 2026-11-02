@@ -1830,7 +1830,12 @@ async function computeDashboardStats(
       visibleUsers = [currentUser].filter(Boolean);
       leadLoader = Promise.resolve([]);
     } else {
-      visibleUsers = allUsers.filter((u: any) => String(u.teamId || '') === currentTeamId);
+      // A Team Leader may lead several desks (leaderTeamIds) besides their own.
+      const leaderDesks = Array.from(new Set([
+        ...(Array.isArray(currentUser.leaderTeamIds) ? currentUser.leaderTeamIds : []),
+        currentTeamId
+      ].map((value: any) => String(value || '').trim()).filter(Boolean)));
+      visibleUsers = allUsers.filter((u: any) => leaderDesks.includes(String(u.teamId || '')));
       const allowedUserIds = Array.from(new Set(
         visibleUsers
           .filter((m: any) => ['Agent', 'Team Leader'].includes(String(m.role || '')))
