@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import admin from 'firebase-admin';
+import zlib from 'zlib';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2340,6 +2341,154 @@ app.get('/api/dashboard/stats', async (req, res) => {
   } catch (error: any) {
     console.error('Dashboard stats error:', error);
     res.status(500).json({ success: false, error: error.message || 'Failed to load dashboard.' });
+  }
+});
+
+// ===========================================================================
+// Fast lead list for the Leads page (and other lead lists).
+// The server reads only the fields the tables need, sends them gzip-compressed
+// in one response and keeps a short per-scope cache. The browser falls back
+// to the old direct Firestore read if this endpoint fails.
+// ===========================================================================
+const LEAD_LIST_FIELDS = [
+  'name', 'email', 'phone', 'country', 'status', 'source', 'assigned_to',
+  'importId', 'importFileName', 'callbackAt', 'createdBy', 'createdAt',
+  'updatedAt', 'noteCount', 'noteCountInitialized'
+];
+const LEAD_LIST_CACHE_MS = 20 * 1000;
+const leadListCache = new Map<string, { at: number; body: Buffer; total: number }>();
+
+const tsToMillis = (value: any) => {
+  if (!value) return null;
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+};
+
+const mapLeadListRow = (docSnap: any) => {
+  const d = docSnap.data() || {};
+  const row: any = {
+    id: docSnap.id,
+    name: d.name || '',
+    email: d.email || '',
+    phone: d.phone || '',
+    country: d.country || '',
+    status: d.status || 'New',
+    source: d.source || '',
+    assigned_to: d.assigned_to || '',
+    importId: d.importId || '',
+    importFileName: d.importFileName || '',
+    callbackAt: tsToMillis(d.callbackAt),
+    createdBy: d.createdBy || '',
+    createdAt: tsToMillis(d.createdAt),
+    updatedAt: tsToMillis(d.updatedAt)
+  };
+  if (d.noteCountInitialized === true) {
+    row.noteCountInitialized = true;
+    row.noteCount = Number(d.noteCount || 0);
+  }
+  return row;
+};
+
+app.get('/api/leads/list', async (req, res) => {
+  try {
+    const decoded = await getVerifiedRequestUser(req);
+    const userSnap = await db.collection('users').doc(decoded.uid).get();
+    if (!userSnap.exists) {
+      return res.status(403).json({ success: false, error: 'CRM user not found.' });
+    }
+
+    const user: any = { id: decoded.uid, ...(userSnap.data() || {}) };
+    const isMainAdmin = String(decoded.email || '').toLowerCase() === ADMIN_EMAIL;
+    const role = isMainAdmin ? 'Administrator' : String(user.role || 'Agent');
+    const requestedScope = String(req.query.scope || 'auto');
+    const fresh = req.query.fresh === '1';
+
+    // Same visibility as before:
+    // - "all": every lead (anyone except Agents, as the old direct read allowed)
+    // - "auto": Administrator/Manager all, Team Leader their desks, Agent own leads
+    let scopeKey = '';
+    let loader: () => Promise<any[]>;
+
+    const allLeads = async () => {
+      const snap = await db.collection('leads')
+        .orderBy('createdAt', 'desc')
+        .select(...LEAD_LIST_FIELDS)
+        .get();
+      return snap.docs.map(mapLeadListRow);
+    };
+
+    const byAssignees = async (ids: string[]) => {
+      const snaps = await Promise.all(ids.map((id) =>
+        db.collection('leads').where('assigned_to', '==', id).select(...LEAD_LIST_FIELDS).get()
+      ));
+      const seen = new Map<string, any>();
+      snaps.forEach((snap) => snap.docs.forEach((d) => { if (!seen.has(d.id)) seen.set(d.id, mapLeadListRow(d)); }));
+      return Array.from(seen.values()).sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    };
+
+    if (requestedScope === 'all') {
+      if (role === 'Agent') {
+        return res.status(403).json({ success: false, error: 'Not allowed.' });
+      }
+      scopeKey = 'all';
+      loader = allLeads;
+    } else if (role === 'Administrator' || role === 'Manager') {
+      scopeKey = 'all';
+      loader = allLeads;
+    } else if (role === 'Team Leader') {
+      const desks = Array.from(new Set([
+        ...(Array.isArray(user.leaderTeamIds) ? user.leaderTeamIds : []),
+        user.teamId
+      ].map((v: any) => String(v || '').trim()).filter(Boolean)));
+
+      if (desks.length === 0) {
+        return res.json({ success: true, total: 0, rows: [] });
+      }
+
+      const memberSnaps = await Promise.all(desks.map((deskId) =>
+        db.collection('users').where('teamId', '==', deskId).get()
+      ));
+      const memberIds: string[] = Array.from(new Set<string>(
+        memberSnaps.flatMap((snap) => snap.docs)
+          .filter((d) => ['Agent', 'Team Leader'].includes(String(d.data()?.role || '')))
+          .map((d) => d.id)
+      )).sort();
+
+      scopeKey = `team:${memberIds.join(',')}`;
+      loader = () => byAssignees(memberIds);
+    } else {
+      scopeKey = `agent:${decoded.uid}`;
+      loader = () => byAssignees([decoded.uid]);
+    }
+
+    const cached = leadListCache.get(scopeKey);
+    if (!fresh && cached && Date.now() - cached.at < LEAD_LIST_CACHE_MS) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Lead-List-Cache', 'hit');
+      return res.end(cached.body);
+    }
+
+    const rows = await loader();
+    const at = Date.now();
+    const body = zlib.gzipSync(Buffer.from(JSON.stringify({ success: true, total: rows.length, generatedAt: at, rows })));
+
+    leadListCache.set(scopeKey, { at, body, total: rows.length });
+    if (leadListCache.size > 50) {
+      const oldestKey = leadListCache.keys().next().value;
+      if (oldestKey) leadListCache.delete(oldestKey);
+    }
+
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Encoding', 'gzip');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Lead-List-Cache', 'miss');
+    return res.end(body);
+  } catch (error: any) {
+    console.error('Lead list error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Failed to load leads.' });
   }
 });
 
