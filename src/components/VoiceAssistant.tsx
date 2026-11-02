@@ -68,12 +68,6 @@ const ROUTES: RouteRule[] = [
     aliases: ['finance', 'financial', 'finances', 'finanzen', 'finanzbereich']
   },
   {
-    path: '/live-calls',
-    roles: ['Administrator', 'Manager', 'Team Leader'],
-    label: 'Live Calls',
-    aliases: ['live calls', 'live call', 'call monitor', 'calls monitor', 'live anrufe', 'anrufmonitor', 'live-anrufe']
-  },
-  {
     path: '/secure-info',
     roles: ALL_ROLES,
     label: 'Secure Info',
