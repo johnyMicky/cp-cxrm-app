@@ -148,23 +148,35 @@ export default function Dashboard() {
         return created >= startDate;
       });
 
-      // Convert to CSV
-      const headers = ['First Name', 'Last Name', 'Phone', 'Email', 'Source', 'Status', 'Created At'];
+      // Convert to CSV. Leads store one "name" field; split it for the
+      // First/Last Name columns. Quotes inside values are escaped.
+      const csvCell = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+      const splitName = (lead: any) => {
+        const full = String(lead.name || `${lead.first_name || ''} ${lead.last_name || ''}`).trim();
+        const parts = full.split(/\s+/).filter(Boolean);
+        return { first: parts[0] || '', last: parts.slice(1).join(' ') };
+      };
+      const headers = ['First Name', 'Last Name', 'Phone', 'Email', 'Country', 'Source', 'Status', 'Created At'];
       const csvRows = [
         headers.join(','),
-        ...filteredLeads.map((l: any) => [
-          `"${l.first_name || ''}"`,
-          `"${l.last_name || ''}"`,
-          `"${l.phone || ''}"`,
-          `"${l.email || ''}"`,
-          `"${l.source || ''}"`,
-          `"${l.status || ''}"`,
-          `"${l.createdAt?.toDate ? format(l.createdAt.toDate(), 'yyyy-MM-dd HH:mm') : ''}"`
-        ].join(','))
+        ...filteredLeads.map((l: any) => {
+          const { first, last } = splitName(l);
+          return [
+            csvCell(first),
+            csvCell(last),
+            csvCell(l.phone),
+            csvCell(l.email),
+            csvCell(l.country),
+            csvCell(l.source),
+            csvCell(l.status),
+            csvCell(l.createdAt?.toDate ? format(l.createdAt.toDate(), 'yyyy-MM-dd HH:mm') : '')
+          ].join(',');
+        })
       ];
 
       const csvContent = csvRows.join('\n');
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      // BOM so Excel shows non-English letters correctly.
+      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
