@@ -88,6 +88,7 @@ export default function Finance() {
   const [manualBusy, setManualBusy] = useState(false);
   const [financeUsers, setFinanceUsers] = useState<any[]>([]);
   const [currentTeamId, setCurrentTeamId] = useState('');
+  const [currentLeaderDesks, setCurrentLeaderDesks] = useState<string[]>([]);
   const [manualAllocations, setManualAllocations] = useState<Array<{ userId: string; percentage: string }>>([{ userId: '', percentage: '100' }]);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archives, setArchives] = useState<any[]>([]);
@@ -123,6 +124,7 @@ export default function Finance() {
       setFinanceUsers((allFinanceUsers as any[]).filter((u: any) => String(u.role || '') === 'Agent'));
       const me = (allFinanceUsers as any[]).find((u: any) => String(u.id) === String(currentUser.id));
       setCurrentTeamId(String(me?.teamId || ''));
+      setCurrentLeaderDesks(firestoreService.leaderTeamIdsOf(me));
 
       if (overviewData) {
         const nextExpenseDrafts: Record<string, { amount: string; status: string; notes: string }> = {};
@@ -318,7 +320,11 @@ export default function Finance() {
   };
 
   const manualTotalPct = manualAllocations.reduce((sum, row) => sum + Number(row.percentage || 0), 0);
-  const manualAgents = financeUsers.filter((u: any) => currentUser.role !== 'Team Leader' || String(u.teamId || '') === currentTeamId);
+  const manualAgents = financeUsers.filter((u: any) =>
+    currentUser.role !== 'Team Leader' ||
+    String(u.teamId || '') === currentTeamId ||
+    currentLeaderDesks.includes(String(u.teamId || ''))
+  );
 
   const submitManualIncome = async (approveNow: boolean) => {
     const amount = Number(manualDraft.amount || 0);
