@@ -76,10 +76,8 @@ export default function LeadDetail() {
 
         if (currentUserRole === 'Team Leader') {
           const freshUser = await firestoreService.getUser(String(currentUserId));
-          const teamId = freshUser?.teamId || '';
-          usersData = teamId
-            ? await firestoreService.getUsersByTeam(teamId)
-            : [];
+          // All desks this Team Leader leads.
+          usersData = await firestoreService.getUsersByTeams(firestoreService.leaderTeamIdsOf(freshUser));
         } else {
           usersData = await firestoreService.getUsers();
         }
