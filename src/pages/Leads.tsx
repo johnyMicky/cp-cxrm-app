@@ -1069,9 +1069,15 @@ export default function Leads() {
     }
   };
 
+  // First load of the page may use the server's few-seconds-old copy (fast).
+  // Every reload after an action asks for fresh data.
+  const leadsLoadedOnceRef = useRef(false);
+
   const fetchLeads = async () => {
     try {
-      const data = await firestoreService.getLeadsForUser(currentUser);
+      const fresh = leadsLoadedOnceRef.current;
+      leadsLoadedOnceRef.current = true;
+      const data = await firestoreService.getLeadsForUser(currentUser, { fresh });
       setLeads(data);
     } catch (err) {
       console.error('Failed to fetch leads:', err);
