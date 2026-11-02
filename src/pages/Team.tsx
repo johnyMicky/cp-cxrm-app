@@ -24,6 +24,7 @@ interface User {
   avatar: string;
   teamId?: string;
   teamName?: string;
+  leaderTeamIds?: string[];
 }
 
 interface TeamRecord {
@@ -76,13 +77,17 @@ export default function Team() {
           setTeams([]);
           setError('Your Team Leader account is not assigned to a team yet.');
         } else {
-          const [teamMembers, team] = await Promise.all([
-            firestoreService.getUsersByTeam(currentUser.teamId),
-            firestoreService.getTeam(currentUser.teamId)
+          // A Team Leader may lead several desks.
+          const desks = firestoreService.leaderTeamIdsOf(currentUser);
+          const [teamMembers, deskTeams] = await Promise.all([
+            firestoreService.getUsersByTeams(desks),
+            Promise.all(desks.map((deskId) => firestoreService.getTeam(deskId)))
           ]);
 
-          setUsers(teamMembers as User[]);
-          setTeams(team ? [team as TeamRecord] : []);
+          const members = teamMembers as User[];
+          if (!members.some((u) => u.id === currentUser.id)) members.push(currentUser as User);
+          setUsers(members);
+          setTeams(deskTeams.filter(Boolean) as TeamRecord[]);
         }
       }
     } catch (err: any) {
@@ -230,15 +235,13 @@ export default function Team() {
         ) : teams.length > 0 ? (
           teams.map((team) => {
             const members = users.filter((user) => user.teamId === team.id);
-            const leaderIds =
-              team.teamLeaderIds && team.teamLeaderIds.length > 0
-                ? team.teamLeaderIds
-                : (team.teamLeaderId ? [team.teamLeaderId] : []);
 
-            const teamLeaders = members.filter(
+            // Team Leaders of this desk: its own TLs plus TLs who lead it as an
+            // extra desk. Old leftover entries on the team are not shown.
+            const teamLeaders = users.filter(
               (user) =>
-                leaderIds.includes(user.id) ||
-                (user.role === 'Team Leader' && user.teamId === team.id)
+                user.role === 'Team Leader' &&
+                (user.teamId === team.id || ((user as any).leaderTeamIds || []).includes(team.id))
             );
 
             const agents = members.filter((user) => user.role === 'Agent');
@@ -805,13 +808,29 @@ function TeamModal({
   onSuccess: () => void;
 }) {
   const [name, setName] = useState(team?.name || '');
-  const [teamLeaderIds, setTeamLeaderIds] = useState<string[]>(
+
+  // A leader listed on the team only counts if that user really belongs to
+  // this desk (old leftover entries from other desks are ignored).
+  const isRealMember = (userId: string) =>
+    !!team && users.some((u) =>
+      u.id === userId && (u.teamId === team.id || (u.leaderTeamIds || []).includes(team.id))
+    );
+
+  const storedLeaderIds: string[] =
     team?.teamLeaderIds && team.teamLeaderIds.length > 0
       ? team.teamLeaderIds
-      : (team?.teamLeaderId ? [team.teamLeaderId] : [])
+      : (team?.teamLeaderId ? [team.teamLeaderId] : []);
+
+  const [teamLeaderIds, setTeamLeaderIds] = useState<string[]>(
+    storedLeaderIds.filter((id) => isRealMember(id))
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Leaders shown when the window opened. Saving changes only what the
+  // Administrator actually added or removed here.
+  const [initialLeaderIds] = useState<string[]>(
+    storedLeaderIds.filter((id) => isRealMember(id))
+  );
 
   const leaderCandidates = users.filter(
     (user) =>
@@ -838,6 +857,26 @@ function TeamModal({
       return;
     }
 
+    const addedIds = teamLeaderIds.filter((id) => !initialLeaderIds.includes(id));
+    const removedIds = initialLeaderIds.filter((id) => !teamLeaderIds.includes(id));
+
+    // Team Leaders can lead several desks: adding one here keeps their other
+    // desks. Only an Agent who is promoted to Team Leader changes desk, so
+    // ask first in that case - nothing is moved silently.
+    const promotedFromOtherDesk = addedIds
+      .map((id) => users.find((u) => u.id === id))
+      .filter((u: any) => u && u.role !== 'Team Leader' && u.teamId && u.teamId !== team?.id);
+
+    if (promotedFromOtherDesk.length > 0) {
+      const lines = promotedFromOtherDesk
+        .map((u: any) => `• ${u.name || u.email} — ${u.role || 'Agent'} in ${u.teamName || 'another desk'}`)
+        .join('\n');
+      const confirmed = window.confirm(
+        `These people will become Team Leader of "${cleanName}" and move to this desk:\n\n${lines}\n\nContinue?`
+      );
+      if (!confirmed) return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -846,7 +885,26 @@ function TeamModal({
           name: cleanName
         });
 
-        await firestoreService.setTeamLeaders(team.id, teamLeaderIds);
+        // Start from the team's CURRENT leaders (fresh from the database), then
+        // apply only this window's changes. Stale data can no longer re-add or
+        // move a leader that was not touched here.
+        const [freshTeam, freshUsers]: any[] = await Promise.all([
+          firestoreService.getTeam(team.id),
+          firestoreService.getUsers()
+        ]);
+        const freshIds: string[] = freshTeam?.teamLeaderIds || [];
+        const belongsHere = (id: string) =>
+          (freshUsers || []).some((u: any) =>
+            String(u.id) === id &&
+            (String(u.teamId || '') === team.id || (u.leaderTeamIds || []).includes(team.id))
+          );
+        const nextIds = Array.from(new Set([
+          // keep current leaders who really are in this desk (leftovers are cleaned up)
+          ...freshIds.filter((id) => !removedIds.includes(id) && belongsHere(id)),
+          ...addedIds
+        ]));
+
+        await firestoreService.setTeamLeaders(team.id, nextIds);
       } else {
         const createdTeam = await firestoreService.createTeam({
           name: cleanName
