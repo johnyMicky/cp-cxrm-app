@@ -627,9 +627,17 @@ export default function Leads() {
       const result = await firestoreService.undoReshuffle(run, String(currentUser.id || ''), (done, total) =>
         setUndoProgress({ done, total })
       );
+      const nowWith = Object.entries((result as any).skippedNowWith || {})
+        .sort((a: any, b: any) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([name, count]) => `   • ${name}: ${count}`)
+        .join('\n');
       alert(
-        `Reshuffle undone.\n\nReturned to previous agents: ${result.restored}` +
-        (result.skippedMovedAgain ? `\nSkipped (moved again later): ${result.skippedMovedAgain}` : '') +
+        `Reshuffle undo finished.\n\nReturned to previous agents: ${result.restored}` +
+        (result.skippedMovedAgain
+          ? `\nSkipped (no longer with the reshuffle's recipients): ${result.skippedMovedAgain}` +
+            (nowWith ? `\n   These leads are now with:\n${nowWith}` : '')
+          : '') +
         (result.skippedUnknownAgent ? `\nSkipped (previous agent could not be identified): ${result.skippedUnknownAgent}` : '')
       );
       await fetchLeads();
