@@ -59,3 +59,16 @@
     @apply bg-white/20;
   }
 }
+
+/* Dark page background everywhere, so scrolling past the edge (rubber-band
+   scrolling on Mac / trackpads) never shows a white strip. */
+html,
+body,
+#root {
+  background-color: #050811;
+}
+
+html,
+body {
+  overscroll-behavior: none;
+}
