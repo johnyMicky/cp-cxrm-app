@@ -1195,13 +1195,24 @@ app.post('/api/atlant/webhook', async (req, res) => {
       startTime: data?.start_time || null,
       endTime: data?.end_time || null,
       duration: data?.duration || null,
-      cdrUrl: String(data?.cdr_url || '').trim(),
       agent: {
         id: agent?.id ?? null,
         name: String(agent?.name || '').trim(),
         email: String(agent?.email || '').trim()
       },
-      payload,
+      // Call recording links are intentionally not stored.
+      payload: (() => {
+        try {
+          const copy = JSON.parse(JSON.stringify(payload ?? null));
+          if (copy && typeof copy === 'object') {
+            delete copy.cdr_url;
+            if (copy.data && typeof copy.data === 'object') delete copy.data.cdr_url;
+          }
+          return copy;
+        } catch {
+          return null;
+        }
+      })(),
       receivedAt: admin.firestore.FieldValue.serverTimestamp(),
       receivedAtIso: new Date().toISOString(),
       sourceIp: getRequestIp(req)
@@ -1259,7 +1270,6 @@ app.post('/api/atlant/webhook', async (req, res) => {
           disposition: String(record.disposition || ''),
           endReason: String(record.endReason || ''),
           duration: record.duration || null,
-          cdrUrl: String(record.cdrUrl || ''),
           endedAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
@@ -1381,7 +1391,6 @@ app.get('/api/atlant/webhook-events', async (req, res) => {
         startTime: data.startTime || null,
         endTime: data.endTime || null,
         duration: data.duration || null,
-        cdrUrl: data.cdrUrl || '',
         agent: data.agent || null,
         receivedAt
       };
