@@ -396,6 +396,12 @@ export const chatService = {
     const currentUser = allUsers.find((user: any) => String(user.id) === String(currentUserId));
     const role = String(currentUser?.role || currentUserRole || 'Agent');
     const teamId = String(currentUser?.teamId || '');
+    const desksOf = (user: any) => Array.from(new Set([
+      ...(Array.isArray(user?.leaderTeamIds) ? user.leaderTeamIds : []),
+      user?.teamId
+    ].map((value: any) => String(value || '').trim()).filter(Boolean)));
+    // Team Leaders see every desk they lead.
+    const myDesks = role === 'Team Leader' ? desksOf(currentUser) : (teamId ? [teamId] : []);
 
     let visible: any[];
 
@@ -406,7 +412,10 @@ export const chatService = {
         if (String(user.id) === String(currentUserId)) return true;
 
         const userRole = String(user.role || 'Agent');
-        const sameTeam = !!teamId && String(user.teamId || '') === teamId;
+        const sameTeam =
+          myDesks.includes(String(user.teamId || '')) ||
+          // a Team Leader who leads my desk as one of their desks
+          (userRole === 'Team Leader' && !!teamId && desksOf(user).includes(teamId));
 
         // Agents and Team Leaders can communicate with their own team
         // plus Managers, as requested.
