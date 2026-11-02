@@ -39,7 +39,16 @@ export default function SecureInfo() {
     id: localStorage.getItem('userId') || '',
     role: localStorage.getItem('userRole') || 'Agent',
     name: localStorage.getItem('userName') || 'User',
-    teamId: localStorage.getItem('userTeamId') || ''
+    teamId: localStorage.getItem('userTeamId') || '',
+    // Desks a Team Leader leads (saved at login).
+    leaderTeamIds: (() => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem('userLeaderTeamIds') || '[]');
+        return Array.isArray(parsed) ? parsed.map(String) : [];
+      } catch {
+        return [];
+      }
+    })()
   };
 
   const isAgent = currentUser.role === 'Agent';
