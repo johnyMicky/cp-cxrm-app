@@ -1,10 +1,11 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, Download, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall, Check, Eye } from 'lucide-react';
+import { Search, Filter, Plus, ArrowRight, CheckCircle2, Upload, Download, CheckSquare, Square, UserPlus, RefreshCw, Tag, ChevronDown, X, MessageSquare, Send, AlertTriangle, PhoneCall, Check, Eye, History, RotateCcw } from 'lucide-react';
 import { format } from 'date-fns';
 import { collection, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
+import DeskAgentPicker from '../components/DeskAgentPicker';
 import { firestoreService } from '../services/firestoreService';
 import { safeLower } from '../utils/stringUtils';
 import { db } from '../firebase';
@@ -561,10 +562,86 @@ export default function Leads() {
     setReshuffleCountries(reshuffleCascade.countryOptions.map(option => option.id));
   }, [isReshuffleModalOpen, reshuffleStatusKey, reshuffleSourceKey]);
 
+  // SAFETY: "FROM" agents are never selected automatically (that used to pick
+  // every agent in the company, including other desks). When the filters
+  // change, only drop choices that no longer have matching leads.
   useEffect(() => {
     if (!isReshuffleModalOpen || !reshuffleStatusKey) return;
-    setReshuffleCurrentAgents(reshuffleCascade.agentOptions.map(option => option.id));
+    const valid = new Set(reshuffleCascade.agentOptions.map(option => option.id));
+    setReshuffleCurrentAgents(prev => prev.filter(id => valid.has(id)));
   }, [isReshuffleModalOpen, reshuffleStatusKey, reshuffleSourceKey, reshuffleCountryKey]);
+
+  // Team helpers for Reshuffle (FROM / TO grouped by desk).
+  const agentTeamName = (agentId: string) => {
+    const agent = agents.find((a: any) => String(a.id) === String(agentId));
+    return String(agent?.teamName || '').trim() || 'No Team';
+  };
+
+  const groupIdsByTeam = (ids: string[]) => {
+    const map = new Map<string, string[]>();
+    ids.forEach(id => {
+      const team = agentTeamName(id);
+      map.set(team, [...(map.get(team) || []), id]);
+    });
+    return Array.from(map.entries())
+      .map(([team, teamIds]) => ({ team, ids: teamIds }))
+      .sort((a, b) => a.team.localeCompare(b.team));
+  };
+
+  const [isReshuffleHistoryOpen, setIsReshuffleHistoryOpen] = useState(false);
+  const [reshuffleRuns, setReshuffleRuns] = useState<any[]>([]);
+  const [isLoadingReshuffleRuns, setIsLoadingReshuffleRuns] = useState(false);
+  const [undoingRunKey, setUndoingRunKey] = useState<string | null>(null);
+  const [undoProgress, setUndoProgress] = useState<{ done: number; total: number } | null>(null);
+
+  const loadReshuffleRuns = async () => {
+    setIsLoadingReshuffleRuns(true);
+    try {
+      const runs = await firestoreService.listRecentReshuffles(String(currentUser.id || ''), 14);
+      setReshuffleRuns(runs);
+    } catch (err: any) {
+      console.error('Failed to load reshuffle history:', err);
+      alert(err?.message || 'Failed to load reshuffle history');
+    } finally {
+      setIsLoadingReshuffleRuns(false);
+    }
+  };
+
+  const openReshuffleHistory = () => {
+    setIsReshuffleHistoryOpen(true);
+    loadReshuffleRuns();
+  };
+
+  const handleUndoReshuffle = async (run: any) => {
+    const from = Object.keys(run.fromCounts || {}).slice(0, 6).join(', ');
+    const ok = window.confirm(
+      `Undo this reshuffle?\n\n${run.count} leads will go back to the agents who had them before` +
+      (from ? ` (${from}${Object.keys(run.fromCounts || {}).length > 6 ? ', …' : ''})` : '') +
+      `.\n\nLeads that were moved again afterwards are left as they are. Notes and history are kept.`
+    );
+    if (!ok) return;
+
+    setUndoingRunKey(run.key);
+    setUndoProgress({ done: 0, total: run.count });
+    try {
+      const result = await firestoreService.undoReshuffle(run, String(currentUser.id || ''), (done, total) =>
+        setUndoProgress({ done, total })
+      );
+      alert(
+        `Reshuffle undone.\n\nReturned to previous agents: ${result.restored}` +
+        (result.skippedMovedAgain ? `\nSkipped (moved again later): ${result.skippedMovedAgain}` : '') +
+        (result.skippedUnknownAgent ? `\nSkipped (previous agent could not be identified): ${result.skippedUnknownAgent}` : '')
+      );
+      await fetchLeads();
+      await loadReshuffleRuns();
+    } catch (err: any) {
+      console.error('Undo reshuffle failed:', err);
+      alert(err?.message || 'Failed to undo reshuffle');
+    } finally {
+      setUndoingRunKey(null);
+      setUndoProgress(null);
+    }
+  };
 
   useEffect(() => {
     if (currentUser.role !== 'Agent' || !currentUser.id) {
@@ -997,14 +1074,15 @@ export default function Leads() {
     try {
       if (currentUser.role === 'Team Leader' && currentUser.id) {
         const freshUser = await firestoreService.getUser(String(currentUser.id));
-        const teamId = freshUser?.teamId || '';
+        // All desks this Team Leader leads.
+        const desks = firestoreService.leaderTeamIdsOf(freshUser);
 
-        if (!teamId) {
+        if (desks.length === 0) {
           setAgents([]);
           return;
         }
 
-        const teamUsers = await firestoreService.getUsersByTeam(teamId);
+        const teamUsers = await firestoreService.getUsersByTeams(desks);
         setAgents(
           teamUsers.filter((u: any) => u.role === 'Agent')
         );
@@ -1635,6 +1713,7 @@ export default function Leads() {
 
   const reshufflePreview = useMemo(() => {
     const statusCounts: Record<string, number> = {};
+    const fromTeamCounts: Record<string, number> = {};
     const eligibleLeadIds: string[] = [];
     const selectedSourceKeys = new Set(reshuffleSources.map(source => safeLower(source)));
     const selectedCountryKeys = new Set(reshuffleCountries.map(country => safeLower(country)));
@@ -1648,10 +1727,13 @@ export default function Leads() {
       if (!reshuffleStatuses.includes(status)) return;
       if (selectedSourceKeys.size > 0 && !selectedSourceKeys.has(safeLower(lead?.source))) return;
       if (selectedCountryKeys.size > 0 && !selectedCountryKeys.has(safeLower(lead?.country))) return;
-      if (selectedCurrentAgentIds.size > 0 && !selectedCurrentAgentIds.has(String(lead?.assigned_to || ''))) return;
+      // FROM agents are required: no selection means no leads.
+      if (!selectedCurrentAgentIds.has(String(lead?.assigned_to || ''))) return;
 
       statusCounts[status] = (statusCounts[status] || 0) + 1;
       eligibleLeadIds.push(String(lead.id));
+      const fromTeam = agentTeamName(String(lead?.assigned_to || ''));
+      fromTeamCounts[fromTeam] = (fromTeamCounts[fromTeam] || 0) + 1;
     });
 
     const recipientIds = [...reshuffleAgents];
@@ -1670,7 +1752,10 @@ export default function Leads() {
       };
     });
 
-    return { statusCounts, total: eligibleLeadIds.length, recipientIds, recipientNames, eligibleLeadIds, estimatedRecipientCounts };
+    const toTeams = Array.from(new Set(recipientIds.map(id => agentTeamName(id))));
+    const crossTeamFrom = Object.keys(fromTeamCounts).filter(team => !toTeams.includes(team));
+
+    return { statusCounts, total: eligibleLeadIds.length, recipientIds, recipientNames, eligibleLeadIds, estimatedRecipientCounts, fromTeamCounts, toTeams, crossTeamFrom };
   }, [leads, reshuffleStatuses, reshuffleSources, reshuffleCountries, reshuffleCurrentAgents, reshuffleAgents, agents]);
 
   const openReshuffleConfirmation = () => {
@@ -1682,6 +1767,11 @@ export default function Leads() {
 
     if (reshufflePreview.recipientIds.length === 0) {
       alert('Select at least one Agent to receive leads.');
+      return;
+    }
+
+    if (reshuffleCurrentAgents.length === 0) {
+      alert('Select which agents (or which desk) the leads should be taken FROM.');
       return;
     }
 
@@ -1981,32 +2071,18 @@ export default function Leads() {
                   <ChevronDown className={`w-3 h-3 transition-transform ${activeDropdown === 'bulkAssign' ? 'rotate-180' : ''}`} />
                 </button>
                 {activeDropdown === 'bulkAssign' && (
-                  <div className="absolute right-0 top-full mt-2 w-64 bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50" onClick={(e) => e.stopPropagation()}>
-                    <div className="px-4 py-2 border-b border-white/5 flex items-center justify-between">
-                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Select Agents</span>
-                      <button 
-                        onClick={() => setSelectedBulkAgents(selectedBulkAgents.length === agents.length ? [] : agents.map(a => a.id))}
-                        className="text-[10px] text-blue-400 hover:text-blue-300"
-                      >
-                        {selectedBulkAgents.length === agents.length ? 'Deselect All' : 'Select All'}
-                      </button>
+                  <div className="absolute right-0 top-full mt-2 w-[min(400px,calc(100vw-2rem))] bg-[#0D121F] border border-white/10 rounded-xl shadow-2xl py-2 z-50" onClick={(e) => e.stopPropagation()}>
+                    <div className="px-4 py-2 border-b border-white/5">
+                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Assign to desks / agents</span>
+                      <p className="text-[10px] text-slate-500 mt-0.5">Tick a desk to select all its agents, then untick anyone who should not get leads.</p>
                     </div>
-                    <div className="max-h-60 overflow-y-auto custom-scrollbar py-1">
-                      {agents.map(agent => (
-                        <button 
-                          key={agent.id}
-                          onClick={() => setSelectedBulkAgents(prev => 
-                            prev.includes(agent.id) ? prev.filter(id => id !== agent.id) : [...prev, agent.id]
-                          )}
-                          className="w-full text-left px-4 py-2 text-xs text-slate-300 hover:bg-white/5 hover:text-white flex items-center justify-between"
-                        >
-                          <div className="flex items-center space-x-2">
-                            <img src={agent.avatar} alt="" className="w-5 h-5 rounded-full" />
-                            <span>{agent.name}</span>
-                          </div>
-                          {selectedBulkAgents.includes(agent.id) && <CheckSquare className="w-3 h-3 text-blue-500" />}
-                        </button>
-                      ))}
+                    <div className="p-2">
+                      <DeskAgentPicker
+                        agents={agents.map((a: any) => ({ ...a, id: String(a.id) }))}
+                        selected={selectedBulkAgents.map(String)}
+                        onChange={(ids) => setSelectedBulkAgents(ids)}
+                        maxHeight={300}
+                      />
                     </div>
                     <div className="p-2 border-t border-white/5">
                       <button 
@@ -2067,6 +2143,15 @@ export default function Leads() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    onClick={openReshuffleHistory}
+                    disabled={isReshuffling}
+                    className="px-3 py-2 rounded-lg text-xs font-medium text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 border border-amber-500/20 disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    History & Undo
+                  </button>
+                  <button
+                    type="button"
                     onClick={resetReshuffleFilters}
                     disabled={isReshuffling}
                     className="px-3 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-white/5 border border-white/10 disabled:opacity-50"
@@ -2105,7 +2190,7 @@ export default function Leads() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {[
                     {
                       label: 'Sources',
@@ -2125,15 +2210,6 @@ export default function Leads() {
                       search: reshuffleCountrySearch,
                       setSearch: setReshuffleCountrySearch
                     },
-                    {
-                      label: 'Current Agents (FROM)',
-                      placeholder: 'Search current agents...',
-                      options: reshuffleCascade.agentOptions,
-                      selected: reshuffleCurrentAgents,
-                      setSelected: setReshuffleCurrentAgents,
-                      search: reshuffleCurrentAgentSearch,
-                      setSearch: setReshuffleCurrentAgentSearch
-                    }
                   ].map((group: any) => {
                     const visibleOptions = group.options.filter((option: any) =>
                       !group.search || safeLower(option.label).includes(safeLower(group.search))
@@ -2144,8 +2220,10 @@ export default function Leads() {
                         <summary className="list-none cursor-pointer flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <p className="text-xs font-semibold text-slate-300 uppercase tracking-wider">{group.label}</p>
-                            <p className="text-[11px] text-slate-500 mt-1 truncate">
-                              {group.selected.length === 0 ? 'All' : `${group.selected.length} selected`}
+                            <p className={`text-[11px] mt-1 truncate ${group.required && group.selected.length === 0 ? 'text-amber-400 font-semibold' : 'text-slate-500'}`}>
+                              {group.selected.length === 0
+                                ? (group.required ? 'Not selected — choose agents or a desk' : 'All')
+                                : `${group.selected.length} selected`}
                             </p>
                           </div>
                           <ChevronDown className="w-4 h-4 text-slate-500 group-open:rotate-180 transition-transform shrink-0" />
@@ -2161,7 +2239,7 @@ export default function Leads() {
                             />
                           </div>
                           <div className="flex items-center justify-between">
-                            <span className="text-[10px] text-slate-500">Empty selection = All</span>
+                            <span className="text-[10px] text-slate-500">{group.required ? 'Only selected agents lose leads' : 'Empty selection = All'}</span>
                             <div className="flex items-center gap-3">
                               <button type="button" onClick={() => group.setSelected(group.options.map((option: any) => option.id))} className="text-[10px] text-blue-400 hover:text-blue-300">Select All</button>
                               <button type="button" onClick={() => group.setSelected([])} className="text-[10px] text-slate-400 hover:text-white">Deselect All</button>
@@ -2190,6 +2268,31 @@ export default function Leads() {
                       </details>
                     );
                   })}
+                </div>
+
+                <div className="space-y-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-4">
+                  <div>
+                    <label className="text-xs font-medium text-amber-300 uppercase tracking-wider">Take leads FROM (required)</label>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Only these agents lose leads. Tick a desk to select all its agents, then untick anyone to keep their leads untouched.
+                    </p>
+                  </div>
+                  {reshuffleStatuses.length === 0 ? (
+                    <p className="text-xs text-slate-500 py-2">Select statuses first.</p>
+                  ) : (
+                    <DeskAgentPicker
+                      accent="amber"
+                      agents={reshuffleCascade.agentOptions.map((option: any) => {
+                        const agent = agents.find((a: any) => String(a.id) === String(option.id)) || {};
+                        return { ...agent, id: String(option.id), name: (agent as any).name || option.label };
+                      })}
+                      counts={Object.fromEntries(reshuffleCascade.agentOptions.map((o: any) => [String(o.id), Number(o.count || 0)]))}
+                      selected={reshuffleCurrentAgents}
+                      onChange={(ids) => setReshuffleCurrentAgents(ids)}
+                      maxHeight={260}
+                      emptyText="No agents have leads matching these filters."
+                    />
+                  )}
                 </div>
 
                 <div className="rounded-xl border border-slate-700/60 bg-white/[0.02] p-4 space-y-3">
@@ -2282,40 +2385,17 @@ export default function Leads() {
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                     <div>
                       <label className="text-xs font-medium text-slate-300 uppercase tracking-wider">Select Agents to Receive Leads (TO)</label>
-                      <p className="text-[11px] text-slate-500 mt-1">Choose the destination Agents for the filtered Leads.</p>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <button type="button" onClick={() => setReshuffleAgents(agents.map(a => String(a.id)))} className="text-xs text-blue-400 hover:text-blue-300">Select All</button>
-                      <button type="button" onClick={() => setReshuffleAgents([])} className="text-xs text-slate-400 hover:text-white">Deselect All</button>
+                      <p className="text-[11px] text-slate-500 mt-1">Tick a desk to select all its agents, then untick anyone who should not receive leads.</p>
                     </div>
                   </div>
-                  <div className="relative">
-                    <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                    <input
-                      value={reshuffleRecipientSearch}
-                      onChange={(e) => setReshuffleRecipientSearch(e.target.value)}
-                      placeholder="Search Agent to receive Leads..."
-                      className="w-full bg-[#111827] border border-white/10 rounded-lg pl-10 pr-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50"
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-52 overflow-y-auto custom-scrollbar p-1">
-                    {agents
-                      .filter(agent => !reshuffleRecipientSearch || safeLower(agent.name || agent.email).includes(safeLower(reshuffleRecipientSearch)))
-                      .map(agent => (
-                        <button
-                          key={agent.id}
-                          type="button"
-                          onClick={() => setReshuffleAgents(prev => prev.includes(String(agent.id)) ? prev.filter(id => id !== String(agent.id)) : [...prev, String(agent.id)])}
-                          className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs ${reshuffleAgents.includes(String(agent.id)) ? 'bg-blue-600/20 border-blue-500/50 text-blue-300' : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'}`}
-                        >
-                          <div className="flex items-center space-x-2 min-w-0">
-                            <img src={agent.avatar} alt="" className="w-5 h-5 rounded-full shrink-0" />
-                            <span className="truncate">{agent.name || agent.email}</span>
-                          </div>
-                          {reshuffleAgents.includes(String(agent.id)) && <CheckSquare className="w-3.5 h-3.5 shrink-0" />}
-                        </button>
-                      ))}
-                  </div>
+                  <DeskAgentPicker
+                    agents={agents
+                      .filter((a: any) => ['Agent', 'Team Leader'].includes(String(a.role || 'Agent')))
+                      .map((a: any) => ({ ...a, id: String(a.id) }))}
+                    selected={reshuffleAgents}
+                    onChange={(ids) => setReshuffleAgents(ids)}
+                    maxHeight={260}
+                  />
                 </div>
 
                 <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-2">
@@ -2351,12 +2431,22 @@ export default function Leads() {
                         <p className="text-[11px] text-amber-400/90">
                           Status after reshuffle: {reshuffleTargetStatus || 'Keep current status'}
                         </p>
+                        {Object.keys(reshufflePreview.fromTeamCounts).length > 0 && (
+                          <p className="text-[11px] text-amber-200">
+                            Taken from: {Object.entries(reshufflePreview.fromTeamCounts).map(([team, count]) => `${team} (${count})`).join(', ')}
+                          </p>
+                        )}
+                        {reshufflePreview.crossTeamFrom.length > 0 && reshuffleAgents.length > 0 && (
+                          <p className="text-[11px] text-rose-300 font-semibold">
+                            ⚠ Leads will move from {reshufflePreview.crossTeamFrom.join(', ')} to {reshufflePreview.toTeams.join(', ')}.
+                          </p>
+                        )}
                       </>
                     );
                   })()}
 
                   <p className="text-xs text-amber-400 leading-relaxed pt-1">
-                    <strong>Warning:</strong> This action redistributes only Leads matching the Reshuffle filters above and cannot be undone.
+                    <strong>Warning:</strong> Only leads of the agents selected in “Take leads FROM” are moved. A reshuffle can be undone later from <strong>History & Undo</strong>.
                   </p>
                 </div>
               </div>
@@ -2372,6 +2462,7 @@ export default function Leads() {
                   disabled={
                     reshuffleStatuses.length === 0 ||
                     reshuffleAgents.length === 0 ||
+                    reshuffleCurrentAgents.length === 0 ||
                     reshuffleStatuses.some(status =>
                       RESHUFFLE_PROTECTED_SOURCE_STATUSES.has(
                         normalizeStatus(status)
@@ -2450,13 +2541,37 @@ export default function Leads() {
                   </div>
                 </div>
 
+                <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                  <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-2">Taken from</p>
+                  <div className="space-y-1.5">
+                    {Object.entries(reshufflePreview.fromTeamCounts).map(([team, count]) => (
+                      <div key={team} className="flex items-center justify-between text-sm">
+                        <span className="text-slate-300">{team}</span>
+                        <span className="font-semibold text-white">{count as number}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-3">
+                    Given to: <span className="text-blue-300">{reshufflePreview.toTeams.join(', ')}</span>
+                  </p>
+                </div>
+
+                {reshufflePreview.crossTeamFrom.length > 0 && (
+                  <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-4">
+                    <p className="text-sm text-rose-200 font-semibold">
+                      ⚠ {reshufflePreview.crossTeamFrom.map(team => `${reshufflePreview.fromTeamCounts[team]} leads from ${team}`).join(', ')} will move to {reshufflePreview.toTeams.join(', ')}.
+                    </p>
+                    <p className="text-xs text-rose-300/80 mt-1">Make sure this is intended — those agents will lose these leads.</p>
+                  </div>
+                )}
+
                 <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
                   <p className="text-xs text-rose-300 leading-relaxed">
                     You are about to reshuffle <strong>{reshufflePreview.total}</strong> leads.
                     {reshuffleTargetStatus
                       ? <> Their status will be changed to <strong>{reshuffleTargetStatus}</strong>.</>
                       : <> Their current statuses will be kept.</>}
-                    {' '}This action cannot be automatically undone.
+                    {' '}You can undo it later from History & Undo.
                   </p>
                 </div>
               </div>
@@ -2562,7 +2677,27 @@ export default function Leads() {
                 </div>
               </div>
 
-              <div className="p-5 border-t border-white/5 flex justify-end shrink-0">
+              <div className="p-5 border-t border-white/5 flex justify-end gap-3 shrink-0">
+                {reshuffleResult.reshuffleId && (
+                  <button
+                    type="button"
+                    disabled={!!undoingRunKey}
+                    onClick={async () => {
+                      await handleUndoReshuffle({
+                        key: reshuffleResult.reshuffleId,
+                        reshuffleId: reshuffleResult.reshuffleId,
+                        count: reshuffleResult.totalChanged,
+                        fromCounts: {}
+                      });
+                      setReshuffleResult(null);
+                      setIsReshuffling(false);
+                    }}
+                    className="px-5 py-2.5 rounded-lg border border-white/10 text-sm font-semibold text-slate-300 hover:bg-white/5 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    {undoingRunKey ? 'Undoing…' : 'Undo this reshuffle'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -2582,6 +2717,61 @@ export default function Leads() {
           </div>
         )}
 
+
+        {isReshuffleHistoryOpen && (
+          <div className="fixed inset-0 z-[185] flex items-center justify-center p-4 bg-black/80" onClick={() => !undoingRunKey && setIsReshuffleHistoryOpen(false)}>
+            <div className="w-full max-w-2xl max-h-[85vh] rounded-2xl border border-white/10 bg-[#0A0F1C] shadow-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+              <div className="p-5 border-b border-white/5 flex items-start justify-between gap-3 shrink-0">
+                <div>
+                  <h3 className="text-lg font-semibold text-white flex items-center gap-2"><History className="w-5 h-5 text-amber-400" /> Reshuffle History & Undo</h3>
+                  <p className="text-xs text-slate-500 mt-1">Your reshuffles from the last 14 days. Undo returns leads to the agents who had them before.</p>
+                </div>
+                <button type="button" disabled={!!undoingRunKey} onClick={() => setIsReshuffleHistoryOpen(false)} className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 disabled:opacity-50">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-4 overflow-y-auto custom-scrollbar space-y-2">
+                {isLoadingReshuffleRuns ? (
+                  <p className="py-10 text-center text-sm text-slate-500">Loading…</p>
+                ) : reshuffleRuns.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-slate-500">No reshuffles in the last 14 days.</p>
+                ) : reshuffleRuns.map((run: any) => (
+                  <div key={run.key} className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-white">
+                          {format(new Date(run.startedAt), 'dd MMM yyyy, HH:mm')} · {run.count} leads
+                          {run.targetStatus ? <span className="text-slate-400 font-normal"> · status → {run.targetStatus}</span> : null}
+                        </p>
+                        <p className="text-xs text-slate-400 mt-1 truncate">
+                          From: {Object.entries(run.fromCounts || {}).map(([name, count]) => `${name} (${count})`).join(', ') || '—'}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5 truncate">
+                          To: {Object.entries(run.toCounts || {}).map(([name, count]) => `${name} (${count})`).join(', ') || '—'}
+                        </p>
+                      </div>
+                      {run.undone ? (
+                        <span className="shrink-0 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-md px-2 py-1">Undone</span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={!!undoingRunKey}
+                          onClick={() => handleUndoReshuffle(run)}
+                          className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          {undoingRunKey === run.key
+                            ? `Undoing… ${undoProgress ? `${undoProgress.done}/${undoProgress.total}` : ''}`
+                            : 'Undo'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {showFilters && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-[#0A0F1C] p-4 rounded-xl border border-white/5 shadow-sm">
