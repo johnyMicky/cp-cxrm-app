@@ -8,6 +8,9 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const signedOutForInactivity =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('reason') === 'idle';
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
@@ -109,6 +112,13 @@ export default function Login() {
 
         <div className="bg-[#0A0F1C] border border-white/5 rounded-2xl p-8 shadow-2xl">
           <form onSubmit={handleLogin} className="space-y-6">
+            {signedOutForInactivity && !error && (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 flex items-start space-x-3">
+                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                <p className="text-sm text-amber-100">You were signed out after 30 minutes of inactivity. Please sign in again.</p>
+              </div>
+            )}
+
             {error && (
               <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-4 flex items-start space-x-3">
                 <AlertCircle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
