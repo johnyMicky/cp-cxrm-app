@@ -8,6 +8,7 @@ import LeadImport from '../components/LeadImport';
 import { firestoreService } from '../services/firestoreService';
 import { safeLower } from '../utils/stringUtils';
 import { db } from '../firebase';
+import { markCrmActivity } from '../components/IdleLogout';
 
 const DEFAULT_STATUSES = [
   'New',
@@ -1027,6 +1028,8 @@ export default function Leads() {
     let timer: number | null = null;
     let requestInFlight = false;
     let lastSessionSignature = '';
+    // A running Auto Dialer counts as activity for the 30-minute auto logout.
+    let dialerEnabled = false;
 
     // Auto Dialer status is intentionally polled because the server owns the call
     // state. Keep call transitions responsive, but avoid forcing the entire Leads
@@ -1064,6 +1067,7 @@ export default function Leads() {
 
     const poll = async () => {
       if (cancelled || requestInFlight) return;
+      if (dialerEnabled) markCrmActivity();
 
       if (document.visibilityState !== 'visible') {
         scheduleNext(7000);
@@ -1073,6 +1077,8 @@ export default function Leads() {
       requestInFlight = true;
       try {
         const session = await firestoreService.getAtlantAutoDialerStatus();
+        dialerEnabled = Boolean(session?.enabled);
+        if (dialerEnabled) markCrmActivity();
 
         if (!cancelled) {
           const signature = sessionSignature(session);
