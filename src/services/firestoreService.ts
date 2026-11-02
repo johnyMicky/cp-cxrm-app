@@ -1744,8 +1744,45 @@ export const firestoreService = {
     return await this.setTeamLeaders(teamId, []);
   },
 
+  // Fast lead list from the server (only the fields tables need, compressed).
+  // Returns null if the server is unavailable, so callers fall back safely.
+  async fetchLeadListFast(scope: 'auto' | 'all', fresh = true): Promise<any[] | null> {
+    try {
+      const authToken = await auth.currentUser?.getIdToken();
+      if (!authToken) return null;
+
+      const params = new URLSearchParams({ scope });
+      if (fresh) params.set('fresh', '1');
+
+      const response = await fetch(`/api/leads/list?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (!response.ok) return null;
+
+      const payload = await response.json();
+      if (!payload?.success || !Array.isArray(payload.rows)) return null;
+
+      const toTs = (ms: any) => (typeof ms === 'number' ? Timestamp.fromMillis(ms) : null);
+      return payload.rows.map((row: any) => ({
+        ...row,
+        callbackAt: toTs(row.callbackAt),
+        createdAt: toTs(row.createdAt),
+        updatedAt: toTs(row.updatedAt)
+      }));
+    } catch (error) {
+      console.warn('Fast lead list unavailable, using direct Firestore read:', error);
+      return null;
+    }
+  },
+
   // Leads
   async getLeads(agentId?: string) {
+    // Organization-wide list: try the fast server list first.
+    if (!agentId) {
+      const fast = await this.fetchLeadListFast('all', true);
+      if (fast) return fast;
+    }
+
     try {
       // IMPORTANT PERFORMANCE FIX:
       // When an Agent is requested, ask Firestore only for that Agent's leads.
@@ -7204,7 +7241,7 @@ export const firestoreService = {
   },
 
   // Role/team-aware lead scope. Existing permissions are preserved.
-  async getLeadsForUser(user: any) {
+  async getLeadsForUser(user: any, options: { fresh?: boolean } = {}) {
     if (!user?.id) return [];
 
     const freshUser = await this.getUser(String(user.id));
@@ -7214,6 +7251,11 @@ export const firestoreService = {
     if (role === 'Agent') {
       return await this.getLeads(String(effectiveUser.id));
     }
+
+    // Team Leaders / Administrators / Managers: fast server list first
+    // (same visibility rules on the server). Falls back to the code below.
+    const fast = await this.fetchLeadListFast('auto', options.fresh !== false);
+    if (fast) return fast;
 
     if (role === 'Team Leader') {
       const teamId = effectiveUser.teamId || '';
