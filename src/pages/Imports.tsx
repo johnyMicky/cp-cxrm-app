@@ -30,6 +30,7 @@ export default function Imports() {
   const [isDistributing, setIsDistributing] = useState(false);
   const [distributionResult, setDistributionResult] = useState<Record<string, number> | null>(null);
   const [distributionTotal, setDistributionTotal] = useState(0);
+  const [distributionProtected, setDistributionProtected] = useState(0);
   const [duplicateImport, setDuplicateImport] = useState<ImportRecord | null>(null);
   const [duplicateRows, setDuplicateRows] = useState<any[]>([]);
   const [duplicateLoading, setDuplicateLoading] = useState(false);
@@ -140,6 +141,7 @@ export default function Imports() {
     setSelectedAgentIds(distributionUsers.map((user: any) => String(user.id)));
     setDistributionResult(null);
     setDistributionTotal(0);
+    setDistributionProtected(0);
   };
 
   const closeDistributionModal = () => {
@@ -148,6 +150,7 @@ export default function Imports() {
     setSelectedAgentIds([]);
     setDistributionResult(null);
     setDistributionTotal(0);
+    setDistributionProtected(0);
   };
 
   const toggleAgent = (agentId: string) => {
@@ -186,6 +189,7 @@ export default function Imports() {
 
       setDistributionResult(result.summary || {});
       setDistributionTotal(result.total || 0);
+      setDistributionProtected(Number((result as any).skippedProtected || 0));
     } catch (err: any) {
       console.error('Import distribution failed:', err);
       alert(err?.message || 'Failed to distribute leads.');
@@ -536,6 +540,11 @@ export default function Imports() {
                     <p className="text-sm text-slate-300 mt-2">
                       {distributionTotal} leads processed.
                     </p>
+                    {distributionProtected > 0 && (
+                      <p className="text-xs text-emerald-300 mt-1">
+                        {distributionProtected} leads with a callback / deposit / potential were kept with their agents.
+                      </p>
+                    )}
                   </div>
 
                   <div className="space-y-2">

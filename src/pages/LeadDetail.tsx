@@ -201,7 +201,31 @@ export default function LeadDetail() {
 
   const handleSave = async () => {
     if (!id) return;
-    await firestoreService.updateLead(id, { ...editForm });
+
+    // Save ONLY the fields that were changed in this form. Previously the whole
+    // (possibly hours-old) lead copy was written back, so an open Lead page could
+    // silently undo a reassignment / status / callback done meanwhile by someone else.
+    const EDITABLE_FIELDS = ['name', 'phone', 'email', 'country', 'source', 'status', 'assigned_to', 'callbackAt'];
+    const comparable = (value: any) => {
+      if (value === undefined || value === null || value === '') return '';
+      if (typeof value?.toDate === 'function') return String(value.toDate().getTime());
+      if (value instanceof Date) return String(value.getTime());
+      if (typeof value?.seconds === 'number') return String(value.seconds * 1000);
+      return String(value);
+    };
+    const changes: Record<string, any> = {};
+    EDITABLE_FIELDS.forEach(field => {
+      if (comparable(editForm?.[field]) !== comparable(lead?.[field])) {
+        changes[field] = editForm?.[field] ?? null;
+      }
+    });
+
+    if (Object.keys(changes).length === 0) {
+      setIsEditing(false);
+      return;
+    }
+
+    await firestoreService.updateLead(id, changes);
     
     // Log reassignment or status change
     if (lead.status !== editForm.status) {
@@ -212,7 +236,7 @@ export default function LeadDetail() {
         details: `Status changed from ${lead.status} to ${editForm.status}`
       });
     }
-    if (lead.assigned_to !== editForm.assigned_to) {
+    if ('assigned_to' in changes) {
       const assignedUser = editForm.assigned_to ? users.find(u => u.id === editForm.assigned_to) : { name: 'Unassigned' };
       await firestoreService.logActivity({
         lead_id: id,
@@ -221,7 +245,7 @@ export default function LeadDetail() {
         details: `Assigned to ${assignedUser?.name || 'Unassigned'}`
       });
     }
-    if (lead.callbackAt !== editForm.callbackAt) {
+    if ('callbackAt' in changes) {
       await firestoreService.logActivity({
         lead_id: id,
         user_id: currentUserId,

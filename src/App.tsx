@@ -30,6 +30,7 @@ import { firestoreService } from './services/firestoreService';
 import { chatService } from './services/chatService';
 import ErrorBoundary from './components/ErrorBoundary';
 import CallbackReminders from './components/CallbackReminders';
+import WorldClocks from './components/WorldClocks';
 import IdleLogout from './components/IdleLogout';
 import {
   notifyBrowser,
@@ -502,7 +503,7 @@ function Sidebar({
         </div>
       )}
       
-      <nav className="flex-1 px-4 space-y-1 mt-4">
+      <nav className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-4 space-y-1 mt-4">
         {navItems.filter(item => item.roles.includes(currentUserRole)).map((item) => {
           const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
           return (
@@ -522,6 +523,9 @@ function Sidebar({
           );
         })}
       </nav>
+
+      {/* Up to 3 world clocks, chosen per user */}
+      {currentUserId && <WorldClocks userId={String(currentUserId)} />}
       
       {showNotifyPrompt && (
         <div className="mx-4 mb-3 rounded-xl border border-blue-500/20 bg-blue-500/[0.06] p-3">

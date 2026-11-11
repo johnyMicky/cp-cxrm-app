@@ -6,7 +6,7 @@ import { collection, getDocs, onSnapshot, query, where } from 'firebase/firestor
 import LeadForm from '../components/LeadForm';
 import LeadImport from '../components/LeadImport';
 import DeskAgentPicker from '../components/DeskAgentPicker';
-import { firestoreService } from '../services/firestoreService';
+import { firestoreService, leadHasActiveCallback } from '../services/firestoreService';
 import { safeLower } from '../utils/stringUtils';
 import { db } from '../firebase';
 import { markCrmActivity } from '../components/IdleLogout';
@@ -472,9 +472,14 @@ export default function Leads() {
     const selectedSourceKeys = new Set(reshuffleSources.map(source => safeLower(source)));
     const selectedCountryKeys = new Set(reshuffleCountries.map(country => safeLower(country)));
 
+    const cascadeNow = Date.now();
     const statusScoped = reshuffleStatuses.length === 0
       ? []
-      : leads.filter((lead: any) => selectedStatuses.has(normalizeStatus(lead?.status)));
+      : leads.filter((lead: any) =>
+          selectedStatuses.has(normalizeStatus(lead?.status)) &&
+          // Booked callbacks are never reshuffled (same rule as the service).
+          !leadHasActiveCallback(lead, cascadeNow)
+        );
 
     const sourceCounts = new Map<string, { label: string; count: number }>();
     statusScoped.forEach((lead: any) => {
@@ -1661,6 +1666,33 @@ export default function Leads() {
 
   const handleBulkAssign = async () => {
     if (selectedBulkAgents.length === 0) return;
+
+    // Warn before moving callbacks that belong to another agent.
+    const assignNow = Date.now();
+    const recipientSet = new Set(selectedBulkAgents.map(id => String(id)));
+    const selectedSet = new Set(selectedLeads.map(id => String(id)));
+    const foreignCallbackIds = leads
+      .filter((lead: any) =>
+        selectedSet.has(String(lead.id)) &&
+        String(lead.assigned_to || '') &&
+        !recipientSet.has(String(lead.assigned_to || '')) &&
+        leadHasActiveCallback(lead, assignNow)
+      )
+      .map((lead: any) => String(lead.id));
+
+    let leadIdsToAssign = [...selectedLeads];
+    if (foreignCallbackIds.length > 0) {
+      const moveThem = window.confirm(
+        `${foreignCallbackIds.length} of the selected leads have a booked callback with another agent.\n\n` +
+        `OK = move them too\nCancel = keep those callbacks with their agents and assign only the rest`
+      );
+      if (!moveThem) {
+        const keep = new Set(foreignCallbackIds);
+        leadIdsToAssign = selectedLeads.filter(id => !keep.has(String(id)));
+        if (leadIdsToAssign.length === 0) return;
+      }
+    }
+
     setIsAssigning(true);
     
     const agentNamesMap: Record<string, string> = {};
@@ -1674,9 +1706,11 @@ export default function Leads() {
         localSummary[agentNamesMap[id] || id] = 0;
       });
 
+      const previousOwners: Record<string, string> = {};
       const updatedLeads = leads.map(lead => {
-        if (selectedLeads.includes(lead.id)) {
-          const index = selectedLeads.indexOf(lead.id);
+        if (leadIdsToAssign.includes(lead.id)) {
+          previousOwners[String(lead.id)] = String(lead.assigned_to || '');
+          const index = leadIdsToAssign.indexOf(lead.id);
           const agentId = selectedBulkAgents[index % selectedBulkAgents.length];
           const agentName = agentNamesMap[agentId] || agentId;
           localSummary[agentName] = (localSummary[agentName] || 0) + 1;
@@ -1687,8 +1721,8 @@ export default function Leads() {
 
       setLeads(updatedLeads);
       setActiveDropdown(null);
-      const count = selectedLeads.length;
-      const leadsToDistribute = [...selectedLeads];
+      const count = leadIdsToAssign.length;
+      const leadsToDistribute = [...leadIdsToAssign];
       const agentsToUse = [...selectedBulkAgents];
       
       setSelectedLeads([]);
@@ -1698,7 +1732,7 @@ export default function Leads() {
       setDistributionResult(localSummary);
       showToastMessage(`Distributed ${count} leads successfully!`);
 
-      firestoreService.distributeLeads(leadsToDistribute, agentsToUse, currentUser.id, agentNamesMap)
+      firestoreService.distributeLeads(leadsToDistribute, agentsToUse, currentUser.id, agentNamesMap, { previousOwners, reason: 'Bulk assign' })
         .catch(err => {
           console.error('Background distribution failed:', err);
           fetchLeads();
@@ -1732,6 +1766,8 @@ export default function Leads() {
     const selectedSourceKeys = new Set(reshuffleSources.map(source => safeLower(source)));
     const selectedCountryKeys = new Set(reshuffleCountries.map(country => safeLower(country)));
     const selectedCurrentAgentIds = new Set(reshuffleCurrentAgents.map(id => String(id)));
+    const previewNow = Date.now();
+    let protectedCallbacks = 0;
 
     // Reshuffle is independent from the main Leads filters. Empty Source/Country/Current
     // Agent selections mean ALL. This is calculated from leads already loaded for the
@@ -1743,6 +1779,11 @@ export default function Leads() {
       if (selectedCountryKeys.size > 0 && !selectedCountryKeys.has(safeLower(lead?.country))) return;
       // FROM agents are required: no selection means no leads.
       if (!selectedCurrentAgentIds.has(String(lead?.assigned_to || ''))) return;
+      // A booked callback (any status) stays with the agent who booked it.
+      if (leadHasActiveCallback(lead, previewNow)) {
+        protectedCallbacks += 1;
+        return;
+      }
 
       statusCounts[status] = (statusCounts[status] || 0) + 1;
       eligibleLeadIds.push(String(lead.id));
@@ -1769,7 +1810,7 @@ export default function Leads() {
     const toTeams = Array.from(new Set(recipientIds.map(id => agentTeamName(id))));
     const crossTeamFrom = Object.keys(fromTeamCounts).filter(team => !toTeams.includes(team));
 
-    return { statusCounts, total: eligibleLeadIds.length, recipientIds, recipientNames, eligibleLeadIds, estimatedRecipientCounts, fromTeamCounts, toTeams, crossTeamFrom };
+    return { statusCounts, protectedCallbacks, total: eligibleLeadIds.length, recipientIds, recipientNames, eligibleLeadIds, estimatedRecipientCounts, fromTeamCounts, toTeams, crossTeamFrom };
   }, [leads, reshuffleStatuses, reshuffleSources, reshuffleCountries, reshuffleCurrentAgents, reshuffleAgents, agents]);
 
   const openReshuffleConfirmation = () => {
@@ -2431,6 +2472,11 @@ export default function Leads() {
                         <p className="text-xs text-amber-300 font-semibold">
                           {matchingCount} matching Lead{matchingCount === 1 ? '' : 's'}
                         </p>
+                        {reshufflePreview.protectedCallbacks > 0 && (
+                          <p className="text-[11px] text-emerald-300">
+                            {reshufflePreview.protectedCallbacks} lead{reshufflePreview.protectedCallbacks === 1 ? '' : 's'} with a booked callback will stay with their agent.
+                          </p>
+                        )}
                         <p className="text-[11px] text-amber-400/90">
                           Recipients: {reshuffleAgents.length} • Estimated distribution: {minPerAgent}
                           {maxPerAgent !== minPerAgent ? `–${maxPerAgent}` : ''} per recipient

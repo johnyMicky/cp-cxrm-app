@@ -169,6 +169,42 @@ const effectiveDepositFinanceMonth = (deposit: any) =>
   financeMonthFromValue(deposit?.approvedAt) ||
   String(deposit?.depositDate || '').slice(0, 7);
 
+// ---------------------------------------------------------------------------
+// Callback / worked-lead protection
+// A lead with a scheduled callback must stay with the agent who booked it, even
+// when its status is not literally "Callback" (e.g. "No answer" + callback date).
+// Callback dates from the last 48 hours still count (missed but not stale).
+// ---------------------------------------------------------------------------
+const CALLBACK_GRACE_MS = 48 * 60 * 60 * 1000;
+
+const leadDateValue = (value: any): Date | null => {
+  if (!value) return null;
+  try {
+    if (typeof value?.toDate === 'function') return value.toDate();
+    if (typeof value?.seconds === 'number') return new Date(value.seconds * 1000);
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+};
+
+export const leadHasActiveCallback = (lead: any, now: number = Date.now()) => {
+  const status = String(lead?.status || '').trim().toLowerCase();
+  if (status === 'callback') return true;
+  const at = leadDateValue(lead?.callbackAt);
+  return !!at && at.getTime() >= now - CALLBACK_GRACE_MS;
+};
+
+// Leads an agent is working on: never moved by file distribution / reshuffle.
+const WORKED_LEAD_STATUSES = new Set(['callback', 'deposit', 'high potential', 'low potential']);
+
+export const isProtectedWorkedLead = (lead: any, now: number = Date.now()) => {
+  if (!String(lead?.assigned_to || '').trim()) return false;
+  if (WORKED_LEAD_STATUSES.has(String(lead?.status || '').trim().toLowerCase())) return true;
+  return leadHasActiveCallback(lead, now);
+};
+
 export const firestoreService = {
   getAuth() {
     return auth;
@@ -2448,29 +2484,40 @@ export const firestoreService = {
     agentNamesMap?: Record<string, string>
   ) {
     const access = await this._validateImportDistributionAccess(importId, agentIds, userId);
-    const importLeads = await this.getLeadsByImport(importId);
+    const allImportLeads = await this.getLeadsByImport(importId);
+
+    // Callbacks, deposits and potentials already owned by an agent stay where they are.
+    const nowMs = Date.now();
+    const importLeads = allImportLeads.filter((lead: any) => !isProtectedWorkedLead(lead, nowMs));
+    const skippedProtected = allImportLeads.length - importLeads.length;
 
     if (importLeads.length === 0) {
-      return { total: 0, summary: {} as Record<string, number> };
+      return { total: 0, summary: {} as Record<string, number>, skippedProtected };
     }
 
     const leadIds = importLeads.map((lead: any) => String(lead.id));
+    const previousOwners: Record<string, string> = {};
+    importLeads.forEach((lead: any) => {
+      previousOwners[String(lead.id)] = String(lead.assigned_to || '');
+    });
     const summary = await this.distributeLeads(
       leadIds,
       access.agentIds as string[],
       userId,
-      agentNamesMap
+      agentNamesMap,
+      { previousOwners, reason: 'Lead file distribution' }
     );
 
     await this.logActivity({
       user_id: userId,
       action: "Import Distribution",
-      details: `Distributed ${leadIds.length} leads from import ${importId}.`
+      details: `Distributed ${leadIds.length} leads from import ${importId}.${skippedProtected ? ` ${skippedProtected} callback/worked leads were kept with their agents.` : ''}`
     }).catch(() => {});
 
     return {
       total: leadIds.length,
-      summary
+      summary,
+      skippedProtected
     };
   },
 
@@ -2481,14 +2528,22 @@ export const firestoreService = {
     agentNamesMap?: Record<string, string>
   ) {
     const access = await this._validateImportDistributionAccess(importId, agentIds, userId);
-    const importLeads = await this.getLeadsByImport(importId);
+    const allImportLeads = await this.getLeadsByImport(importId);
+
+    // Callbacks, deposits and potentials already owned by an agent stay where they are.
+    const nowMs = Date.now();
+    const importLeads = allImportLeads.filter((lead: any) => !isProtectedWorkedLead(lead, nowMs));
+    const skippedProtected = allImportLeads.length - importLeads.length;
 
     if (importLeads.length === 0) {
-      return { total: 0, summary: {} as Record<string, number> };
+      return { total: 0, summary: {} as Record<string, number>, skippedProtected };
     }
 
+    const historyNames = await this._distributionNameMap(agentNamesMap);
+
     const summary: Record<string, number> = {};
-    const BATCH_SIZE = 500;
+    // Lead update + its history row = 2 writes, so 250 leads per batch.
+    const BATCH_SIZE = 250;
     let batch = writeBatch(db);
     let batchCount = 0;
     const commits: Promise<void>[] = [];
@@ -2502,6 +2557,13 @@ export const firestoreService = {
         assigned_to: agentId,
         updatedAt: now
       });
+
+      const oldAgentId = String(lead.assigned_to || '');
+      if (oldAgentId !== agentId) {
+        batch.set(doc(collection(db, "history")), this._reassignHistoryRow(
+          String(lead.id), userId, oldAgentId, agentId, historyNames, 'Lead file reshuffle', now
+        ));
+      }
 
       const displayName = agentNamesMap?.[agentId] || agentId;
       summary[displayName] = (summary[displayName] || 0) + 1;
@@ -2524,12 +2586,13 @@ export const firestoreService = {
     await this.logActivity({
       user_id: userId,
       action: "Import Reshuffle",
-      details: `Reshuffled ${importLeads.length} leads from import ${importId}.`
+      details: `Reshuffled ${importLeads.length} leads from import ${importId}.${skippedProtected ? ` ${skippedProtected} callback/worked leads were kept with their agents.` : ''}`
     }).catch(() => {});
 
     return {
       total: importLeads.length,
-      summary
+      summary,
+      skippedProtected
     };
   },
 
@@ -2749,10 +2812,57 @@ export const firestoreService = {
     }).catch(() => {});
   },
 
-  async distributeLeads(leadIds: string[], agentIds: string[], userId: string, agentNamesMap?: Record<string, string>) {
+  // Writes one "Reassigned" history row per lead, so a moved lead always shows
+  // who moved it, from whom, and when (previously bulk moves left no trace).
+  async _distributionNameMap(agentNamesMap?: Record<string, string>) {
+    const names: Record<string, string> = { ...(agentNamesMap || {}) };
+    try {
+      const users = await this.getUsers();
+      users.forEach((u: any) => {
+        if (!names[String(u.id)]) names[String(u.id)] = u.name || u.email || String(u.id);
+      });
+    } catch {}
+    return names;
+  },
+
+  _reassignHistoryRow(
+    leadId: string,
+    userId: string,
+    oldAgentId: string | null,
+    newAgentId: string,
+    names: Record<string, string>,
+    reason: string,
+    when: Date
+  ) {
+    // oldAgentId === null means "previous owner not known to the caller".
+    const known = oldAgentId !== null;
+    const fromName = !known ? '' : oldAgentId ? (names[oldAgentId] || 'Deleted user') : 'Unassigned';
+    const toName = newAgentId ? (names[newAgentId] || newAgentId) : 'Unassigned';
+    return {
+      lead_id: leadId,
+      user_id: userId,
+      action: 'Reassigned',
+      details: known ? `${reason}: ${fromName} → ${toName}` : `${reason}: assigned to ${toName}`,
+      oldAgentId: oldAgentId || '',
+      newAgentId: newAgentId || '',
+      createdAt: when
+    };
+  },
+
+  async distributeLeads(
+    leadIds: string[],
+    agentIds: string[],
+    userId: string,
+    agentNamesMap?: Record<string, string>,
+    options?: { previousOwners?: Record<string, string>; reason?: string }
+  ) {
     const distributionSummary: Record<string, number> = {};
-    
-    const BATCH_SIZE = 500;
+    const previousOwners = options?.previousOwners || null;
+    const reason = options?.reason || 'Bulk assign';
+    const historyNames = await this._distributionNameMap(agentNamesMap);
+
+    // Lead update + its history row = 2 writes, so 250 leads per batch.
+    const BATCH_SIZE = 250;
     const batches = [];
     let currentBatch = writeBatch(db);
     let count = 0;
@@ -2767,6 +2877,13 @@ export const firestoreService = {
         assigned_to: agentId, 
         updatedAt: now 
       });
+
+      const oldAgentId = previousOwners ? String(previousOwners[id] || '') : null;
+      if (!previousOwners || oldAgentId !== String(agentId)) {
+        currentBatch.set(doc(collection(db, "history")), this._reassignHistoryRow(
+          id, userId, oldAgentId, String(agentId), historyNames, reason, now
+        ));
+      }
       
       if (agentNamesMap) {
         const agentName = agentNamesMap[agentId] || agentId;
@@ -5859,6 +5976,11 @@ export const firestoreService = {
 
         // Server-side protection even if an old frontend tries to send one.
         if (protectedSourceStatuses.has(leadStatus)) {
+          return false;
+        }
+
+        // A booked callback stays with its agent, whatever the status is.
+        if (leadHasActiveCallback(lead)) {
           return false;
         }
 
