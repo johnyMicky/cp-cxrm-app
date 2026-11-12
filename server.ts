@@ -482,7 +482,7 @@ app.post('/api/atlant/call', async (req, res) => {
 
     const manualCallId = String(providerBody?.call_id || '').trim();
 
-    if (manualCallId) {
+    if (LIVE_CALLS_ENABLED && manualCallId) {
       const matchedLead = await findLeadForLiveCall(decoded.uid, destination);
 
       await db.collection(ATLANT_LIVE_CALLS_COL).doc(manualCallId).set({
@@ -543,6 +543,13 @@ app.post('/api/atlant/call', async (req, res) => {
 // in their own collection and only control the next-call queue for signed-in Agents.
 const ATLANT_DIALER_SESSIONS_COL = 'atlant_dialer_sessions';
 const ATLANT_LIVE_CALLS_COL = 'atlant_live_calls';
+// "Live calls" documents only fed the Live Monitor page, which was removed.
+// Nothing reads them any more, so they are no longer written (saves database
+// writes + lead lookups on every call). Set to true to bring them back.
+const LIVE_CALLS_ENABLED = false;
+// Atlant webhook event logs get an expiry date; with a Firestore TTL policy on
+// "expireAt" they are deleted automatically after this many days.
+const WEBHOOK_EVENT_TTL_DAYS = 30;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -717,34 +724,36 @@ async function startNextAtlantDialerCall(userId: string) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
-    const matchedLead = leadId ? await db.collection('leads').doc(leadId).get() : null;
-    const matchedLeadData = matchedLead?.exists ? (matchedLead.data() || {}) : {};
+    if (LIVE_CALLS_ENABLED) {
+      const matchedLead = leadId ? await db.collection('leads').doc(leadId).get() : null;
+      const matchedLeadData = matchedLead?.exists ? (matchedLead.data() || {}) : {};
 
-    await db.collection(ATLANT_LIVE_CALLS_COL).doc(provider.callId).set({
-      callId: provider.callId,
-      provider: String(session.providerKey || 'atlant'),
-      providerId: String(session.providerId || 'atlant'),
-      providerName: String(session.providerName || 'Atlant'),
-      mode: 'auto',
-      active: true,
-      state: 'dialing',
-      agentId: userId,
-      agentName: String(session.userName || session.userEmail || 'Agent'),
-      agentEmail: String(session.userEmail || ''),
-      agentExtension,
-      teamId: String(session.teamId || ''),
-      teamName: String(session.teamName || ''),
-      leadId,
-      leadName: leadName || String((matchedLeadData as any).name || ''),
-      leadStatus: String((matchedLeadData as any).status || ''),
-      leadCountry: String((matchedLeadData as any).country || ''),
-      leadSource: String((matchedLeadData as any).source || ''),
-      phone,
-      disposition: '',
-      endReason: '',
-      startedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+      await db.collection(ATLANT_LIVE_CALLS_COL).doc(provider.callId).set({
+        callId: provider.callId,
+        provider: String(session.providerKey || 'atlant'),
+        providerId: String(session.providerId || 'atlant'),
+        providerName: String(session.providerName || 'Atlant'),
+        mode: 'auto',
+        active: true,
+        state: 'dialing',
+        agentId: userId,
+        agentName: String(session.userName || session.userEmail || 'Agent'),
+        agentEmail: String(session.userEmail || ''),
+        agentExtension,
+        teamId: String(session.teamId || ''),
+        teamName: String(session.teamName || ''),
+        leadId,
+        leadName: leadName || String((matchedLeadData as any).name || ''),
+        leadStatus: String((matchedLeadData as any).status || ''),
+        leadCountry: String((matchedLeadData as any).country || ''),
+        leadSource: String((matchedLeadData as any).source || ''),
+        phone,
+        disposition: '',
+        endReason: '',
+        startedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    }
 
     return {
       started: true,
@@ -1216,7 +1225,8 @@ app.post('/api/atlant/webhook', async (req, res) => {
       })(),
       receivedAt: admin.firestore.FieldValue.serverTimestamp(),
       receivedAtIso: new Date().toISOString(),
-      sourceIp: getRequestIp(req)
+      sourceIp: getRequestIp(req),
+      expireAt: admin.firestore.Timestamp.fromMillis(Date.now() + WEBHOOK_EVENT_TTL_DAYS * 24 * 60 * 60 * 1000)
     };
 
     const created = await db.collection(ATLANT_WEBHOOK_EVENTS_COL).add(record);
@@ -1226,7 +1236,7 @@ app.post('/api/atlant/webhook', async (req, res) => {
       `${callId ? `(call ${callId})` : '(no call id)'}`
     );
 
-    if (callId && (eventType === 'outbound.call.answered' || eventType === 'outbound.call.hangup')) {
+    if (LIVE_CALLS_ENABLED && callId && (eventType === 'outbound.call.answered' || eventType === 'outbound.call.hangup')) {
       const liveRef = db.collection(ATLANT_LIVE_CALLS_COL).doc(callId);
       const liveSnap = await liveRef.get();
 
@@ -2232,7 +2242,12 @@ async function computeDashboardStats(
         name: member.name || member.email || 'Agent',
         email: member.email || '',
         avatar: member.avatar || `https://i.pravatar.cc/150?u=${member.id}`,
-        isOnline: !!member.isOnline,
+        // Online only with a heartbeat newer than 6 minutes (sent every 3 min).
+        isOnline: !!member.isOnline && (() => {
+          const seen: any = member.lastSeen;
+          const seenMs = typeof seen?.toMillis === 'function' ? seen.toMillis() : seen ? new Date(seen).getTime() : 0;
+          return !!seenMs && Date.now() - seenMs < 6 * 60 * 1000;
+        })(),
         lastSeen: member.lastSeen || null,
         shift: shiftMap.get(String(member.id)) || null
       }))
@@ -2389,6 +2404,36 @@ const mapLeadListRow = (docSnap: any) => {
   }
   return row;
 };
+
+// Chat "AI Summary". Runs on the server so the Gemini key never reaches the
+// browser and the large AI library is not downloaded with the chat.
+// Needs GEMINI_API_KEY in Vercel → Settings → Environment Variables.
+app.post('/api/ai/summarize', express.json({ limit: '300kb' }), async (req, res) => {
+  try {
+    await getVerifiedRequestUser(req);
+
+    const apiKey = String(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '').trim();
+    if (!apiKey) {
+      return res.status(503).json({ error: 'AI Summary is not configured (GEMINI_API_KEY is missing on the server).' });
+    }
+
+    const text = String(req.body?.text || '').slice(-120000).trim();
+    if (!text) return res.status(400).json({ error: 'Nothing to summarize.' });
+
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Summarize the following chat conversation between team members. Focus on key decisions, action items, and main topics discussed:\n\n${text}`
+    });
+
+    return res.json({ summary: response.text || 'No summary available.' });
+  } catch (error: any) {
+    const unauthorized = /token|auth/i.test(String(error?.message || ''));
+    console.error('AI summary failed:', error?.message || error);
+    return res.status(unauthorized ? 401 : 500).json({ error: unauthorized ? 'Unauthorized' : 'AI Summary failed.' });
+  }
+});
 
 app.get('/api/leads/list', async (req, res) => {
   try {

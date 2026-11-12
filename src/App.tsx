@@ -125,9 +125,10 @@ function Sidebar({
     notificationsRef.current = notifications;
   }, [notifications]);
 
-  // Presence heartbeat for Live Monitor.
-  // Explicit logout still writes isOnline=false; if the browser closes unexpectedly,
-  // Live Calls treats an old lastSeen heartbeat as Logged Out/Offline.
+  // Presence heartbeat (green "online" dot in chat / Team Leader dashboard).
+  // Every 3 minutes instead of every 30 seconds (6x fewer database writes).
+  // Someone counts as online only if their last heartbeat is under 6 minutes old,
+  // so a closed browser no longer stays "online" forever.
   useEffect(() => {
     if (!currentUserId || currentUserId === '1') return;
 
@@ -139,7 +140,7 @@ function Sidebar({
     };
 
     heartbeat();
-    const interval = window.setInterval(heartbeat, 30000);
+    const interval = window.setInterval(heartbeat, 180000);
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') heartbeat();
@@ -195,58 +196,11 @@ function Sidebar({
     };
   }, [currentUserId]);
 
-  useEffect(() => {
-    if (!currentUserId || currentUserId === '1') return;
-
-    let cancelled = false;
-
-    const checkCallbacks = async () => {
-      try {
-        const now = new Date();
-        const thirtyMinsLater = new Date(now.getTime() + 30 * 60000);
-        const upcoming = await firestoreService.getUpcomingCallbacksForUser(
-          { id: currentUserId, role: currentUserRole },
-          now,
-          thirtyMinsLater
-        );
-
-        if (cancelled) return;
-
-        let createdAny = false;
-
-        for (const lead of (upcoming as any[])) {
-          const alreadyNotified = notificationsRef.current.some(
-            n => n.type === 'callback' && n.lead_id === lead.id
-          );
-
-          if (!alreadyNotified) {
-            await firestoreService.createNotification({
-              user_id: currentUserId,
-              lead_id: lead.id,
-              type: 'callback',
-              title: 'Upcoming Callback',
-              message: `You have a scheduled call with ${lead.name} in less than 30 minutes.`,
-            });
-            createdAny = true;
-          }
-        }
-
-        if (createdAny && !cancelled) {
-          fetchNotifications();
-        }
-      } catch (err) {
-        console.error('Callback check failed:', err);
-      }
-    };
-
-    const interval = window.setInterval(checkCallbacks, 300000);
-    checkCallbacks();
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [currentUserId, currentUserRole]);
+  // The old 5-minute "Upcoming Callback" checker was removed: it queried the
+  // database every 5 minutes for every user (and, without a composite index,
+  // re-read all of an agent's leads each time). Callback reminders now come only
+  // from <CallbackReminders /> (sidebar phone icon: 5 min before + when due,
+  // with sound and desktop notification), which listens in real time.
 
   const handleMarkRead = async (id: string) => {
     await firestoreService.markNotificationRead(id);

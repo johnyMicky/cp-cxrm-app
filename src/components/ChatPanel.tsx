@@ -42,7 +42,7 @@ import { format, isToday, isYesterday, isSameDay } from 'date-fns';
 import { motion, AnimatePresence } from 'motion/react';
 import { chatService } from '../services/chatService';
 import { firestoreService } from '../services/firestoreService';
-import { GoogleGenAI } from "@google/genai";
+import { auth } from '../firebase';
 import { cn } from '../App';
 
 interface ChatPanelProps {
@@ -1422,24 +1422,30 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
     setIsSummarizing(true);
 
     try {
-      const ai = new GoogleGenAI({
-        apiKey: (import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.GEMINI_API_KEY
-      });
-
-      const prompt = `Summarize the following chat conversation between team members. Focus on key decisions, action items, and main topics discussed:\n\n${messages
+      // Summary is produced on the server (/api/ai/summarize) so the API key
+      // stays secret and the AI library is not shipped to the browser.
+      const text = messages
         .filter((m) => m.type !== 'system' && !m.deleted)
         .map((m) => `${m.senderName}: ${m.text || '[File/Image]'}`)
-        .join('\n')}`;
+        .join('\n');
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/ai/summarize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        // Last ~30k characters (keeps the request under the server's 100 KB limit).
+        body: JSON.stringify({ text: text.slice(-30000) })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'AI Summary failed');
 
-      setSummary(response.text || 'No summary available.');
+      setSummary(data.summary || 'No summary available.');
     } catch (err) {
       console.error("Summary failed:", err);
-      alert("AI Summary failed");
+      alert((err as any)?.message || "AI Summary failed");
     } finally {
       setIsSummarizing(false);
     }

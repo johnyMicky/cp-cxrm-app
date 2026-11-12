@@ -31,6 +31,10 @@ const CHATS_COL = "chats";
 const MESSAGES_COL = "messages";
 const USERS_COL = "users";
 
+
+// A user is shown online only if their last heartbeat is newer than this.
+const PRESENCE_FRESH_MS = 6 * 60 * 1000;
+
 export const chatService = {
   async setUserOnline(userId: string, isOnline: boolean) {
     if (!userId || userId === "1") return;
@@ -386,7 +390,17 @@ export const chatService = {
 
   async getAllUsers() {
     const snap = await getDocs(collection(db, USERS_COL));
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const nowMs = Date.now();
+    return snap.docs.map((d) => {
+      const data: any = d.data();
+      // Online only with a recent heartbeat (sent every 3 min while the CRM is open).
+      const seen = data?.lastSeen;
+      const seenMs = typeof seen?.toMillis === 'function'
+        ? seen.toMillis()
+        : seen ? new Date(seen).getTime() : 0;
+      const fresh = !!seenMs && nowMs - seenMs < PRESENCE_FRESH_MS;
+      return { id: d.id, ...data, isOnline: !!data?.isOnline && fresh };
+    });
   },
 
   async getVisibleUsers(currentUserId: string, currentUserRole: string) {

@@ -205,6 +205,8 @@ export const isProtectedWorkedLead = (lead: any, now: number = Date.now()) => {
   return leadHasActiveCallback(lead, now);
 };
 
+let lastPresenceTouchMs = 0;
+
 export const firestoreService = {
   getAuth() {
     return auth;
@@ -960,50 +962,17 @@ export const firestoreService = {
     const currentAuthUser = auth.currentUser;
     if (!currentAuthUser) return;
 
+    // Focus / tab switches call this too: write at most once a minute.
+    const nowMs = Date.now();
+    if (nowMs - lastPresenceTouchMs < 60000) return;
+    lastPresenceTouchMs = nowMs;
+
     await updateDoc(doc(db, USERS_COL, currentAuthUser.uid), {
       isOnline: true,
       lastSeen: serverTimestamp()
     }).catch(error => {
       console.error('Presence heartbeat failed:', error);
     });
-  },
-
-  subscribeUsers(
-    callback: (users: any[]) => void,
-    onError?: (error: any) => void
-  ) {
-    return onSnapshot(
-      collection(db, USERS_COL),
-      snapshot => {
-        const users = snapshot.docs.map(docSnap => {
-          const data = docSnap.data();
-          const email = normalizeEmail(data.email || '');
-          const adminUser = isAdminEmail(email);
-
-          return {
-            id: docSnap.id,
-            name: data.name || (adminUser ? 'Admin User' : ''),
-            email: data.email || '',
-            role: adminUser ? 'Administrator' : (data.role || 'Agent'),
-            avatar: data.avatar || `https://i.pravatar.cc/150?u=${docSnap.id}`,
-            isOnline: data.isOnline === true,
-            lastSeen: data.lastSeen || null,
-            createdAt: data.createdAt || null,
-            teamId: data.teamId || '',
-            teamName: data.teamName || '',
-            leaderTeamIds: Array.isArray(data.leaderTeamIds) ? data.leaderTeamIds.map((value: any) => String(value)) : [],
-            atlantExtension: data.atlantExtension || '',
-            telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
-          };
-        });
-
-        callback(users);
-      },
-      error => {
-        console.error('Users live subscription failed:', error);
-        onError?.(error);
-      }
-    );
   },
 
   async getUsers() {
@@ -1774,10 +1743,6 @@ export const firestoreService = {
     });
 
     return await this.getTeam(teamId);
-  },
-
-  async clearTeamLeader(teamId: string) {
-    return await this.setTeamLeaders(teamId, []);
   },
 
   // Fast lead list from the server (only the fields tables need, compressed).
@@ -2628,21 +2593,6 @@ export const firestoreService = {
 
   async deleteLead(id: string) {
     await deleteDoc(doc(db, LEADS_COL, id));
-  },
-
-  async setCallback(leadId: string, userId: string, callbackAt: Date) {
-    const docRef = doc(db, LEADS_COL, leadId);
-    await updateDoc(docRef, {
-      callbackAt: Timestamp.fromDate(callbackAt),
-      updatedAt: serverTimestamp()
-    });
-    
-    await this.logActivity({
-      lead_id: leadId,
-      user_id: userId,
-      action: "Callback Scheduled",
-      details: `Scheduled for ${format(callbackAt, 'MMM d, h:mm a')}`
-    });
   },
 
   async addNote(leadId: string, userId: string, content: string) {
@@ -5044,28 +4994,6 @@ export const firestoreService = {
     return { teamIds: [] as string[], all: false };
   },
 
-  subscribeAtlantLiveCalls(
-    callback: (calls: any[]) => void,
-    onError?: (error: any) => void
-  ) {
-    const q = query(
-      collection(db, ATLANT_LIVE_CALLS_COL),
-      orderBy('startedAt', 'desc'),
-      limit(250)
-    );
-
-    return onSnapshot(
-      q,
-      snapshot => {
-        callback(snapshot.docs.map(item => ({ id: item.id, ...item.data() })));
-      },
-      error => {
-        console.error('Atlant Live Calls listener failed:', error);
-        onError?.(error);
-      }
-    );
-  },
-
   // VOIP Provider / Agent Telephony Profiles
   async initializeVoipProviders(adminUserId: string) {
     if (!adminUserId) throw new Error('Administrator is required.');
@@ -5566,91 +5494,6 @@ export const firestoreService = {
       status,
       performanceEvent: trackPerformance,
       countsAsAnswered: trackPerformance && payload?.countsAsAnswered === true
-    };
-  },
-
-  // Call Outcome + Performance
-  // One user action writes the Lead update, optional Note and performance/history
-  // records in one Firestore batch. No realtime listener or polling is required.
-  async recordLeadCallOutcome(payload: {
-    leadId: string;
-    userId: string;
-    userName?: string;
-    status: string;
-    countsAsAnswered: boolean;
-    callbackAt?: Date | null;
-    note?: string;
-    source?: string;
-    country?: string;
-  }) {
-    const leadId = String(payload?.leadId || '').trim();
-    const userId = String(payload?.userId || '').trim();
-    const status = String(payload?.status || '').trim();
-    const note = String(payload?.note || '').trim();
-
-    if (!leadId || !userId || !status) {
-      throw new Error('Lead, user and outcome status are required.');
-    }
-
-    const leadRef = doc(db, LEADS_COL, leadId);
-    const outcomeRef = doc(collection(db, "history"));
-    const statusHistoryRef = doc(collection(db, "history"));
-    const batch = writeBatch(db);
-
-    const leadUpdate: any = {
-      status,
-      updatedAt: serverTimestamp()
-    };
-
-    if (status === 'Callback' && payload.callbackAt instanceof Date) {
-      if (Number.isNaN(payload.callbackAt.getTime())) {
-        throw new Error('Invalid callback time.');
-      }
-      leadUpdate.callbackAt = Timestamp.fromDate(payload.callbackAt);
-    }
-
-    if (note) {
-      const noteRef = doc(collection(db, "notes"));
-      batch.set(noteRef, {
-        lead_id: leadId,
-        user_id: userId,
-        content: note,
-        createdAt: serverTimestamp()
-      });
-      leadUpdate.noteCount = increment(1);
-    }
-
-    batch.update(leadRef, leadUpdate);
-
-    batch.set(statusHistoryRef, {
-      lead_id: leadId,
-      user_id: userId,
-      action: 'Status Changed',
-      details: `Status changed to ${status} from Call Outcome`,
-      createdAt: serverTimestamp()
-    });
-
-    batch.set(outcomeRef, {
-      lead_id: leadId,
-      user_id: userId,
-      agentId: userId,
-      agentName: String(payload?.userName || ''),
-      action: 'Call Outcome',
-      outcomeStatus: status,
-      countsAsAnswered: payload?.countsAsAnswered === true,
-      source: String(payload?.source || ''),
-      country: String(payload?.country || ''),
-      yerevanDateKey: yerevanDateKey(new Date()),
-      createdAt: serverTimestamp()
-    });
-
-    await batch.commit();
-
-    return {
-      id: outcomeRef.id,
-      leadId,
-      status,
-      countsAsAnswered: payload?.countsAsAnswered === true
     };
   },
 
@@ -7267,99 +7110,6 @@ export const firestoreService = {
         createdAt: serverTimestamp()
       });
     }
-  },
-
-  // Performance-focused callback lookup used by the global notification checker.
-  async getUpcomingCallbacksForUser(user: any, from: Date, to: Date) {
-    if (!user?.id) return [];
-
-    const start = Timestamp.fromDate(from);
-    const end = Timestamp.fromDate(to);
-    const freshUser = await this.getUser(String(user.id));
-    const effectiveUser = freshUser || user;
-    const role = String(effectiveUser.role || 'Agent').trim();
-    const userId = String(effectiveUser.id || user.id);
-
-    const mapLead = (docSnap: any) => {
-      const data = docSnap.data();
-      return {
-        id: docSnap.id,
-        name: data.name || '',
-        callbackAt: data.callbackAt || null,
-        assigned_to: data.assigned_to || '',
-        status: data.status || 'New'
-      };
-    };
-
-    const inWindow = (lead: any) => {
-      if (!lead?.callbackAt) return false;
-      const date = lead.callbackAt?.toDate
-        ? lead.callbackAt.toDate()
-        : new Date(lead.callbackAt);
-      return date > from && date <= to;
-    };
-
-    if (role === 'Agent') {
-      try {
-        const snapshot = await getDocs(
-          query(
-            collection(db, LEADS_COL),
-            where('assigned_to', '==', userId),
-            where('callbackAt', '>=', start),
-            where('callbackAt', '<=', end)
-          )
-        );
-        return snapshot.docs.map(mapLead);
-      } catch {
-        const snapshot = await getDocs(
-          query(collection(db, LEADS_COL), where('assigned_to', '==', userId))
-        );
-        return snapshot.docs.map(mapLead).filter(inWindow);
-      }
-    }
-
-    let windowSnapshot;
-    try {
-      windowSnapshot = await getDocs(
-        query(
-          collection(db, LEADS_COL),
-          where('callbackAt', '>=', start),
-          where('callbackAt', '<=', end)
-        )
-      );
-    } catch (error) {
-      console.error('Upcoming callback range query failed:', error);
-      return [];
-    }
-
-    const callbackLeads = windowSnapshot.docs.map(mapLead);
-
-    if (role === 'Administrator' || role === 'Manager') {
-      return callbackLeads;
-    }
-
-    if (role === 'Team Leader') {
-      const scope = await this.getLiveCallScope(userId, role);
-      if (!scope.teamIds.length) return [];
-
-      const teamSnapshots = await Promise.all(
-        scope.teamIds.map((teamId: string) => this.getUsersByTeam(teamId))
-      );
-
-      const allowedUserIds = new Set(
-        teamSnapshots
-          .flat()
-          .filter((member: any) => ['Agent', 'Team Leader'].includes(String(member.role || '')))
-          .map((member: any) => String(member.id || ''))
-          .filter(Boolean)
-      );
-
-      return callbackLeads.filter((lead: any) =>
-        allowedUserIds.has(String(lead.assigned_to || ''))
-      );
-    }
-
-    return [];
   },
 
   // Role/team-aware lead scope. Existing permissions are preserved.
