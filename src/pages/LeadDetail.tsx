@@ -225,7 +225,14 @@ export default function LeadDetail() {
       return;
     }
 
-    await firestoreService.updateLead(id, changes);
+    let saveResult: any = null;
+    try {
+      saveResult = await firestoreService.updateLead(id, changes);
+    } catch (err: any) {
+      // e.g. Transfer when the desk has no RET Team Leader linked.
+      alert(err?.message || 'Failed to save the lead.');
+      return;
+    }
     
     // Log reassignment or status change
     if (lead.status !== editForm.status) {
@@ -252,6 +259,15 @@ export default function LeadDetail() {
         action: 'Callback Updated',
         details: `Callback scheduled for ${formatDateTime(editForm.callbackAt)}`
       });
+    }
+
+    if (saveResult?.transferredTo) {
+      alert(`Lead transferred to RET: ${saveResult.transferredTo.name}`);
+      // The lead now belongs to the RET desk; agents / desk leaders lose access.
+      if (!['Administrator', 'Manager'].includes(String(currentUserRole || ''))) {
+        navigate('/leads');
+        return;
+      }
     }
 
     const data = await firestoreService.getLeadForUser(id, { id: currentUserId, role: currentUserRole });

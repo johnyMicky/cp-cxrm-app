@@ -1034,7 +1034,7 @@ export default function Leads() {
       // Reuse the existing status-change write as the Performance event source.
       // This stays lightweight: one Lead update + one existing history record,
       // with no extra listener, polling loop or separate per-call Performance write.
-      await firestoreService.updateLeadStatusWithPerformance({
+      const statusResult: any = await firestoreService.updateLeadStatusWithPerformance({
         leadId,
         userId: String(currentUser.id || ''),
         userName: localStorage.getItem('userName') || '',
@@ -1068,9 +1068,15 @@ export default function Leads() {
       }
 
       window.dispatchEvent(new CustomEvent('crm:performance-updated'));
-      handleSuccess('Status updated successfully');
-    } catch (err) {
+      handleSuccess(
+        statusResult?.transferredTo
+          ? `Lead transferred to RET: ${statusResult.transferredTo.name}`
+          : 'Status updated successfully'
+      );
+    } catch (err: any) {
       console.error('Failed to update status:', err);
+      // e.g. Transfer when the desk has no RET Team Leader linked.
+      showToastMessage(err?.message || 'Failed to update status');
     }
   };
 
@@ -1657,10 +1663,15 @@ export default function Leads() {
 
   const handleBulkStatusUpdate = async (status: string) => {
     try {
-      await firestoreService.bulkUpdateLeadsStatus(selectedLeads, status, currentUser.id);
-      handleSuccess(`Updated status for ${selectedLeads.length} leads`);
-    } catch (err) {
+      const bulkResult: any = await firestoreService.bulkUpdateLeadsStatus(selectedLeads, status, currentUser.id);
+      handleSuccess(
+        bulkResult?.transferred
+          ? `Updated status for ${selectedLeads.length} leads · ${bulkResult.transferred} sent to RET`
+          : `Updated status for ${selectedLeads.length} leads`
+      );
+    } catch (err: any) {
       console.error('Bulk status update failed:', err);
+      showToastMessage(err?.message || 'Bulk status update failed');
     }
   };
 

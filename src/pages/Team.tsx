@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
 import { safeLower } from '../utils/stringUtils';
+import { displayRole, roleChoiceOf, storedRoleFromChoice, isRetTeamLeader } from '../utils/roles';
 
 interface User {
   id: string;
@@ -25,6 +26,7 @@ interface User {
   teamId?: string;
   teamName?: string;
   leaderTeamIds?: string[];
+  department?: string;
 }
 
 interface TeamRecord {
@@ -147,7 +149,7 @@ export default function Team() {
     return (
       safeLower(user.name).includes(query) ||
       safeLower(user.email).includes(query) ||
-      safeLower(user.role).includes(query) ||
+      safeLower(displayRole(user)).includes(query) ||
       safeLower(user.teamName).includes(query)
     );
   });
@@ -163,6 +165,10 @@ export default function Team() {
         return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
       case 'team leader':
         return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+      case 'ret team leader':
+        return 'bg-amber-500/10 text-amber-300 border-amber-500/20';
+      case 'ret agent':
+        return 'bg-orange-500/10 text-orange-300 border-orange-500/20';
       case 'agent':
         return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
       default:
@@ -300,6 +306,15 @@ export default function Team() {
                       </span>
                     )}
                   </div>
+
+                  {(team as any).retLeaderId && (() => {
+                    const retLeader = users.find((u) => u.id === (team as any).retLeaderId);
+                    return retLeader ? (
+                      <p className="text-[11px] text-amber-300 mb-2">
+                        Transfers go to RET: <span className="font-semibold">{retLeader.name}</span>
+                      </p>
+                    ) : null;
+                  })()}
 
                   {teamLeaders.length > 0 ? (
                     <div className="space-y-2">
@@ -446,11 +461,11 @@ export default function Team() {
                       <td className="px-6 py-4">
                         <span
                           className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${getRoleBadgeColor(
-                            user.role
+                            displayRole(user)
                           )}`}
                         >
                           <Shield className="w-3 h-3 mr-1" />
-                          {user.role}
+                          {displayRole(user)}
                         </span>
                       </td>
 
@@ -562,7 +577,9 @@ function UserModal({
     name: user?.name || '',
     email: user?.email || '',
     password: '',
-    role: user?.role || 'Agent',
+    // "RET Team Leader" / "RET Agent" are shown as roles here; they are saved as
+    // Team Leader / Agent + department RET (see utils/roles.ts).
+    role: user ? roleChoiceOf(user) : 'Agent',
     avatar: user?.avatar || '',
     teamId: user?.teamId || ''
   });
@@ -608,11 +625,14 @@ function UserModal({
         teamName: selectedTeam?.name || ''
       };
 
+      const stored = storedRoleFromChoice(formData.role);
+
       if (user) {
         const updatePayload: any = {
           name: cleanName,
           email: cleanEmail,
-          role: formData.role,
+          role: stored.role,
+          department: stored.department,
           avatar: cleanAvatar,
           ...teamPayload
         };
@@ -627,7 +647,8 @@ function UserModal({
           name: cleanName,
           email: cleanEmail,
           password: cleanPassword,
-          role: formData.role,
+          role: stored.role,
+          department: stored.department,
           avatar: cleanAvatar,
           ...teamPayload
         });
@@ -734,7 +755,14 @@ function UserModal({
               <option value="Financial Manager">Financial Manager</option>
               <option value="Team Leader">Team Leader</option>
               <option value="Agent">Agent</option>
+              <option value="RET Team Leader">RET Team Leader</option>
+              <option value="RET Agent">RET Agent</option>
             </select>
+            {formData.role.startsWith('RET') && (
+              <p className="text-xs text-amber-300">
+                RET users work in a RET desk. Put RET Agents in the same desk as their RET Team Leader — he will see and control them.
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -753,7 +781,7 @@ function UserModal({
                 </option>
               ))}
             </select>
-            {formData.role === 'Team Leader' && (
+            {(formData.role === 'Team Leader' || formData.role === 'RET Team Leader') && (
               <p className="text-xs text-amber-400">
                 Assigning this user as Team Leader will add them to the selected team's Team Leaders without replacing the others.
               </p>
@@ -808,6 +836,9 @@ function TeamModal({
   onSuccess: () => void;
 }) {
   const [name, setName] = useState(team?.name || '');
+  // RET Team Leader who receives this desk's "Transfer" leads.
+  const [retLeaderId, setRetLeaderId] = useState<string>(String((team as any)?.retLeaderId || ''));
+  const retLeaders = users.filter((u) => isRetTeamLeader(u));
 
   // A leader listed on the team only counts if that user really belongs to
   // this desk (old leftover entries from other desks are ignored).
@@ -882,7 +913,8 @@ function TeamModal({
     try {
       if (team) {
         await firestoreService.updateTeam(team.id, {
-          name: cleanName
+          name: cleanName,
+          retLeaderId
         });
 
         // Start from the team's CURRENT leaders (fresh from the database), then
@@ -909,6 +941,10 @@ function TeamModal({
         const createdTeam = await firestoreService.createTeam({
           name: cleanName
         });
+
+        if (retLeaderId) {
+          await firestoreService.updateTeam(createdTeam.id, { retLeaderId });
+        }
 
         await firestoreService.setTeamLeaders(createdTeam.id, teamLeaderIds);
       }
@@ -994,7 +1030,7 @@ function TeamModal({
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-white truncate">{user.name}</p>
                         <p className="text-xs text-slate-500 truncate">
-                          {user.email} · {user.role}
+                          {user.email} · {displayRole(user)}
                         </p>
                       </div>
                     </div>
@@ -1021,6 +1057,25 @@ function TeamModal({
 
             <p className="text-xs text-slate-500">
               You can select multiple Team Leaders. Selected users automatically receive the Team Leader role and are assigned to this team.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+              RET Team Leader for transfers
+            </label>
+            <select
+              value={retLeaderId}
+              onChange={(e) => setRetLeaderId(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all appearance-none"
+            >
+              <option value="">— None —</option>
+              {retLeaders.map((u) => (
+                <option key={u.id} value={u.id}>{u.name || u.email}</option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-500">
+              When an agent of this desk sets a lead to <span className="text-amber-300">Transfer</span>, the lead goes to this RET Team Leader.
             </p>
           </div>
 

@@ -29,6 +29,7 @@ import {
   inMemoryPersistence
 } from "firebase/auth";
 import { format } from 'date-fns';
+import { isRetUser, isRetTeamLeader, isTransferStatus } from '../utils/roles';
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, auth, secondaryAuth, authPersistenceReady, storage } from "../firebase";
 
@@ -995,6 +996,7 @@ export const firestoreService = {
           teamId: data.teamId || '',
           teamName: data.teamName || '',
           leaderTeamIds: Array.isArray(data.leaderTeamIds) ? data.leaderTeamIds.map((value: any) => String(value)) : [],
+          department: String(data.department || ''),
           atlantExtension: String(data.atlantExtension || '').trim(),
           telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
         };
@@ -1030,6 +1032,7 @@ export const firestoreService = {
       teamId: data.teamId || '',
       teamName: data.teamName || '',
       leaderTeamIds: Array.isArray(data.leaderTeamIds) ? data.leaderTeamIds.map((value: any) => String(value)) : [],
+          department: String(data.department || ''),
       atlantExtension: String(data.atlantExtension || '').trim(),
       telephonyProfiles: Array.isArray(data.telephonyProfiles) ? data.telephonyProfiles : []
     };
@@ -1084,6 +1087,7 @@ export const firestoreService = {
         teamId: data.teamId || '',
         teamName: data.teamName || '',
         leaderTeamIds: Array.isArray(data.leaderTeamIds) ? data.leaderTeamIds.map((value: any) => String(value)) : [],
+          department: String(data.department || ''),
         atlantExtension: String(data.atlantExtension || '').trim()
       };
     });
@@ -1347,6 +1351,8 @@ export const firestoreService = {
           // Legacy compatibility: first leader remains exposed in old fields.
           teamLeaderId: teamLeaderIds[0] || '',
           teamLeaderName: teamLeaderNames[0] || '',
+          // RET Team Leader that receives this desk's "Transfer" leads.
+          retLeaderId: String(data.retLeaderId || ''),
           createdAt: data.createdAt || null,
           updatedAt: data.updatedAt || null
         };
@@ -1381,6 +1387,7 @@ export const firestoreService = {
       teamLeaderNames,
       teamLeaderId: teamLeaderIds[0] || '',
       teamLeaderName: teamLeaderNames[0] || '',
+      retLeaderId: String(data.retLeaderId || ''),
       createdAt: data.createdAt || null,
       updatedAt: data.updatedAt || null
     };
@@ -2561,6 +2568,16 @@ export const firestoreService = {
     };
   },
 
+  // Duplicate report of one lead file (saved by bulkCreateLeads under
+  // imports/{id}/duplicates). Was called by the Imports page but missing.
+  async getImportDuplicates(importId: string) {
+    if (!importId) return [];
+    const snap = await getDocs(collection(db, IMPORTS_COL, String(importId), 'duplicates'));
+    return snap.docs
+      .map(d => ({ id: d.id, ...(d.data() as any) }))
+      .sort((a: any, b: any) => Number(a.rowNumber || 0) - Number(b.rowNumber || 0));
+  },
+
   async deleteImport(importId: string) {
     const [leadSnap, duplicateSnap] = await Promise.all([
       getDocs(query(collection(db, LEADS_COL), where("importId", "==", importId))),
@@ -2585,6 +2602,34 @@ export const firestoreService = {
   async updateLead(id: string, leadData: any) {
     const sanitized = sanitizeData(leadData);
     const docRef = doc(db, LEADS_COL, id);
+
+    // Status changed to "Transfer" without choosing an agent by hand →
+    // the lead goes to the RET Team Leader of the owner's desk.
+    if (isTransferStatus(sanitized?.status) && !('assigned_to' in (sanitized || {}))) {
+      const snap = await getDoc(docRef);
+      const current: any = snap.exists() ? snap.data() : {};
+      if (!isTransferStatus(current.status)) {
+        const actorId = String(auth.currentUser?.uid || localStorage.getItem('userId') || '');
+        const fromId = String(current.assigned_to || '');
+        const target = await this._resolveRetTransferTarget(fromId, actorId, new Map());
+        if (target) {
+          const fromUser = fromId ? await this.getUser(fromId) : null;
+          const batch = writeBatch(db);
+          batch.update(docRef, {
+            ...sanitized,
+            ...this._transferFields(fromId, target, actorId),
+            updatedAt: serverTimestamp()
+          });
+          batch.set(
+            doc(collection(db, "history")),
+            this._transferHistoryRow(id, actorId, fromUser?.name || '', target, fromId)
+          );
+          await batch.commit();
+          return { transferredTo: target };
+        }
+      }
+    }
+
     await updateDoc(docRef, {
       ...sanitized,
       updatedAt: serverTimestamp()
@@ -2731,6 +2776,10 @@ export const firestoreService = {
   },
 
   async bulkUpdateLeadsStatus(leadIds: string[], status: string, userId: string) {
+    if (isTransferStatus(status)) {
+      return await this._bulkTransferLeads(leadIds, status, userId);
+    }
+
     const BATCH_SIZE = 500;
     const batches = [];
     let currentBatch = writeBatch(db);
@@ -2760,6 +2809,55 @@ export const firestoreService = {
       action: "Bulk Status Change",
       details: `Updated ${leadIds.length} leads to ${status}`
     }).catch(() => {});
+  },
+
+  // Bulk "Transfer": every lead goes to the RET Team Leader of its owner's desk.
+  // All targets are resolved first; if any desk is not linked, nothing is written.
+  async _bulkTransferLeads(leadIds: string[], status: string, userId: string) {
+    const cache = new Map<string, any>();
+    const plans: Array<{ id: string; fromId: string; target: { id: string; name: string } | null }> = [];
+
+    for (let i = 0; i < leadIds.length; i += 50) {
+      const chunk = leadIds.slice(i, i + 50);
+      const snaps = await Promise.all(chunk.map(id => getDoc(doc(db, LEADS_COL, String(id)))));
+      for (const snap of snaps) {
+        if (!snap.exists()) continue;
+        const data: any = snap.data();
+        const fromId = String(data.assigned_to || '');
+        const target = isTransferStatus(data.status)
+          ? null
+          : await this._resolveRetTransferTarget(fromId, userId, cache);
+        plans.push({ id: snap.id, fromId, target });
+      }
+    }
+
+    const names = await this._distributionNameMap();
+    const BATCH_SIZE = 200;
+    for (let i = 0; i < plans.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      plans.slice(i, i + BATCH_SIZE).forEach(plan => {
+        batch.update(doc(db, LEADS_COL, plan.id), {
+          status,
+          updatedAt: new Date(),
+          ...(plan.target ? this._transferFields(plan.fromId, plan.target, userId) : {})
+        });
+        if (plan.target) {
+          batch.set(
+            doc(collection(db, "history")),
+            this._transferHistoryRow(plan.id, userId, names[plan.fromId] || '', plan.target, plan.fromId)
+          );
+        }
+      });
+      await batch.commit();
+    }
+
+    this.logActivity({
+      user_id: userId,
+      action: "Bulk Status Change",
+      details: `Updated ${plans.length} leads to ${status} (${plans.filter(p => p.target).length} sent to RET)`
+    }).catch(() => {});
+
+    return { transferred: plans.filter(p => p.target).length };
   },
 
   // Writes one "Reassigned" history row per lead, so a moved lead always shows
@@ -5438,6 +5536,79 @@ export const firestoreService = {
   // Reuses the normal Lead status-change history write, so Performance adds no
   // third write and no realtime listener/polling. Only Agent row status changes
   // are marked as performance events; Manager/Admin bulk/admin changes are not.
+  // ---------------------------------------------------------------------------
+  // Transfer → RET
+  // A lead set to "Transfer" moves to the RET Team Leader linked to the desk of
+  // the agent who owns it (Team → Edit desk → "RET Team Leader for transfers").
+  // If that desk has no link and the company has exactly one RET Team Leader,
+  // he gets it. Leads already owned by RET people are not moved again.
+  // ---------------------------------------------------------------------------
+  async _resolveRetTransferTarget(ownerId: string, actorId: string, cache: Map<string, any>) {
+    const getCachedUser = async (id: string) => {
+      if (!id) return null;
+      const key = `user:${id}`;
+      if (!cache.has(key)) cache.set(key, await this.getUser(id));
+      return cache.get(key);
+    };
+
+    const owner = await getCachedUser(String(ownerId || ''));
+    if (owner && isRetUser(owner)) return null; // already in RET
+
+    const base = owner || (await getCachedUser(String(actorId || '')));
+    if (base && isRetUser(base) && !owner) return null;
+
+    const deskId = String(base?.teamId || (base?.leaderTeamIds || [])[0] || '');
+
+    let retLeaderId = '';
+    if (deskId) {
+      const teamKey = `team:${deskId}`;
+      if (!cache.has(teamKey)) cache.set(teamKey, await this.getTeam(deskId));
+      retLeaderId = String(cache.get(teamKey)?.retLeaderId || '');
+    }
+
+    let target = retLeaderId ? await getCachedUser(retLeaderId) : null;
+    if (!target || !isRetTeamLeader(target)) {
+      if (!cache.has('retLeaders')) {
+        const all = await this.getUsers();
+        cache.set('retLeaders', all.filter((u: any) => isRetTeamLeader(u)));
+      }
+      const retLeaders = cache.get('retLeaders') || [];
+      if (retLeaders.length === 1) {
+        target = retLeaders[0];
+      } else {
+        const deskName = base?.teamName || 'this desk';
+        throw new Error(
+          retLeaders.length === 0
+            ? 'Transfer failed: there is no RET Team Leader yet. Ask the Administrator to create one.'
+            : `Transfer failed: no RET Team Leader is linked to "${deskName}". Ask the Administrator to set it in Team → edit desk.`
+        );
+      }
+    }
+
+    return { id: String(target.id), name: String(target.name || target.email || target.id) };
+  },
+
+  _transferFields(fromId: string, target: { id: string }, actorId: string) {
+    return {
+      assigned_to: target.id,
+      transferredFromId: String(fromId || ''),
+      transferredById: String(actorId || ''),
+      transferredAt: serverTimestamp()
+    };
+  },
+
+  _transferHistoryRow(leadId: string, actorId: string, fromName: string, target: { id: string; name: string }, fromId: string) {
+    return {
+      lead_id: leadId,
+      user_id: actorId,
+      action: 'Reassigned',
+      details: `Transfer to RET: ${fromName || 'Unassigned'} → ${target.name}`,
+      oldAgentId: String(fromId || ''),
+      newAgentId: target.id,
+      createdAt: serverTimestamp()
+    };
+  },
+
   async updateLeadStatusWithPerformance(payload: {
     leadId: string;
     userId: string;
@@ -5461,10 +5632,32 @@ export const firestoreService = {
     const batch = writeBatch(db);
     const trackPerformance = payload?.trackPerformance === true;
 
+    // Transfer → move the lead to the RET Team Leader (resolved before writing,
+    // so an unlinked desk shows an error and nothing is changed).
+    let transferTarget: { id: string; name: string } | null = null;
+    let transferFromId = '';
+    if (isTransferStatus(status)) {
+      const leadSnap = await getDoc(leadRef);
+      const leadData: any = leadSnap.exists() ? leadSnap.data() : {};
+      if (!isTransferStatus(leadData.status)) {
+        transferFromId = String(leadData.assigned_to || '');
+        transferTarget = await this._resolveRetTransferTarget(transferFromId, userId, new Map());
+      }
+    }
+
     batch.update(leadRef, {
       status,
-      updatedAt: serverTimestamp()
+      updatedAt: serverTimestamp(),
+      ...(transferTarget ? this._transferFields(transferFromId, transferTarget, userId) : {})
     });
+
+    if (transferTarget) {
+      const fromUser = transferFromId ? await this.getUser(transferFromId) : null;
+      batch.set(
+        doc(collection(db, "history")),
+        this._transferHistoryRow(leadId, userId, fromUser?.name || '', transferTarget, transferFromId)
+      );
+    }
 
     const historyData: any = {
       lead_id: leadId,
@@ -5492,6 +5685,7 @@ export const firestoreService = {
       id: historyRef.id,
       leadId,
       status,
+      transferredTo: transferTarget,
       performanceEvent: trackPerformance,
       countsAsAnswered: trackPerformance && payload?.countsAsAnswered === true
     };

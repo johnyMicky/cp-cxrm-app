@@ -31,6 +31,7 @@ import { chatService } from './services/chatService';
 import ErrorBoundary from './components/ErrorBoundary';
 import CallbackReminders from './components/CallbackReminders';
 import WorldClocks from './components/WorldClocks';
+import { displayRole } from './utils/roles';
 import IdleLogout from './components/IdleLogout';
 import {
   notifyBrowser,
@@ -539,7 +540,7 @@ function Sidebar({
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-white truncate">{userName}</p>
-            <p className="text-xs text-slate-400 truncate">{currentUserRole}</p>
+            <p className="text-xs text-slate-400 truncate">{displayRole(sessionUser) || currentUserRole}</p>
           </div>
           <button 
             onClick={handleLogout}
