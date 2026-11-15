@@ -72,3 +72,20 @@ html,
 body {
   overscroll-behavior: none;
 }
+
+/* Dropdown lists (native <select>): on Windows the opened list used a white
+   background while the text stayed white, so options were invisible.
+   Dark list + white text everywhere in the CRM. */
+select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background-color: #111827;
+  color: #ffffff;
+}
+
+select option:disabled {
+  color: #64748b;
+}
