@@ -1722,7 +1722,12 @@ export const firestoreService = {
       await this.removeTeamLeader(teamId, removedId);
     }
 
-    for (const leaderId of uniqueLeaderIds) {
+    // Only people NEWLY ticked are made Team Leader here. Leaders who were
+    // already on this desk are left exactly as they are — saving a desk can no
+    // longer turn someone back into a Team Leader (or move them back to their
+    // old desk) after the Administrator changed their role in the user form.
+    const addedLeaderIds = uniqueLeaderIds.filter((id: string) => !previousIds.includes(id));
+    for (const leaderId of addedLeaderIds) {
       await this.setTeamLeader(teamId, leaderId);
     }
 

@@ -758,6 +758,16 @@ function UserModal({
               <option value="RET Team Leader">RET Team Leader</option>
               <option value="RET Agent">RET Agent</option>
             </select>
+            {user && user.role === 'Team Leader' && !['Team Leader', 'RET Team Leader'].includes(formData.role) && (() => {
+              const led = teams
+                .filter((t) => t.id === user.teamId || (user.leaderTeamIds || []).includes(t.id))
+                .map((t) => t.name);
+              return led.length > 0 ? (
+                <p className="text-xs text-rose-300">
+                  {user.name || 'This user'} will stop being Team Leader of: {led.join(', ')}.
+                </p>
+              ) : null;
+            })()}
             {formData.role.startsWith('RET') && (
               <p className="text-xs text-amber-300">
                 RET users work in a RET desk. Put RET Agents in the same desk as their RET Team Leader — he will see and control them.
@@ -900,12 +910,26 @@ function TeamModal({
 
     if (promotedFromOtherDesk.length > 0) {
       const lines = promotedFromOtherDesk
-        .map((u: any) => `• ${u.name || u.email} — ${u.role || 'Agent'} in ${u.teamName || 'another desk'}`)
+        .map((u: any) => `• ${u.name || u.email} — ${displayRole(u) || 'Agent'} in ${u.teamName || 'another desk'}`)
         .join('\n');
       const confirmed = window.confirm(
         `These people will become Team Leader of "${cleanName}" and move to this desk:\n\n${lines}\n\nContinue?`
       );
       if (!confirmed) return;
+    } else {
+      // Anyone else newly ticked also becomes a Team Leader — always ask, so an
+      // agent ticked by mistake (thinking it is the members list) is noticed.
+      const newLeaders = addedIds
+        .map((id) => users.find((u) => u.id === id))
+        .filter(Boolean) as any[];
+      if (newLeaders.length > 0) {
+        const lines = newLeaders.map((u) => `• ${u.name || u.email} (${displayRole(u) || 'Agent'})`).join('\n');
+        const confirmed = window.confirm(
+          `These people will become TEAM LEADER of "${cleanName}":\n\n${lines}\n\n` +
+          `(This list is only for leaders. To put agents into a desk, edit the user and choose the Team.)\n\nContinue?`
+        );
+        if (!confirmed) return;
+      }
     }
 
     setIsSubmitting(true);
@@ -1005,6 +1029,10 @@ function TeamModal({
                 {teamLeaderIds.length} selected
               </span>
             </div>
+            <p className="text-[11px] text-slate-500">
+              Tick only the people who LEAD this desk — ticking someone makes them a Team Leader.
+              Agents are added to a desk from the user form (Edit user → Team).
+            </p>
 
             <div className="max-h-56 overflow-y-auto custom-scrollbar rounded-xl border border-white/10 bg-white/[0.02] p-2 space-y-1">
               {leaderCandidates.map((user) => {
