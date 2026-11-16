@@ -227,6 +227,10 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
   const lastMessageIdRef = useRef<string | null>(null);
   const prependScrollRef = useRef<{ height: number; top: number } | null>(null);
   const forceScrollBottomRef = useRef(false);
+  // After opening a chat, keep it pinned to the newest message for a moment
+  // (images/files finish loading and push the content down). Any wheel/touch
+  // by the user cancels it.
+  const stickBottomUntilRef = useRef(0);
   const markReadKeyRef = useRef('');
   const openedFromUrlRef = useRef(false);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -441,10 +445,41 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
+  const scrollToBottomNow = () => {
+    const container = messagesScrollRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  };
+
+  // Every time another chat is selected (from the list, a link, a notification
+  // or the URL), open it at the newest message.
+  useEffect(() => {
+    if (!selectedChatId) return;
+    forceScrollBottomRef.current = true;
+    lastMessageIdRef.current = null;
+  }, [selectedChatId]);
+
   // Scrolling: keep position when older messages load; follow new ones.
   useEffect(() => {
     const container = messagesScrollRef.current;
     if (!container) return;
+
+    if (forceScrollBottomRef.current) {
+      // Wait for the first real batch (the first snapshot can be empty).
+      if (messages.length === 0) return;
+      forceScrollBottomRef.current = false;
+      prependScrollRef.current = null;
+      lastMessageIdRef.current = messages[messages.length - 1]?.id || null;
+      setShowJumpToBottom(false);
+      stickBottomUntilRef.current = Date.now() + 2500;
+      scrollToBottomNow();
+      requestAnimationFrame(scrollToBottomNow);
+      [120, 350, 800, 1500, 2400].forEach((ms) =>
+        window.setTimeout(() => {
+          if (Date.now() <= stickBottomUntilRef.current) scrollToBottomNow();
+        }, ms)
+      );
+      return;
+    }
 
     if (prependScrollRef.current) {
       const { height, top } = prependScrollRef.current;
@@ -458,14 +493,18 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
     const isNewLast = lastId !== lastMessageIdRef.current;
     lastMessageIdRef.current = lastId;
 
+    // Still settling right after opening the chat: stay at the newest message.
+    if (Date.now() <= stickBottomUntilRef.current) {
+      scrollToBottomNow();
+      requestAnimationFrame(scrollToBottomNow);
+      return;
+    }
+
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     const nearBottom = distanceFromBottom < 160;
 
-    if (forceScrollBottomRef.current || (isNewLast && (nearBottom || last?.senderId === currentUserId))) {
-      forceScrollBottomRef.current = false;
-      requestAnimationFrame(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-      });
+    if (isNewLast && (nearBottom || last?.senderId === currentUserId)) {
+      requestAnimationFrame(scrollToBottomNow);
     } else if (isNewLast && !nearBottom) {
       setShowJumpToBottom(true);
     }
@@ -478,7 +517,8 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     if (distanceFromBottom < 160 && showJumpToBottom) setShowJumpToBottom(false);
 
-    if (container.scrollTop < 80 && hasMoreMessages && !isLoadingOlder) {
+    // Don't load older messages while we are still pinning the chat to the bottom.
+    if (container.scrollTop < 80 && hasMoreMessages && !isLoadingOlder && Date.now() > stickBottomUntilRef.current) {
       loadOlderMessages();
     }
   };
@@ -2329,6 +2369,8 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
                     <div
                       ref={messagesScrollRef}
                       onScroll={handleMessagesScroll}
+                      onWheel={() => { stickBottomUntilRef.current = 0; }}
+                      onTouchStart={() => { stickBottomUntilRef.current = 0; }}
                       className="flex-1 overflow-y-auto custom-scrollbar px-3 sm:px-6 py-4"
                     >
                       <div className="max-w-3xl mx-auto">

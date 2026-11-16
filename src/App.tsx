@@ -567,6 +567,33 @@ export default function App() {
   const currentUserRole = sessionUser?.role || 'Agent';
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
+  // New-message pop-ups in the bottom-right corner (see ChatToasts below).
+  const [chatToasts, setChatToasts] = useState<Array<{ key: string; chatId: string; title: string; body: string; initial: string }>>([]);
+  const isChatOpenRef = useRef(false);
+  useEffect(() => {
+    isChatOpenRef.current = isChatOpen;
+  }, [isChatOpen]);
+
+  const dismissChatToast = (key: string) => {
+    setChatToasts(prev => prev.filter(t => t.key !== key));
+  };
+
+  const pushChatToast = (chat: any) => {
+    // Not inside the chat window itself, and not while the chat panel is open.
+    if (window.location.pathname.startsWith('/chat-app') || isChatOpenRef.current) return;
+    const sender = String(chat.lastMessageSenderName || 'New message');
+    const key = `${chat.id}-${chat.lastMessageAt?.toMillis?.() || Date.now()}`;
+    const toast = {
+      key,
+      chatId: String(chat.id),
+      title: chat.isDirect ? sender : `${sender} · ${chat.name || 'Group'}`,
+      body: String(chat.lastMessage || ''),
+      initial: sender.trim().charAt(0).toUpperCase() || '?'
+    };
+    // One toast per chat (newest replaces older), max 3 on screen.
+    setChatToasts(prev => [...prev.filter(t => t.chatId !== toast.chatId), toast].slice(-3));
+    window.setTimeout(() => dismissChatToast(key), 7000);
+  };
   const openStandaloneChat = (chatIdArg?: unknown) => {
     // Sidebar buttons pass a click event here; only a real string is a chat id.
     const chatId = typeof chatIdArg === 'string' ? chatIdArg : '';
@@ -760,6 +787,7 @@ export default function App() {
             body: String(newestIncomingChat.lastMessage || ''),
             tag: `chat-${newestIncomingChat.id}`
           });
+          pushChatToast(newestIncomingChat);
         }
 
         if (hasNewIncomingMessage) {
@@ -1047,6 +1075,43 @@ export default function App() {
           />
         </Routes>
       </Router>
+
+      {/* Chat pop-ups: bottom-right, see-through glass, click to open the chat */}
+      {isAuthenticated && chatToasts.length > 0 && (
+        <div className="fixed right-5 bottom-5 z-[230] flex flex-col gap-2 w-[min(360px,calc(100vw-2.5rem))] pointer-events-none">
+          {chatToasts.map(toast => (
+            <div
+              key={toast.key}
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                dismissChatToast(toast.key);
+                openStandaloneChat(toast.chatId);
+              }}
+              className="pointer-events-auto cursor-pointer group flex items-start gap-3 p-3.5 rounded-2xl bg-slate-900/55 backdrop-blur-xl border border-white/15 shadow-2xl shadow-black/30 hover:bg-slate-900/75 transition-all animate-in fade-in slide-in-from-bottom-4 duration-300"
+            >
+              <div className="w-9 h-9 rounded-full bg-blue-500/70 flex items-center justify-center text-sm font-bold text-white shrink-0">
+                {toast.initial}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-white truncate">{toast.title}</p>
+                <p className="text-xs text-slate-200/90 mt-0.5 line-clamp-2 break-words">{toast.body || 'Sent a file'}</p>
+              </div>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  dismissChatToast(toast.key);
+                }}
+                className="p-1 rounded-md text-slate-300/70 hover:text-white hover:bg-white/10 shrink-0"
+                title="Close"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </ErrorBoundary>
   );
 }

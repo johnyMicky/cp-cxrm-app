@@ -1,3 +1,5 @@
+// Must load first: makes the login identity per browser tab.
+import './utils/tabIdentity';
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
