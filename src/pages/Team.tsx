@@ -16,6 +16,7 @@ import {
 import { firestoreService } from '../services/firestoreService';
 import { safeLower } from '../utils/stringUtils';
 import { displayRole, roleChoiceOf, storedRoleFromChoice, isRetTeamLeader } from '../utils/roles';
+import DeskAgentPicker from '../components/DeskAgentPicker';
 
 interface User {
   id: string;
@@ -549,6 +550,7 @@ export default function Team() {
         <TeamModal
           team={editingTeam}
           users={users}
+          teams={teams}
           onClose={() => setIsTeamModalOpen(false)}
           onSuccess={async () => {
             setIsTeamModalOpen(false);
@@ -837,11 +839,13 @@ function UserModal({
 function TeamModal({
   team,
   users,
+  teams = [],
   onClose,
   onSuccess
 }: {
   team: TeamRecord | null;
   users: User[];
+  teams?: TeamRecord[];
   onClose: () => void;
   onSuccess: () => void;
 }) {
@@ -872,6 +876,13 @@ function TeamModal({
   const [initialLeaderIds] = useState<string[]>(
     storedLeaderIds.filter((id) => isRealMember(id))
   );
+
+  // Members of this desk (their role is never changed by this list).
+  const memberCandidates = users.filter((u) => !['Administrator', 'Manager', 'Financial Manager'].includes(u.role));
+  const [initialMemberIds] = useState<string[]>(
+    team ? memberCandidates.filter((u) => u.teamId === team.id).map((u) => u.id) : []
+  );
+  const [memberIds, setMemberIds] = useState<string[]>(initialMemberIds);
 
   const leaderCandidates = users.filter(
     (user) =>
@@ -941,6 +952,14 @@ function TeamModal({
           retLeaderId
         });
 
+        // Members first (role unchanged), then leaders.
+        await firestoreService.setTeamMembers(
+          team.id,
+          cleanName,
+          memberIds.filter((id) => !initialMemberIds.includes(id)),
+          initialMemberIds.filter((id) => !memberIds.includes(id))
+        );
+
         // Start from the team's CURRENT leaders (fresh from the database), then
         // apply only this window's changes. Stale data can no longer re-add or
         // move a leader that was not touched here.
@@ -970,6 +989,10 @@ function TeamModal({
           await firestoreService.updateTeam(createdTeam.id, { retLeaderId });
         }
 
+        if (memberIds.length > 0) {
+          await firestoreService.setTeamMembers(createdTeam.id, cleanName, memberIds, []);
+        }
+
         await firestoreService.setTeamLeaders(createdTeam.id, teamLeaderIds);
       }
 
@@ -984,7 +1007,7 @@ function TeamModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+      <div className="bg-[#0A0F1C] border border-white/10 rounded-2xl w-full max-w-lg max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
         <div className="flex items-center justify-between p-6 border-b border-white/5 bg-white/[0.02]">
           <h2 className="text-xl font-semibold text-white tracking-tight">
             {team ? 'Edit Team' : 'Create Team'}
@@ -998,7 +1021,7 @@ function TeamModal({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="p-6 space-y-5 overflow-y-auto custom-scrollbar">
           {error && (
             <div className="bg-rose-500/10 border border-rose-500/20 rounded-lg p-3 flex items-center space-x-3 text-rose-400 text-sm">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -1086,6 +1109,32 @@ function TeamModal({
             <p className="text-xs text-slate-500">
               You can select multiple Team Leaders. Selected users automatically receive the Team Leader role and are assigned to this team.
             </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+                Members
+              </label>
+              <span className="text-[10px] text-emerald-400 font-semibold">{memberIds.length} in this desk</span>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Tick who works in this desk. Their role stays the same (Agent stays Agent, RET Agent stays RET Agent).
+            </p>
+            <DeskAgentPicker
+              agents={memberCandidates.map((u) => ({
+                id: u.id,
+                name: `${u.name || u.email} · ${displayRole(u)}`,
+                email: u.email,
+                avatar: u.avatar,
+                teamId: u.teamId,
+                teamName: teams.find((t) => t.id === u.teamId)?.name || (u.teamId ? 'Other desk' : 'No Team')
+              }))}
+              selected={memberIds}
+              onChange={setMemberIds}
+              maxHeight={220}
+              emptyText="No users yet."
+            />
           </div>
 
           <div className="space-y-2">

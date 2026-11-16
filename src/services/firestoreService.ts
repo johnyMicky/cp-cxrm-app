@@ -1698,6 +1698,19 @@ export const firestoreService = {
   },
 
   // Replace the full Team Leader selection for a team.
+  // Desk members: puts people into / takes them out of a desk WITHOUT touching
+  // their role (an Agent stays Agent, a RET Agent stays RET Agent …).
+  async setTeamMembers(teamId: string, teamName: string, addIds: string[], removeIds: string[]) {
+    const writes: Promise<any>[] = [];
+    Array.from(new Set((addIds || []).map(String))).forEach((userId) => {
+      writes.push(updateDoc(doc(db, USERS_COL, userId), { teamId, teamName: teamName || '' }));
+    });
+    Array.from(new Set((removeIds || []).map(String))).forEach((userId) => {
+      writes.push(updateDoc(doc(db, USERS_COL, userId), { teamId: '', teamName: '' }));
+    });
+    await Promise.all(writes);
+  },
+
   async setTeamLeaders(teamId: string, leaderIds: string[]) {
     if (!teamId) {
       throw new Error('Team is required.');
