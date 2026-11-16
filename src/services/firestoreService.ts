@@ -1698,6 +1698,41 @@ export const firestoreService = {
   },
 
   // Replace the full Team Leader selection for a team.
+  // Removes leftover entries from every desk's Team Leader list: people whose
+  // role is no longer "Team Leader" (or who were deleted). Those leftovers were
+  // the reason a desk save could turn an Agent back into a Team Leader.
+  // Returns how many desks were cleaned. Administrator only (Team page).
+  async cleanupStaleTeamLeaders() {
+    const [teamsSnap, usersSnap] = await Promise.all([
+      getDocs(collection(db, TEAMS_COL)),
+      getDocs(collection(db, USERS_COL))
+    ]);
+    const roleById = new Map<string, string>();
+    usersSnap.docs.forEach((u) => roleById.set(u.id, String((u.data() as any)?.role || '')));
+
+    let cleaned = 0;
+    for (const teamDoc of teamsSnap.docs) {
+      const data = teamDoc.data() as any;
+      const ids: string[] = Array.isArray(data.teamLeaderIds)
+        ? data.teamLeaderIds.map((v: any) => String(v))
+        : (data.teamLeaderId ? [String(data.teamLeaderId)] : []);
+      const names: string[] = Array.isArray(data.teamLeaderNames) ? data.teamLeaderNames : [];
+      const keep = ids
+        .map((id, i) => ({ id, name: names[i] || '' }))
+        .filter((p) => roleById.get(p.id) === 'Team Leader');
+      if (keep.length === ids.length) continue;
+      await updateDoc(doc(db, TEAMS_COL, teamDoc.id), {
+        teamLeaderIds: keep.map((p) => p.id),
+        teamLeaderNames: keep.map((p) => p.name),
+        teamLeaderId: keep[0]?.id || '',
+        teamLeaderName: keep[0]?.name || '',
+        updatedAt: serverTimestamp()
+      });
+      cleaned += 1;
+    }
+    return cleaned;
+  },
+
   // Desk members: puts people into / takes them out of a desk WITHOUT touching
   // their role (an Agent stays Agent, a RET Agent stays RET Agent …).
   async setTeamMembers(teamId: string, teamName: string, addIds: string[], removeIds: string[]) {
@@ -1749,7 +1784,14 @@ export const firestoreService = {
     const refreshedIds = (refreshedTeam as any)?.teamLeaderIds || [];
     const refreshedNames = (refreshedTeam as any)?.teamLeaderNames || [];
 
+    // Keep only people who really are Team Leaders now (no leftover Agents).
+    const leaderRoles = await Promise.all(uniqueLeaderIds.map((leaderId: string) => this.getUser(leaderId)));
+    const realLeaderIds = new Set(
+      leaderRoles.filter((u: any) => u && u.role === 'Team Leader').map((u: any) => String(u.id))
+    );
+
     const orderedPairs = uniqueLeaderIds
+      .filter((leaderId: string) => realLeaderIds.has(leaderId))
       .map((leaderId: string) => {
         const index = refreshedIds.indexOf(leaderId);
         return {

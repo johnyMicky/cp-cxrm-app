@@ -65,6 +65,12 @@ export default function Team() {
 
     try {
       if (isAdministrator) {
+        // Clean leftover Team Leader entries (people who are no longer TL)
+        // before showing desks, so no desk can re-promote them.
+        await firestoreService.cleanupStaleTeamLeaders().catch((err: any) =>
+          console.warn('Team leader cleanup skipped:', err)
+        );
+
         const [usersData, teamsData] = await Promise.all([
           firestoreService.getUsers(),
           firestoreService.getTeams()
@@ -968,9 +974,12 @@ function TeamModal({
           firestoreService.getUsers()
         ]);
         const freshIds: string[] = freshTeam?.teamLeaderIds || [];
+        // Only real Team Leaders stay on the list: an Agent / RET Agent left over
+        // on this desk's leader list is dropped instead of being promoted again.
         const belongsHere = (id: string) =>
           (freshUsers || []).some((u: any) =>
             String(u.id) === id &&
+            u.role === 'Team Leader' &&
             (String(u.teamId || '') === team.id || (u.leaderTeamIds || []).includes(team.id))
           );
         const nextIds = Array.from(new Set([
