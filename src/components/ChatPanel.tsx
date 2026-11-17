@@ -198,7 +198,8 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
   // Panels, menus and dialogs
   const [showInfoPanel, setShowInfoPanel] = useState(false);
   const [chatMenu, setChatMenu] = useState<{ chatId: string; x: number; y: number } | null>(null);
-  const [messageMenu, setMessageMenu] = useState<{ messageId: string; x: number; y: number } | null>(null);
+  // selectedText: words the user had highlighted when right-clicking.
+  const [messageMenu, setMessageMenu] = useState<{ messageId: string; x: number; y: number; selectedText?: string } | null>(null);
   const [reactionPickerFor, setReactionPickerFor] = useState<string | null>(null);
 
   const [groupDialog, setGroupDialog] = useState<null | { name: string; selectedIds: string[]; search: string }>(null);
@@ -231,6 +232,11 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
   // (images/files finish loading and push the content down). Any wheel/touch
   // by the user cancels it.
   const stickBottomUntilRef = useRef(0);
+  // True while the user is looking at the newest message. Then any change
+  // (new message, older batch arriving, an image finishing loading) keeps the
+  // view at the bottom. Scrolling up by hand turns it off.
+  const atBottomRef = useRef(true);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
   const markReadKeyRef = useRef('');
   const openedFromUrlRef = useRef(false);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -455,8 +461,21 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
   useEffect(() => {
     if (!selectedChatId) return;
     forceScrollBottomRef.current = true;
+    atBottomRef.current = true;
     lastMessageIdRef.current = null;
   }, [selectedChatId]);
+
+  // Content got taller (images/files loaded, messages re-rendered): if the user
+  // was at the newest message, stay there.
+  useEffect(() => {
+    const content = messagesContentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (atBottomRef.current && !prependScrollRef.current) scrollToBottomNow();
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [selectedChat?.id]);
 
   // Scrolling: keep position when older messages load; follow new ones.
   useEffect(() => {
@@ -493,10 +512,12 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
     const isNewLast = lastId !== lastMessageIdRef.current;
     lastMessageIdRef.current = lastId;
 
-    // Still settling right after opening the chat: stay at the newest message.
-    if (Date.now() <= stickBottomUntilRef.current) {
+    // Still settling right after opening the chat, or the user is at the
+    // newest message: stay at the bottom.
+    if (Date.now() <= stickBottomUntilRef.current || atBottomRef.current) {
       scrollToBottomNow();
       requestAnimationFrame(scrollToBottomNow);
+      if (isNewLast) setShowJumpToBottom(false);
       return;
     }
 
@@ -508,7 +529,9 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
     } else if (isNewLast && !nearBottom) {
       setShowJumpToBottom(true);
     }
-  }, [messages]);
+    // selectedChat?.id: also run when the conversation view appears (e.g. the
+    // chat list loaded after the messages), otherwise it stayed at the top.
+  }, [messages, selectedChat?.id]);
 
   const handleMessagesScroll = () => {
     const container = messagesScrollRef.current;
@@ -516,6 +539,7 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
 
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     if (distanceFromBottom < 160 && showJumpToBottom) setShowJumpToBottom(false);
+    atBottomRef.current = distanceFromBottom < 150;
 
     // Don't load older messages while we are still pinning the chat to the bottom.
     if (container.scrollTop < 80 && hasMoreMessages && !isLoadingOlder && Date.now() > stickBottomUntilRef.current) {
@@ -532,6 +556,7 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
   };
 
   const jumpToBottom = () => {
+    atBottomRef.current = true;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     setShowJumpToBottom(false);
   };
@@ -1215,9 +1240,10 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
     }
   };
 
-  const handleCopyMessage = async (msg: any) => {
+  const handleCopyMessage = async (msg: any, onlyText?: string) => {
     try {
-      await navigator.clipboard.writeText(msg.text || msg.fileUrl || msg.gifUrl || '');
+      // Copy only the highlighted words if something was selected.
+      await navigator.clipboard.writeText(onlyText || msg.text || msg.fileUrl || msg.gifUrl || '');
       showToast('Copied');
     } catch {
       showToast('Copy failed');
@@ -1705,7 +1731,12 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
     const y = Math.min(e.clientY, window.innerHeight - 280);
     setChatMenu(null);
     setReactionPickerFor(null);
-    setMessageMenu({ messageId: msg.id, x, y });
+    // Keep what the user highlighted, so "Copy" copies just that part.
+    let selectedText = '';
+    try {
+      selectedText = String(window.getSelection()?.toString() || '').trim();
+    } catch {}
+    setMessageMenu({ messageId: msg.id, x, y, selectedText });
   };
 
   const menuChat = chatMenu ? chats.find((c) => c.id === chatMenu.chatId) : null;
@@ -2371,9 +2402,9 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
                       onScroll={handleMessagesScroll}
                       onWheel={() => { stickBottomUntilRef.current = 0; }}
                       onTouchStart={() => { stickBottomUntilRef.current = 0; }}
-                      className="flex-1 overflow-y-auto custom-scrollbar px-3 sm:px-6 py-4"
+                      className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 sm:px-6 py-4"
                     >
-                      <div className="max-w-3xl mx-auto">
+                      <div ref={messagesContentRef} className="max-w-3xl mx-auto">
                         {hasMoreMessages && (
                           <div className="flex justify-center pb-2">
                             <button
@@ -3120,7 +3151,8 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
               {[
                 { show: true, label: 'Reply', icon: Reply, action: () => handleReplyToMessage(menuMessage) },
                 { show: canEditMessage(menuMessage), label: 'Edit', icon: Pencil, action: () => startEditMessage(menuMessage) },
-                { show: true, label: 'Copy', icon: Copy, action: () => handleCopyMessage(menuMessage) },
+                { show: !!messageMenu?.selectedText, label: 'Copy selected text', icon: Copy, action: () => handleCopyMessage(menuMessage, messageMenu?.selectedText) },
+                { show: true, label: messageMenu?.selectedText ? 'Copy whole message' : 'Copy', icon: Copy, action: () => handleCopyMessage(menuMessage) },
                 { show: true, label: 'Pin message', icon: Pin, action: () => handlePinMessage(menuMessage) },
                 { show: true, label: 'Create lead', icon: UserPlus, action: () => handleCreateLeadFromMsg(menuMessage) }
               ].filter((i) => i.show).map((item) => (

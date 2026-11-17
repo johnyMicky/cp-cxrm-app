@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { LogOut } from 'lucide-react';
 import { firestoreService } from '../services/firestoreService';
 
-// Signs the user out after 30 minutes without any activity.
+// Signs the user out after 30 minutes without any activity (Agents only — see App.tsx).
 // Activity is shared between all CRM tabs/windows (including the separate
 // chat window) through localStorage, so working in one tab keeps all alive.
 // A running Auto Dialer also counts as activity (Leads page marks it).

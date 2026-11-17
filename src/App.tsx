@@ -947,7 +947,8 @@ export default function App() {
   return (
     <ErrorBoundary>
       <Router>
-        <IdleLogout enabled={isAuthenticated} />
+        {/* Auto logout after 30 min idle: only for Agents (incl. RET Agents) */}
+        <IdleLogout enabled={isAuthenticated && currentUserRole === 'Agent'} />
         <Routes>
           <Route
             path="/chat-app"
