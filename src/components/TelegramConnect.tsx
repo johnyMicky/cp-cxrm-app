@@ -9,6 +9,7 @@ type TelegramStatus = {
   configured: boolean;
   botUsername: string;
   webhookActive: boolean;
+  topicsEnabled?: boolean;
   isAdministrator: boolean;
   chats: Array<{ chatId: string; name: string; linkedAtMs?: number }>;
   onlyWhenOffline: boolean;
@@ -146,6 +147,20 @@ export default function TelegramConnect({ onClose }: { onClose: () => void }) {
 
           {status && ready && (
             <>
+              {status.topicsEnabled ? (
+                <p className="text-[11px] text-emerald-300">
+                  ✓ Separate chats: every person and every group comes in its own chat inside the bot.
+                </p>
+              ) : (
+                <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 p-3 text-[11px] text-sky-100 space-y-1">
+                  <p className="font-semibold text-sky-300">Want each person / group in a separate chat?</p>
+                  <p>
+                    In Telegram open @BotFather → press “Open” (Mini App) → your bot → Bot Settings → turn on
+                    <span className="font-semibold"> Threaded Mode / Topics</span>. Then reopen this window.
+                  </p>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Connected Telegram accounts</p>
                 {status.chats.length === 0 ? (

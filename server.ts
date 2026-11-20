@@ -2470,11 +2470,51 @@ async function telegramApi(method: string, payload: any = {}) {
 }
 
 let telegramBotUsernameCache = '';
+let telegramTopicsEnabledCache: { at: number; value: boolean } | null = null;
 async function telegramBotUsername() {
   if (telegramBotUsernameCache) return telegramBotUsernameCache;
   const me = await telegramApi('getMe');
   telegramBotUsernameCache = String(me?.username || '');
   return telegramBotUsernameCache;
+}
+
+// Topics (separate chats inside the bot) are switched on in @BotFather.
+// Checked at most every 5 minutes.
+async function telegramTopicsEnabled(fresh = false) {
+  if (!fresh && telegramTopicsEnabledCache && Date.now() - telegramTopicsEnabledCache.at < 5 * 60 * 1000) {
+    return telegramTopicsEnabledCache.value;
+  }
+  try {
+    const me = await telegramApi('getMe');
+    telegramBotUsernameCache = String(me?.username || telegramBotUsernameCache);
+    telegramTopicsEnabledCache = { at: Date.now(), value: !!me?.has_topics_enabled };
+  } catch {
+    telegramTopicsEnabledCache = { at: Date.now(), value: false };
+  }
+  return telegramTopicsEnabledCache.value;
+}
+
+// One Telegram topic per CRM chat: private messages from each person and each
+// group arrive in their own "chat" inside the bot, named after the person/group.
+async function telegramTopicFor(tgChatId: string, crmChatId: string, topicName: string, recreate = false) {
+  const ref = db.collection('telegram_topics').doc(`${tgChatId}_${crmChatId}`);
+  if (!recreate) {
+    const snap = await ref.get();
+    const threadId = Number(snap.data()?.threadId || 0);
+    if (threadId) return threadId;
+  }
+  const topic: any = await telegramApi('createForumTopic', {
+    chat_id: tgChatId,
+    name: String(topicName || 'CRM chat').slice(0, 128)
+  });
+  const threadId = Number(topic?.message_thread_id || 0);
+  if (threadId) {
+    await Promise.all([
+      ref.set({ threadId, crmChatId, tgChatId, name: topicName, createdAt: admin.firestore.FieldValue.serverTimestamp() }),
+      db.collection('telegram_topic_rev').doc(`${tgChatId}_${threadId}`).set({ chatId: crmChatId })
+    ]);
+  }
+  return threadId;
 }
 
 const escapeTelegramHtml = (value: any) =>
@@ -2564,8 +2604,14 @@ async function telegramHandleReply(message: any, reply: (t: string) => Promise<a
   }
 
   let crmChatId = '';
+  // Written inside a topic → that topic's CRM chat.
+  const threadId = Number(message?.message_thread_id || 0);
+  if (threadId) {
+    const revSnap = await db.collection('telegram_topic_rev').doc(`${tgChatId}_${threadId}`).get();
+    crmChatId = String(revSnap.data()?.chatId || '');
+  }
   const repliedId = message?.reply_to_message?.message_id;
-  if (repliedId) {
+  if (!crmChatId && repliedId) {
     const mapSnap = await db.collection('telegram_msg_map').doc(`${tgChatId}_${repliedId}`).get();
     crmChatId = String(mapSnap.data()?.chatId || '');
   }
@@ -2628,7 +2674,13 @@ async function telegramHandleReply(message: any, reply: (t: string) => Promise<a
     chat_id: tgChatId,
     message_id: message.message_id,
     reaction: [{ type: 'emoji', emoji: '👍' }]
-  }).catch(() => reply(`✓ Sent to ${chat.isDirect ? 'chat' : chat.name || 'chat'}`));
+  }).catch(() =>
+    telegramApi('sendMessage', {
+      chat_id: tgChatId,
+      text: `✓ Sent to ${chat.isDirect ? 'chat' : chat.name || 'chat'}`,
+      ...(threadId ? { message_thread_id: threadId } : {})
+    }).catch(() => {})
+  );
 
   // Other linked Administrators/Managers in that chat get it in Telegram too.
   await telegramNotifyForMessage(crmChatId, messageRef.id, ownerDoc.id).catch(() => {});
@@ -2677,6 +2729,8 @@ async function telegramNotifyForMessage(chatId: string, messageId: string, sende
     ? { inline_keyboard: [[{ text: 'Open in CRM', url: `${linked.appUrl}/chat-app?chat=${encodeURIComponent(chatId)}` }]] }
     : undefined;
 
+  const topicsOn = await telegramTopicsEnabled();
+
   let sent = 0;
   for (const snap of userSnaps) {
     if (!snap.exists) continue;
@@ -2684,6 +2738,11 @@ async function telegramNotifyForMessage(chatId: string, messageId: string, sende
     const isAdminEmail = String(u.email || '').trim().toLowerCase() === ADMIN_EMAIL;
     if (!isAdminEmail && !TELEGRAM_ROLES.includes(String(u.role || ''))) continue;
     if (u.telegramEnabled === false) continue;
+
+    // Topic name: the other person for private chats, the group name for groups.
+    const topicName = chat.isDirect
+      ? `💬 ${String(msg.senderName || chat.lastMessageSenderName || 'Private chat')}`
+      : `👥 ${String(chat.name || 'Group')}`;
 
     if (u.telegramOnlyOffline !== false) {
       const seen: any = u.lastSeen;
@@ -2694,13 +2753,43 @@ async function telegramNotifyForMessage(chatId: string, messageId: string, sende
 
     for (const c of Array.isArray(u.telegramChats) ? u.telegramChats : []) {
       try {
-        const result: any = await telegramApi('sendMessage', {
+        const payload: any = {
           chat_id: c.chatId,
-          text,
+          text: topicsOn ? `<b>${sender}</b>\n${escapeTelegramHtml(body.slice(0, 1500))}` : text,
           parse_mode: 'HTML',
           disable_web_page_preview: true,
           ...(replyMarkup ? { reply_markup: replyMarkup } : {})
-        });
+        };
+
+        let result: any;
+        if (topicsOn) {
+          try {
+            payload.message_thread_id = await telegramTopicFor(String(c.chatId), chatId, topicName);
+            if (!payload.message_thread_id) delete payload.message_thread_id;
+            result = await telegramApi('sendMessage', payload);
+          } catch (topicErr: any) {
+            if (/thread|topic/i.test(String(topicErr?.message || ''))) {
+              // The person deleted that topic in Telegram → make a new one.
+              try {
+                payload.message_thread_id = await telegramTopicFor(String(c.chatId), chatId, topicName, true);
+                result = await telegramApi('sendMessage', payload);
+              } catch {
+                delete payload.message_thread_id;
+                payload.text = text;
+                result = await telegramApi('sendMessage', payload);
+              }
+            } else if (Number(topicErr?.code) === 403) {
+              throw topicErr;
+            } else {
+              // Topics not available for this chat → plain message.
+              delete payload.message_thread_id;
+              payload.text = text;
+              result = await telegramApi('sendMessage', payload);
+            }
+          }
+        } else {
+          result = await telegramApi('sendMessage', payload);
+        }
         sent += 1;
         if (result?.message_id) {
           await telegramRememberDelivery(String(c.chatId), Number(result.message_id), chatId, snap.id).catch(() => {});
@@ -2723,9 +2812,11 @@ app.get('/api/telegram/status', async (req, res) => {
     const configured = !!telegramToken();
     let botUsername = '';
     let webhookActive = false;
+    let topicsEnabled = false;
     if (configured) {
       try {
         botUsername = await telegramBotUsername();
+        topicsEnabled = await telegramTopicsEnabled(true);
         const info = await telegramApi('getWebhookInfo');
         webhookActive = String(info?.url || '').endsWith('/api/telegram/webhook');
       } catch (err: any) {
@@ -2739,6 +2830,7 @@ app.get('/api/telegram/status', async (req, res) => {
       configured,
       botUsername,
       webhookActive,
+      topicsEnabled,
       isAdministrator: user.role === 'Administrator',
       chats: Array.isArray(data?.telegramChats) ? data.telegramChats : [],
       onlyWhenOffline: data?.telegramOnlyOffline !== false,
