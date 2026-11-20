@@ -211,7 +211,8 @@ export default function TelegramConnect({ onClose }: { onClose: () => void }) {
                   />
                 </label>
                 <p className="text-[11px] text-slate-500">
-                  Muted chats are not sent. In Telegram, send /stop to the bot to disconnect.
+                  To answer from Telegram, Reply (swipe) to a message — it goes into that CRM chat under your name.
+                  Muted chats are not sent. Send /stop to the bot to disconnect.
                 </p>
               </div>
             </>
