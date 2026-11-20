@@ -229,7 +229,27 @@ export const chatService = {
 
     await updateDoc(doc(db, CHATS_COL, chatId), chatUpdate);
 
+    // Telegram copy for linked Administrators/Managers (server decides who).
+    // Fire-and-forget: a Telegram problem never blocks the chat.
+    this.notifyTelegram(chatId, msgRef.id);
+
     return msgRef;
+  },
+
+  notifyTelegram(chatId: string, messageId: string) {
+    (async () => {
+      try {
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) return;
+        await fetch('/api/chat/telegram-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ chatId, messageId })
+        });
+      } catch {
+        // ignore — Telegram is optional
+      }
+    })();
   },
 
   // Short text shown in the chat list for the latest message.

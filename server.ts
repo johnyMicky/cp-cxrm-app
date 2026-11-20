@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import admin from 'firebase-admin';
 import zlib from 'zlib';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2432,6 +2433,362 @@ app.post('/api/ai/summarize', express.json({ limit: '300kb' }), async (req, res)
     const unauthorized = /token|auth/i.test(String(error?.message || ''));
     console.error('AI summary failed:', error?.message || error);
     return res.status(unauthorized ? 401 : 500).json({ error: unauthorized ? 'Unauthorized' : 'AI Summary failed.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Telegram notifications for Team Chat (Administrators & Managers only)
+// Setup: create a bot with @BotFather, put its token in Vercel →
+// Settings → Environment Variables as TELEGRAM_BOT_TOKEN, redeploy, then press
+// "Activate bot" once in the CRM chat (Telegram window). Each Administrator /
+// Manager then presses "Connect Telegram" — no IDs to type.
+// ---------------------------------------------------------------------------
+const TELEGRAM_ROLES = ['Administrator', 'Manager'];
+const TELEGRAM_SETTINGS_DOC = () => db.collection('app_settings').doc('telegram');
+const TELEGRAM_PRESENCE_FRESH_MS = 6 * 60 * 1000;
+
+const telegramToken = () => String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+// Secret Telegram sends back on every webhook call (derived from the token).
+const telegramWebhookSecret = () =>
+  crypto.createHash('sha256').update(`crm-telegram:${telegramToken()}`).digest('hex').slice(0, 48);
+
+async function telegramApi(method: string, payload: any = {}) {
+  const token = telegramToken();
+  if (!token) throw new Error('TELEGRAM_BOT_TOKEN is not set on the server.');
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const data: any = await response.json().catch(() => ({}));
+  if (!data?.ok) {
+    const err: any = new Error(data?.description || `Telegram ${method} failed`);
+    err.code = data?.error_code || response.status;
+    throw err;
+  }
+  return data.result;
+}
+
+let telegramBotUsernameCache = '';
+async function telegramBotUsername() {
+  if (telegramBotUsernameCache) return telegramBotUsernameCache;
+  const me = await telegramApi('getMe');
+  telegramBotUsernameCache = String(me?.username || '');
+  return telegramBotUsernameCache;
+}
+
+const escapeTelegramHtml = (value: any) =>
+  String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const requestOrigin = (req: express.Request) => {
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+  return host ? `${proto}://${host}` : '';
+};
+
+// Linked user ids are kept in one settings doc, cached for 30 s, so sending a
+// chat message does not read every member's user document.
+let telegramLinkedCache: { at: number; ids: Set<string>; appUrl: string } | null = null;
+async function telegramLinkedState(fresh = false) {
+  if (!fresh && telegramLinkedCache && Date.now() - telegramLinkedCache.at < 30000) return telegramLinkedCache;
+  const snap = await TELEGRAM_SETTINGS_DOC().get();
+  const data: any = snap.exists ? snap.data() : {};
+  telegramLinkedCache = {
+    at: Date.now(),
+    ids: new Set<string>((Array.isArray(data?.linkedUserIds) ? data.linkedUserIds : []).map(String)),
+    appUrl: String(data?.appUrl || process.env.APP_URL || '').replace(/\/+$/, '')
+  };
+  return telegramLinkedCache;
+}
+
+async function telegramSetLinked(uid: string, linked: boolean) {
+  await TELEGRAM_SETTINGS_DOC().set(
+    {
+      linkedUserIds: linked
+        ? admin.firestore.FieldValue.arrayUnion(uid)
+        : admin.firestore.FieldValue.arrayRemove(uid),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    },
+    { merge: true }
+  );
+  telegramLinkedCache = null;
+}
+
+async function telegramRemoveChatFromUser(uid: string, chatId: string) {
+  const ref = db.collection('users').doc(uid);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+  const data: any = snap.data() || {};
+  const chats = (Array.isArray(data.telegramChats) ? data.telegramChats : []).filter(
+    (c: any) => String(c?.chatId) !== String(chatId)
+  );
+  await ref.update({
+    telegramChats: chats,
+    telegramChatIds: chats.map((c: any) => String(c.chatId))
+  });
+  if (chats.length === 0) await telegramSetLinked(uid, false);
+}
+
+// Status for the Telegram window in the chat.
+app.get('/api/telegram/status', async (req, res) => {
+  const user = await requireCrmRole(req, res, TELEGRAM_ROLES);
+  if (!user) return;
+  try {
+    const configured = !!telegramToken();
+    let botUsername = '';
+    let webhookActive = false;
+    if (configured) {
+      try {
+        botUsername = await telegramBotUsername();
+        const info = await telegramApi('getWebhookInfo');
+        webhookActive = String(info?.url || '').endsWith('/api/telegram/webhook');
+      } catch (err: any) {
+        console.warn('Telegram status check failed:', err?.message || err);
+      }
+    }
+    const userSnap = await db.collection('users').doc(user.uid).get();
+    const data: any = userSnap.exists ? userSnap.data() : {};
+    return res.json({
+      success: true,
+      configured,
+      botUsername,
+      webhookActive,
+      isAdministrator: user.role === 'Administrator',
+      chats: Array.isArray(data?.telegramChats) ? data.telegramChats : [],
+      onlyWhenOffline: data?.telegramOnlyOffline !== false,
+      enabled: data?.telegramEnabled !== false
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error?.message || 'Telegram status failed.' });
+  }
+});
+
+// One-time activation (Administrator): points the bot to this CRM.
+app.post('/api/telegram/setup', async (req, res) => {
+  const user = await requireCrmRole(req, res, ['Administrator']);
+  if (!user) return;
+  try {
+    const origin = requestOrigin(req);
+    if (!origin.startsWith('https://')) throw new Error('The CRM must be opened over https to activate the bot.');
+    await telegramApi('setWebhook', {
+      url: `${origin}/api/telegram/webhook`,
+      secret_token: telegramWebhookSecret(),
+      allowed_updates: ['message'],
+      drop_pending_updates: true
+    });
+    await TELEGRAM_SETTINGS_DOC().set(
+      { appUrl: origin, webhookSetAt: admin.firestore.FieldValue.serverTimestamp(), webhookSetBy: user.uid },
+      { merge: true }
+    );
+    telegramLinkedCache = null;
+    return res.json({ success: true, botUsername: await telegramBotUsername() });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error?.message || 'Bot activation failed.' });
+  }
+});
+
+// Creates a one-time link (15 min) that connects the caller's Telegram.
+app.post('/api/telegram/link', async (req, res) => {
+  const user = await requireCrmRole(req, res, TELEGRAM_ROLES);
+  if (!user) return;
+  try {
+    const botUsername = await telegramBotUsername();
+    if (!botUsername) throw new Error('Telegram bot is not configured.');
+    const code = crypto.randomBytes(16).toString('hex');
+    await db.collection('telegram_link_codes').doc(code).set({
+      uid: user.uid,
+      expiresAtMs: Date.now() + 15 * 60 * 1000,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    return res.json({ success: true, url: `https://t.me/${botUsername}?start=${code}` });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error?.message || 'Could not create the Telegram link.' });
+  }
+});
+
+app.post('/api/telegram/settings', async (req, res) => {
+  const user = await requireCrmRole(req, res, TELEGRAM_ROLES);
+  if (!user) return;
+  try {
+    const update: any = {};
+    if (typeof req.body?.onlyWhenOffline === 'boolean') update.telegramOnlyOffline = req.body.onlyWhenOffline;
+    if (typeof req.body?.enabled === 'boolean') update.telegramEnabled = req.body.enabled;
+    if (Object.keys(update).length) await db.collection('users').doc(user.uid).update(update);
+    return res.json({ success: true });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error?.message || 'Could not save.' });
+  }
+});
+
+app.post('/api/telegram/unlink', async (req, res) => {
+  const user = await requireCrmRole(req, res, TELEGRAM_ROLES);
+  if (!user) return;
+  try {
+    const chatId = String(req.body?.chatId || '');
+    if (chatId) {
+      await telegramRemoveChatFromUser(user.uid, chatId);
+      telegramApi('sendMessage', { chat_id: chatId, text: 'CRM notifications disconnected.' }).catch(() => {});
+    } else {
+      await db.collection('users').doc(user.uid).update({ telegramChats: [], telegramChatIds: [] });
+      await telegramSetLinked(user.uid, false);
+    }
+    return res.json({ success: true });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error?.message || 'Could not disconnect.' });
+  }
+});
+
+// Telegram → CRM. Handles "/start <code>" (connect) and "/stop" (disconnect).
+app.post('/api/telegram/webhook', async (req, res) => {
+  if (!telegramToken() || req.headers['x-telegram-bot-api-secret-token'] !== telegramWebhookSecret()) {
+    return res.status(401).end();
+  }
+  res.status(200).json({ ok: true });
+
+  try {
+    const message = req.body?.message;
+    const chatId = message?.chat?.id;
+    const text = String(message?.text || '').trim();
+    if (!chatId || !text) return;
+    const reply = (t: string) => telegramApi('sendMessage', { chat_id: chatId, text: t }).catch(() => {});
+
+    if (text.startsWith('/stop')) {
+      const owners = await db.collection('users').where('telegramChatIds', 'array-contains', String(chatId)).get();
+      for (const owner of owners.docs) await telegramRemoveChatFromUser(owner.id, String(chatId));
+      await reply('CRM notifications disconnected. Press Connect Telegram in the CRM to connect again.');
+      return;
+    }
+
+    if (!text.startsWith('/start')) {
+      await reply('This bot only sends CRM chat notifications. Use "Connect Telegram" in the CRM to link it.');
+      return;
+    }
+
+    const code = text.split(/\s+/)[1] || '';
+    if (!/^[a-f0-9]{32}$/.test(code)) {
+      await reply('Open this bot from the CRM: Team Chat → Telegram → Connect Telegram.');
+      return;
+    }
+
+    const codeRef = db.collection('telegram_link_codes').doc(code);
+    const codeSnap = await codeRef.get();
+    const codeData: any = codeSnap.exists ? codeSnap.data() : null;
+    await codeRef.delete().catch(() => {});
+    if (!codeData || Number(codeData.expiresAtMs || 0) < Date.now()) {
+      await reply('This link has expired. Press Connect Telegram in the CRM again.');
+      return;
+    }
+
+    const uid = String(codeData.uid);
+    const userRef = db.collection('users').doc(uid);
+    const userSnap = await userRef.get();
+    const userData: any = userSnap.exists ? userSnap.data() : null;
+    const isAdminEmail = String(userData?.email || '').trim().toLowerCase() === ADMIN_EMAIL;
+    if (!userData || (!isAdminEmail && !TELEGRAM_ROLES.includes(String(userData.role || '')))) {
+      await reply('Only Administrators and Managers can connect Telegram.');
+      return;
+    }
+
+    const name = [message?.chat?.first_name, message?.chat?.last_name].filter(Boolean).join(' ') ||
+      (message?.chat?.username ? `@${message.chat.username}` : 'Telegram');
+    const chats = (Array.isArray(userData.telegramChats) ? userData.telegramChats : []).filter(
+      (c: any) => String(c?.chatId) !== String(chatId)
+    );
+    chats.push({ chatId: String(chatId), name, linkedAtMs: Date.now() });
+    await userRef.update({ telegramChats: chats, telegramChatIds: chats.map((c: any) => String(c.chatId)) });
+    await telegramSetLinked(uid, true);
+    await reply(`✅ Connected to CRM as ${userData.name || userData.email}. You will get Team Chat messages here. Send /stop to disconnect.`);
+  } catch (error: any) {
+    console.error('Telegram webhook failed:', error?.message || error);
+  }
+});
+
+// Called by the CRM right after a chat message is sent.
+app.post('/api/chat/telegram-notify', async (req, res) => {
+  try {
+    if (!telegramToken()) return res.json({ success: true, sent: 0 });
+    const decoded = await getVerifiedRequestUser(req);
+    const chatId = String(req.body?.chatId || '');
+    const messageId = String(req.body?.messageId || '');
+    if (!chatId || !messageId) return res.status(400).json({ success: false });
+
+    const linked = await telegramLinkedState();
+    if (linked.ids.size === 0) return res.json({ success: true, sent: 0 });
+
+    const chatRef = db.collection('chats').doc(chatId);
+    const [chatSnap, msgSnap] = await Promise.all([chatRef.get(), chatRef.collection('messages').doc(messageId).get()]);
+    if (!chatSnap.exists || !msgSnap.exists) return res.status(404).json({ success: false });
+    const chat: any = chatSnap.data() || {};
+    const msg: any = msgSnap.data() || {};
+    if (String(msg.senderId) !== decoded.uid) return res.status(403).json({ success: false });
+
+    // Each message is sent to Telegram only once.
+    try {
+      await db.collection('telegram_notified').doc(`${chatId}_${messageId}`).create({
+        at: admin.firestore.FieldValue.serverTimestamp(),
+        expireAt: admin.firestore.Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000)
+      });
+    } catch {
+      return res.json({ success: true, sent: 0 });
+    }
+
+    const mutedBy = new Set<string>((Array.isArray(chat.mutedBy) ? chat.mutedBy : []).map(String));
+    const recipientIds = (Array.isArray(chat.members) ? chat.members : [])
+      .map(String)
+      .filter((id: string) => id !== decoded.uid && linked.ids.has(id) && !mutedBy.has(id));
+    if (recipientIds.length === 0) return res.json({ success: true, sent: 0 });
+
+    const userSnaps = await db.getAll(...recipientIds.map((id: string) => db.collection('users').doc(id)));
+    const sender = escapeTelegramHtml(msg.senderName || chat.lastMessageSenderName || 'Someone');
+    const where = chat.isDirect ? '' : ` · <b>${escapeTelegramHtml(chat.name || 'Group')}</b>`;
+    const type = String(msg.type || 'text');
+    const body =
+      type === 'image' ? '📷 Photo' :
+      type === 'file' ? `📎 ${msg.fileName || 'File'}` :
+      type === 'gif' ? 'GIF' :
+      String(msg.text || '');
+    const text = `💬 <b>${sender}</b>${where}\n${escapeTelegramHtml(body.slice(0, 1500))}`;
+    const replyMarkup = linked.appUrl.startsWith('https://')
+      ? { inline_keyboard: [[{ text: 'Open in CRM', url: `${linked.appUrl}/chat-app?chat=${encodeURIComponent(chatId)}` }]] }
+      : undefined;
+
+    let sent = 0;
+    for (const snap of userSnaps) {
+      if (!snap.exists) continue;
+      const u: any = snap.data() || {};
+      const isAdminEmail = String(u.email || '').trim().toLowerCase() === ADMIN_EMAIL;
+      if (!isAdminEmail && !TELEGRAM_ROLES.includes(String(u.role || ''))) continue;
+      if (u.telegramEnabled === false) continue;
+
+      if (u.telegramOnlyOffline !== false) {
+        const seen: any = u.lastSeen;
+        const seenMs = typeof seen?.toMillis === 'function' ? seen.toMillis() : seen ? new Date(seen).getTime() : 0;
+        const online = !!u.isOnline && !!seenMs && Date.now() - seenMs < TELEGRAM_PRESENCE_FRESH_MS;
+        if (online) continue;
+      }
+
+      for (const c of Array.isArray(u.telegramChats) ? u.telegramChats : []) {
+        try {
+          await telegramApi('sendMessage', {
+            chat_id: c.chatId,
+            text,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            ...(replyMarkup ? { reply_markup: replyMarkup } : {})
+          });
+          sent += 1;
+        } catch (err: any) {
+          // 403 = the person blocked/deleted the bot → forget that Telegram.
+          if (Number(err?.code) === 403) await telegramRemoveChatFromUser(snap.id, String(c.chatId)).catch(() => {});
+          else console.warn('Telegram send failed:', err?.message || err);
+        }
+      }
+    }
+
+    return res.json({ success: true, sent });
+  } catch (error: any) {
+    console.error('Telegram notify failed:', error?.message || error);
+    return res.status(500).json({ success: false });
   }
 });
 

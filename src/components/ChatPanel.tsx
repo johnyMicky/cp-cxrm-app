@@ -44,6 +44,8 @@ import { chatService } from '../services/chatService';
 import { firestoreService } from '../services/firestoreService';
 import { auth } from '../firebase';
 import { cn } from '../App';
+// Loaded only when an Administrator/Manager opens the Telegram window.
+const TelegramConnect = React.lazy(() => import('./TelegramConnect'));
 
 interface ChatPanelProps {
   isOpen: boolean;
@@ -243,6 +245,9 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
 
   const currentUserId = localStorage.getItem('userId') || '';
   const currentUserRole = localStorage.getItem('userRole') || 'Administrator';
+  // Telegram notifications window (Administrators & Managers only).
+  const [showTelegram, setShowTelegram] = useState(false);
+  const canUseTelegram = currentUserRole === 'Administrator' || currentUserRole === 'Manager';
   const userName = localStorage.getItem('userName') || 'User';
 
   const emojiOptions = [
@@ -2112,6 +2117,16 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
                       >
                         <Users className="w-4 h-4" />
                       </button>
+                      {canUseTelegram && (
+                        <button
+                          type="button"
+                          onClick={() => setShowTelegram(true)}
+                          className="p-2 rounded-lg text-sky-400 hover:text-sky-300 hover:bg-white/5"
+                          title="Telegram notifications"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
+                      )}
                       {!standalone && (
                         <button
                           onClick={onClose}
@@ -3590,6 +3605,12 @@ export default function ChatPanel({ isOpen, onClose, standalone = false }: ChatP
               </div>
             )}
           </AnimatePresence>
+
+          {showTelegram && (
+            <React.Suspense fallback={null}>
+              <TelegramConnect onClose={() => setShowTelegram(false)} />
+            </React.Suspense>
+          )}
         </>
       )}
     </AnimatePresence>
